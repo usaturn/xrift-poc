@@ -519,8 +519,8 @@ assert_step_before() {
 test_installer_step_order() {
     assert_step_before 'Installing uv' 'Installing Herdr'
     assert_step_before 'Installing Starship' 'Installing Herdr'
-    assert_step_before 'Installing the pinned Gitleaks' 'Appending the shell setup to ~/.zshrc'
-    assert_step_before 'Appending the shell setup to ~/.zshrc' 'Installing Herdr'
+    assert_step_before 'Installing the pinned Gitleaks' 'Writing the shell setup block into ~/.zshrc'
+    assert_step_before 'Writing the shell setup block into ~/.zshrc' 'Installing Herdr'
     assert_step_before 'Installing Claude Code' 'Installing the Claude Code plugins'
 }
 
@@ -687,6 +687,23 @@ test_cc_launcher_env_unsets() {
     assert_contains "${dump_dir}/ccddg.log" '^ANTHROPIC_AUTH_TOKEN=fake-di$'
 }
 
+# cod は Codex に xrift-poc のルートをプロジェクトのルートとして探させる（usaturn/xrift-poc#1）。
+# 独立した Git リポジトリの制作物から起動しても、親の AGENTS.md とスキルを読めるようにするため。
+test_cod_sets_the_project_root_marker() {
+    local test_home="${TEST_ROOT}/cod-home"
+    make_stub_home "$test_home"
+    printf '%s\n' '#!/bin/sh' 'printf "%s\n" "$@" > "$HOME/codex-args"' > "$test_home/bin/codex"
+    chmod +x "$test_home/bin/codex"
+    run_zshrc_code "$test_home" 'source "$ZSHRC_TEMPLATE"; cod exec "日本語 の 引数"' CONTEXT7_API_KEY=dummy
+    local args="$test_home/codex-args"
+    grep -qxF -- '-c' "$args" || fail "cod must pass -c to codex"
+    grep -qxF -- 'project_root_markers=[".devcontainer"]' "$args" \
+        || fail "cod must set project_root_markers to .devcontainer"
+    grep -qxF -- '--dangerously-bypass-approvals-and-sandbox' "$args" \
+        || fail "cod must keep its existing approval flag"
+    [ "$(tail -n 1 "$args")" = "日本語 の 引数" ] || fail "cod must forward user arguments unchanged"
+}
+
 test_installer_step_order
 test_installer_places_herdr_config_and_helpers
 test_launch_and_guards
@@ -694,4 +711,5 @@ test_launch_repairs_session_before_herdr
 test_session_cwd_repair
 test_session_cwd_repair_multi_workspace
 test_cc_launcher_env_unsets
+test_cod_sets_the_project_root_marker
 printf 'PASS: herdr Dev Container migration\n'

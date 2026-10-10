@@ -865,12 +865,13 @@ if ! install_pinned_gitleaks; then
     fail "Gitleaks installation failed."
 fi
 
-step "Appending the shell setup to ~/.zshrc"
-# 各 CLI インストーラが ~/.zshrc へ PATH を追記した後に zshrc.txt を連結する。
+step "Writing the shell setup block into ~/.zshrc"
+# 各 CLI インストーラが ~/.zshrc へ PATH を追記した後に、zshrc.txt を管理ブロックとして書く。
+# 再実行してもブロックは 1 つのままで、ブロックの外（利用者の設定・インストーラの追記）は変えない。
 # Herdr の導入が失敗しても alias・環境変数・PATH 補助を利用できるよう、
 # 失敗時に exit する Herdr block より前で行う。
-if ! cat .devcontainer/zshrc.txt >>${HOME}/.zshrc; then
-    fail "Failed to append .devcontainer/zshrc.txt to ~/.zshrc."
+if ! python3 scripts/write_shell_block.py --source .devcontainer/zshrc.txt --target "${HOME}/.zshrc"; then
+    fail "Failed to write the shell setup block into ~/.zshrc."
 fi
 
 step "Installing Herdr"

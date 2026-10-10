@@ -154,7 +154,25 @@ function cod(){
         export CONTEXT7_API_KEY
         echo
     fi
-    codex --dangerously-bypass-approvals-and-sandbox "$@"
+    # 独立した Git リポジトリの制作物（items/<name>・worlds/<name>）から起動しても、xrift-poc の
+    # AGENTS.md とスキルを読むよう、.devcontainer のあるディレクトリをプロジェクトのルートとして探させる。
+    # 共有の ~/.codex/config.toml には書かない（maatlog-poc のコンテナでも挙動が変わるため）。
+    codex -c 'project_root_markers=[".devcontainer"]' --dangerously-bypass-approvals-and-sandbox "$@"
+}
+
+# 制作物（items/<name>・worlds/<name> の Git リポジトリ）に xrift-poc のスキルへのリンクを置く・外す。
+# 使い方: xrift-link [link|unlink] [dir]（既定は link と現在のディレクトリ）
+function xrift-link(){
+    local root="${XRIFT_POC_ROOT:-}"
+    if [ -z "$root" ]; then
+        print -u2 "xrift-link: XRIFT_POC_ROOT is not set"
+        return 1
+    fi
+    local command="link"
+    case "${1:-}" in
+        link|unlink) command="$1"; shift ;;
+    esac
+    uv run --no-project python "${root}/.agents/scripts/project_link.py" "$command" "${1:-$PWD}"
 }
 
 # bun completions

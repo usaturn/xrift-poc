@@ -18,7 +18,7 @@ pythonpath = ["../.."]
 [tool.pyright]
 pythonVersion = "3.14"
 typeCheckingMode = "strict"
-include = [".", "../devenv_migration", "../../.agents", "../review_triage", "../agent_runner", "../test_support"]
+include = [".", "../devenv_migration", "../../.agents", "../review_triage", "../agent_runner", "../test_support", "../../scripts/write_shell_block.py"]
 extraPaths = ["../.."]
 exclude = ["**/.venv", "../../.agents/skills/*/evals/fixtures", "**/__pycache__", "**/.git", "**/.pytest_cache", "**/.ruff_cache"]
 

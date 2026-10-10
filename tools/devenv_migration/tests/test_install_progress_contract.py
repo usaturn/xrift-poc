@@ -246,6 +246,7 @@ exit 0
 """
 
 CP = "#!/bin/bash\n" + FAIL_HOOK + 'exec /bin/cp "$@"\n'
+PYTHON3 = "#!/bin/bash\n" + FAIL_HOOK + f'exec {shutil.which("python3")} "$@"\n'
 
 
 def _stub(tool: str) -> str:
@@ -296,6 +297,7 @@ def _run_installer(
         ("pi", PI),
         ("dsh", DSH),
         ("cp", CP),
+        ("python3", PYTHON3),
     ):
         _write_executable(bin_dir / name, body)
     for name, tool in (
@@ -433,7 +435,7 @@ FAIL_LOUD_INJECTIONS = (
     "https://starship.rs/",
     "cp .devcontainer/starship.toml",
     "cp .devcontainer/herdr-git-status.bash",
-    "cat .devcontainer/zshrc.txt",
+    "scripts/write_shell_block.py",
     "cp .devcontainer/herdr.toml",
     "playwright install",
 )
