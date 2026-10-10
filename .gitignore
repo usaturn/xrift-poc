@@ -10,6 +10,11 @@
 /tmp/
 /reviews/
 /docs_draft/
+# superpowers の作業用ディレクトリ。brainstorming の visual companion が、mockup と接続用のトークン（.last-token）を書く
+.superpowers/
+
+# Dev Containers がコンテナの作成時に書く、features の解決結果のロックファイル
+/.devcontainer/devcontainer-lock.json
 
 # 認証情報
 .env
