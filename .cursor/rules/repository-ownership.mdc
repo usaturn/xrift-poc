@@ -1,12 +1,11 @@
 ---
-description: Route application work to usaturn/maatlog and environment work to usaturn/maatlog-poc
+description: Route environment work to usaturn/xrift-poc and product work to each product repository under items/ or worlds/
 alwaysApply: true
 ---
 
 # Repository ownership
 
-- アプリケーション（`src/`・`tests/`・`docs/` 等の公開内容）の Issue・worktree・検証・PR は `public/` submodule の実体 `usaturn/maatlog` が操作先。worktree は公開側の `origin/main` から作る
-- 開発環境（`.agents/`・`.claude/`・`tools/`・`scripts/` 等）の同じ操作は親 `usaturn/maatlog-poc` が操作先。worktree は親の `origin/main` から作る
-- 操作前に、親の `git remote get-url origin` が `usaturn/maatlog-poc` を指し、`git -C public remote get-url origin` が `.gitmodules` の `submodule.public.url`（`usaturn/maatlog`）と一致することを確認する
-- 親での通常 commit に `public` の gitlink を stage しない
+- 開発環境（`.devcontainer/`・`.agents/`・`.claude/`・`tools/`・`scripts/` 等）の Issue・worktree・検証・PR は `usaturn/xrift-poc` が操作先。worktree は `origin/main` から作る
+- `items/<name>/`・`worlds/<name>/` の制作物は、それぞれの Git リポジトリが操作先。Git 未初期化や origin が無い制作物では GitHub の操作をせず、代わりに `xrift-poc` へ commit・起票しない
+- 操作の前に `uv run --no-project python "$XRIFT_POC_ROOT/.agents/scripts/route_target.py" <path>` で判定する。`git rev-parse --show-toplevel` の成功だけで制作物の Git と判定しない
 - 手順は `.agents/skills/repository-ownership/SKILL.md` に定義する
