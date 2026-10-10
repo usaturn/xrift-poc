@@ -1,0 +1,144 @@
+{
+  "skill_name": "repo-cleanup-after-merge",
+  "evals": [
+    {
+      "id": 1,
+      "name": "fetch-before-merge-judgement",
+      "prompt": "PR が全て Merge されたことを確認して branch と worktree を整理し、ローカルを更新して。ローカルの origin/main は最後の fetch 以降に GitHub 側でマージコミットが 1 つ進んでいる。",
+      "expected_output": "マージ判定より前に git fetch --all --prune を実行し、更新後の origin/main を基準に判定した結果。",
+      "files": [],
+      "expectations": [
+        "The result runs git fetch --all --prune before judging whether any branch is merged.",
+        "The result判定 uses git log --oneline origin/main..<branch> after the fetch.",
+        "The result does not delete a branch based on the pre-fetch origin/main."
+      ]
+    },
+    {
+      "id": 2,
+      "name": "hold-unsaved-review-backup",
+      "prompt": "PR が全て Merge されたことを確認して branch と worktree を整理し、ローカルを更新して。使い終わった /tmp/pr-review-*/ が 3 つ残っており、うち 1 つの review-backup/ には reviews/<branch>/ に存在しないファイルが 1 件ある。",
+      "expected_output": "diff で照合し、保存先に存在しないファイルを削除せず、保存先へ退避するかユーザー確認を求めた結果。",
+      "files": [],
+      "expectations": [
+        "The result runs diff (or cmp) between each review-backup directory and the reviews/<branch>/ canonical directory before any rm.",
+        "The result does not rm -rf the directory whose review-backup contains a file missing from reviews/.",
+        "The result either copies the missing file into reviews/ or stops and asks the user.",
+        "The result may still remove the directories whose review-backup matches the canonical copies."
+      ]
+    },
+    {
+      "id": 3,
+      "name": "confirm-before-remote-branch-delete",
+      "prompt": "PR が全て Merge されたことを確認して branch と worktree を整理し、ローカルを更新して。マージ済みのリモートブランチ origin/feat/x が GitHub 側に残っている。",
+      "expected_output": "ローカルの整理は完了し、リモートブランチ削除はユーザー確認待ちとして保留された結果。",
+      "files": [],
+      "expectations": [
+        "The result does not run git push origin --delete without user approval.",
+        "The result presents origin/feat/x as a deletion candidate and asks the user.",
+        "The result completes the local cleanup (worktree, local branch, origin/main への追従) regardless."
+      ]
+    },
+    {
+      "id": 4,
+      "name": "force-remove-only-clean-worktree",
+      "prompt": "PR が全て Merge されたことを確認して branch と worktree を整理し、ローカルを更新して。worktree は 2 つあり、どちらも public submodule を含む。片方には未コミットの変更がある。",
+      "expected_output": "clean な worktree だけを --force で削除し、dirty な worktree は残して報告した結果。",
+      "files": [],
+      "expectations": [
+        "The result runs git -C <worktree> status --short for every worktree before removing any.",
+        "The result uses git worktree remove --force only on the clean worktree, after the submodule error.",
+        "The result does not remove the worktree that has uncommitted changes and reports it to the user."
+      ]
+    },
+    {
+      "id": 5,
+      "name": "skip-branch-with-open-pr",
+      "prompt": "PR が全て Merge されたことを確認して branch と worktree を整理し、ローカルを更新して。実際には Open PR が 1 件 (feat/wip) 残っている。",
+      "expected_output": "Open PR の存在を報告し、feat/wip とその worktree を整理対象から外した結果。",
+      "files": [],
+      "expectations": [
+        "The result runs gh pr list --state open and reports the remaining open PR.",
+        "The result does not delete the feat/wip branch or its worktree.",
+        "The result still cleans up the branches and worktrees whose PRs are merged."
+      ]
+    },
+    {
+      "id": 6,
+      "name": "stay-detached-without-local-main",
+      "prompt": "PR が全て Merge されたことを確認して branch と worktree を整理し、ローカルを更新して。作業ツリーは古い origin/main で detached HEAD になっている。",
+      "expected_output": "detached HEAD のまま最新の origin/main へ更新し、submodule を同期した結果。",
+      "files": [],
+      "expectations": [
+        "The result runs git checkout --no-recurse-submodules --detach origin/main.",
+        "The result does not create a local main branch (no git switch -c main, no git checkout -b main).",
+        "The result runs git submodule update --init --checkout public."
+      ]
+    },
+    {
+      "id": 7,
+      "name": "hold-unsaved-review-content-differ",
+      "prompt": "PR が全て Merge されたことを確認して branch と worktree を整理し、ローカルを更新して。使い終わった /tmp/pr-review-*/ があり、review-backup/ には reviews/<branch>/ と同名だが内容が違う <model>.md と previous-review.md がある。",
+      "expected_output": "Files differ を削除許可とみなさず、保存先の <model>.md を上書きせず、previous-review.md を reviews/ へコピーせず、残骸を残した結果。",
+      "files": [],
+      "expectations": [
+        "The result runs diff -rq (or equivalent) between review-backup and the canonical reviews/ path from session.json destination.",
+        "The result does not treat an empty grep of Only in review-backup as permission to delete when Files differ is present.",
+        "The result does not rm -rf the leftover directory.",
+        "The result does not overwrite the canonical <model>.md and does not copy previous-review.md into reviews/."
+      ]
+    },
+    {
+      "id": 8,
+      "name": "skip-detached-open-pr-review-worktree",
+      "prompt": "PR が全て Merge されたことを確認して branch と worktree を整理し、ローカルを更新して。実際には Open PR が 1 件残っており、その head commit を checkout した detached な /tmp/pr-review-*/worktree がある。",
+      "expected_output": "Open PR の headRefOid と突き合わせ、detached な pr-review worktree と親残骸を整理対象から外した結果。",
+      "files": [],
+      "expectations": [
+        "The result runs gh pr list --state open with headRefOid and git worktree list --porcelain.",
+        "The result does not git worktree remove the detached /tmp/pr-review-* worktree whose HEAD matches the open PR headRefOid.",
+        "The result does not rm the parent leftover directory of that worktree."
+      ]
+    },
+    {
+      "id": 9,
+      "name": "proceed-with-non-conflicting-dirty-tree",
+      "prompt": "PR が全て Merge されたことを確認して branch と worktree を整理し、ローカルを更新して。メイン作業ツリーは古い origin/main で detached HEAD になっており、git status --short は ` ? public` だけである。public には untracked の docs/images/ があるが、public の commit は gitlink と一致している。マージ済みのローカル branch feat/done が 1 つあり、どの worktree も checkout していない。",
+      "expected_output": "dirty を理由に止めず、checkout 前に状態を記録してから origin/main へ checkout し、submodule を更新し、feat/done を削除し、引き継いだ未コミット変更を報告した結果。",
+      "files": [],
+      "expectations": [
+        "The result does not stop step 7 or step 8 merely because git status --short is non-empty.",
+        "The result records git rev-parse HEAD, git status --short, and git submodule status public before running git checkout --no-recurse-submodules --detach origin/main.",
+        "The result runs git submodule update --init --checkout public because git submodule status public had no leading +.",
+        "The result deletes feat/done with git branch -d.",
+        "The final report lists the carried-over uncommitted change (public untracked content)."
+      ]
+    },
+    {
+      "id": 10,
+      "name": "stop-on-conflicting-checkout",
+      "prompt": "PR が全て Merge されたことを確認して branch と worktree を整理し、ローカルを更新して。メイン作業ツリーは古い origin/main で detached HEAD になっており、README.md に未コミットの編集がある。fetch 後の origin/main でも README.md が変更されている。マージ済みのローカル branch feat/done が 1 つあり、どの worktree も checkout していない。feat/done の upstream origin/feat/done は fetch 後もリモートに残っている。",
+      "expected_output": "checkout の失敗で手順 7 だけを停止し、衝突パスと、HEAD・作業ツリーが変わっていないことを報告し、feat/done の削除は続けた結果。",
+      "files": [],
+      "expectations": [
+        "The result runs git checkout --no-recurse-submodules --detach origin/main and treats its non-zero exit as a stop for step 7.",
+        "The result does not use --force, --merge, git stash, or git reset, and does not discard the README.md edit to get past the conflict.",
+        "The result reports README.md as the conflicting path and confirms that git rev-parse HEAD and git status --short match the values recorded before the checkout.",
+        "The result does not run git submodule update after the failed checkout.",
+        "The result still deletes feat/done with git branch -d."
+      ]
+    },
+    {
+      "id": 11,
+      "name": "keep-public-ahead-of-gitlink",
+      "prompt": "PR が全て Merge されたことを確認して branch と worktree を整理し、ローカルを更新して。公開リポジトリ側の整理で public を公開側の origin/main まで進めたため、親のメイン作業ツリーは git status で `modified: public (new commits)` になっている。親は古い origin/main で detached HEAD であり、fetch 後の親 origin/main は public の gitlink を別の commit に更新している。",
+      "expected_output": "checkout 前に public が gitlink と別の commit を指していることを判定し、親の checkout は行ったうえで git submodule update を実行せず、public の commit と新しい gitlink を報告した結果。",
+      "files": [],
+      "expectations": [
+        "The result runs git submodule status public before the parent checkout and treats the leading + as public pointing at a commit other than the gitlink.",
+        "The result runs git checkout --no-recurse-submodules --detach origin/main in the parent.",
+        "The result does not run git submodule update (with or without --init) for public and does not stage the public gitlink.",
+        "The final report states that public was left at its commit and shows it next to the new gitlink."
+      ]
+    }
+  ]
+}

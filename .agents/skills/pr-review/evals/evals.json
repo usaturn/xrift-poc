@@ -1,0 +1,60 @@
+{
+  "skill_name": "pr-review",
+  "evals": [
+    {
+      "id": 1,
+      "name": "multiline-input-needs-execution",
+      "fixture": "multiline-input",
+      "prompt": "PR https://github.com/example/notes-tool/pull/3 をレビューして。",
+      "expected_output": "A review whose finding on the new control-character check is backed by an executed reproduction with multi-line content, keeps 'is it safe' apart from 'does it work', and carries the D1 fields.",
+      "files": [
+        "evals/fixtures/multiline-input/fixture.json"
+      ],
+      "expectations": [
+        "本文の制御文字の検査が改行も拒否し、README が想定する複数行の本文を保存できないことを、active な指摘として報告している。",
+        "その指摘の根拠に、複数行の本文で CLI（`python -m notes_tool.cli add`）か `save_finding`・`validate_finding` を実際に実行した再現があり、コマンドと結果（終了コードまたは例外）が書かれている。",
+        "「不正な入力は拒否して止まる（安全側に倒れる）」を理由に、この挙動を問題なしとしていない。拒否を確かめたこと（安全か）と、複数行の本文の保存が完了するか（動くか）を分けて書いている。",
+        "その指摘に `利用経路`（通常）・`結果の種類`（機能停止）・`PR 起因`（持ち込み）の欄がある。",
+        "Review coverage に、入口と条件と結果（動く／止まる）を書いた実行した確認の一覧がある。"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "same-pattern-is-one-finding",
+      "fixture": "same-pattern",
+      "prompt": "PR https://github.com/example/confkit/pull/12 をレビューして。",
+      "expected_output": "A single finding that covers all three `split(\"=\")` sites, names the search that found them, excludes the correct base-side `split(\"=\", 1)`, and is backed by an executed reproduction.",
+      "files": [
+        "evals/fixtures/same-pattern/fixture.json"
+      ],
+      "expectations": [
+        "`load_env_file`・`load_labels`・`parse_overrides` の 3 か所の `split(\"=\")` を、1 件の指摘にまとめている（関数ごとの別の指摘に分けていない）。",
+        "その指摘に、同じパターンを探した検索のコマンド（`rg`・`git grep` など）と、該当箇所の一覧がある。",
+        "base にある `read_pairs`（`split(\"=\", 1)`）を欠陥として挙げていない。",
+        "値に `=` を含む入力で `ValueError` になることを、実際に実行した再現で示している。",
+        "その指摘に `同種箇所` の欄があり、性質・範囲・検索・結果を書いている。"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "update-keeps-decisions-and-checks-the-fix",
+      "fixture": "update-decided",
+      "prompt": "PR https://github.com/example/syncer/pull/7 をもう一度レビューして（前回のレビューがある）。",
+      "expected_output": "An Update review that reads the decision record, keeps the skipped L-1 out of the active findings, checks the mechanism and the 'same rule' claim added by the fix commit by running them, and reads the whole PR diff.",
+      "files": [
+        "evals/fixtures/update-decided/fixture.json",
+        "evals/fixtures/update-decided/round-1.json",
+        "evals/fixtures/update-decided/previous-review.md"
+      ],
+      "expectations": [
+        "Mode を Update とし、Review history に今回の行を追加している（前回の行を残している）。",
+        "判断の記録（PR のコメント）を読み、`skip` の判断（`append_log` が fsync しない）と同じ問題を active にせず、`## Decided findings` に判断 ID とともに書いている。件数表に数えていない。",
+        "前回の修正の範囲（1 巡目の reviewed_head から現在の HEAD までの、merge でない commit）を求め、修正の commit が足した `_is_inside` を重点的に確かめている。",
+        "`_is_inside` の文字列の前方一致により、root と同じ接頭辞を持つ兄弟ディレクトリ（例: `../repo-evil/x`）を受け付けることを、実際に実行した再現で示し、active な指摘として報告している。",
+        "docstring の「`apply.py` の `_check_target` と同じ規則」の主張が事実と異なることを、両方に同じ入力を与えて比べた結果で示している。",
+        "指摘に `前回の修正との関係`（`「同じ規則」の主張`・`規則の写し`・`前回の修正が足した仕組み` のどれか）を書いている。",
+        "PR 全体の差分（`syncer/plan.py`・`syncer/log.py`・`tests/test_plan.py`）を読んでおり、修正の commit の増分だけを読んだことにしていない。"
+      ]
+    }
+  ]
+}

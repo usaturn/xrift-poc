@@ -1,0 +1,88 @@
+{
+  "skill_name": "review-verify",
+  "evals": [
+    {
+      "id": 1,
+      "name": "variants-beyond-the-reported-input",
+      "prompt": "evals/verify-packet.md の PR #900 のレビュアー A・B の候補を確かめて、確認済みの一覧（mode: cycle）を作って。",
+      "expected_output": "M-1 と L-1 をまとめた指摘について、報告された inline link では再現しないが、参照リンク `- [x][ref]` などの別の入力で性質に反することを実行して確かめ、confirmed にする。",
+      "files": ["verify-packet.md"],
+      "expectations": [
+        "The merged finding lists variants beyond the reported `- [x](https://example.com)`, including the reference link `- [x][ref]`, each with a result and how it was checked.",
+        "The reference-link variant is recorded as violating the property after running it, and the verdict is confirmed with a reproduction (commands, place, conditions, result).",
+        "The basis says the reported inline-link input itself no longer reproduces, without turning the whole finding into not_reproduced."
+      ]
+    },
+    {
+      "id": 2,
+      "name": "statement-sites-in-other-documents",
+      "prompt": "evals/verify-packet.md の PR #900 のレビュアー A・B の候補を確かめて、確認済みの一覧（mode: cycle）を作って。",
+      "expected_output": "M-2 について、レビュアーが挙げた interfaces.rst だけでなく、README.md と .agents/skills/loop/SKILL.md も条件を述べる箇所として照合し、README.md を不一致にする。",
+      "files": ["verify-packet.md"],
+      "expectations": [
+        "M-2's statement_sites include README.md:12 marked inconsistent (it says finalize stops on any open checkbox).",
+        "M-2's statement_sites include docs/interfaces.rst:40 and .agents/skills/loop/SKILL.md:30, both consistent.",
+        "The README.md range that reviewer A declined is listed in coverage.closed (read in this cycle), not left for a later cycle."
+      ]
+    },
+    {
+      "id": 3,
+      "name": "unreproduced-claim-is-not-reproduced",
+      "prompt": "evals/verify-packet.md の PR #900 のレビュアー A・B の候補を確かめて、確認済みの一覧（mode: cycle）を作って。",
+      "expected_output": "M-3 は、`count_done` が X を数えることを実行して確かめ、not_reproduced にし、根拠を書く。",
+      "files": ["verify-packet.md"],
+      "expectations": [
+        "M-3 is not_reproduced with a basis that `count_done('- [X] a')` returns 1 when run.",
+        "M-3 has no reproduction object and no missing_checks."
+      ]
+    },
+    {
+      "id": 4,
+      "name": "missing-environment-is-unverified",
+      "prompt": "evals/verify-packet.md の PR #900 のレビュアー A・B の候補を確かめて、確認済みの一覧（mode: cycle）を作って。",
+      "expected_output": "H-1 は macOS が無く確かめられないので unverified にし、足りない確認を書く。not_reproduced にしない。",
+      "files": ["verify-packet.md"],
+      "expectations": [
+        "H-1 is unverified with missing_checks naming the macOS case-insensitive filesystem run.",
+        "H-1 is not not_reproduced, and the missing environment is not described as evidence against the claim."
+      ]
+    },
+    {
+      "id": 5,
+      "name": "duplicates-merge-with-every-source",
+      "prompt": "evals/verify-packet.md の PR #900 のレビュアー A・B の候補を確かめて、確認済みの一覧（mode: cycle）を作って。",
+      "expected_output": "M-1（A）と L-1（B）を 1 件にまとめ、両方の参照と元の重大度を残す。票の数を根拠にしない。",
+      "files": ["verify-packet.md"],
+      "expectations": [
+        "One verified finding has sources claude-opus-5-5#M-1@900000000000 and gpt-6.1-sol#L-1@900000000000.",
+        "reported_severities keep Medium for M-1 and Low for L-1.",
+        "The basis does not cite the number of reviewers as evidence."
+      ]
+    },
+    {
+      "id": 6,
+      "name": "no-adoption-or-severity-change",
+      "prompt": "evals/verify-packet.md の PR #900 のレビュアー A・B の候補を確かめて、確認済みの一覧（mode: cycle）を作って。",
+      "expected_output": "確認済みの一覧と要約に、採否（Fix・Skip など）、重大度の再評価、修正の設計を書かない。",
+      "files": ["verify-packet.md"],
+      "expectations": [
+        "The output contains no adoption state (fix, skip, hold) and no re-evaluated severity for any finding.",
+        "The output does not recommend or design a fix; any suggested fix from a reviewer is not judged correct or incorrect.",
+        "The accuracy record counts reviewer B's H-1 as unverified and M-3 as not_reproduced, and reviewer A as having missed no confirmed finding that B found."
+      ]
+    },
+    {
+      "id": 7,
+      "name": "fix-check-scope",
+      "prompt": "evals/verify-packet.md の「修正の確認の変形」について、修正の確認（mode: fix_check、from = PR head、to = 9100000…）を行って。",
+      "expected_output": "修正の差分・別の入力・条件を述べる箇所・書き足した説明だけを確かめる。count_done に同じ規則を当てたという説明は事実（同じ正規表現を使う）だと確かめ、リンクの定義やほかの別の入力の結果を書く。PR 全体は再レビューしない。",
+      "files": ["verify-packet.md"],
+      "expectations": [
+        "The fix is run against variants including `- [x][ref]` (now holds) and at least one more link form, with results.",
+        "The added comment's claim that count_done follows the same rule is checked and recorded with its result.",
+        "The fix-check does not re-report H-1 or M-3 from the cycle check and does not review unrelated files.",
+        "The output file is named verified/910000000000.fix-check.json and new findings, if any, have empty sources."
+      ]
+    }
+  ]
+}

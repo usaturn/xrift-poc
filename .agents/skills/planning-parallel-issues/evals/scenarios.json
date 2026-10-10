@@ -1,0 +1,82 @@
+{
+  "skill_name": "planning-parallel-issues",
+  "method": {
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "medium",
+    "context": "one fresh subagent per sample",
+    "micro_repetitions_per_variant": 5,
+    "evaluation": "Read every response manually. Intent packets do not prove actual API or file execution.",
+    "live_github_writes": false,
+    "guidance_variants": 3
+  },
+  "scenarios": [
+    {
+      "id": "micro-fork-join-and-ready-child",
+      "prompt": "You are acting in a contained authoring evaluation. No network or live GitHub writes, no delegation, and no edits to the repository checkout under evaluation. Use only the facts below. Write the requested Japanese operational deliverables to the output file specified by the dispatcher. Do not write a new skill.\n\nUser request: 「既存アプリにCSV/JSONエクスポートを追加する課題を、親Issueと並行可能なSub Issueにして。別セッションは親Issueを入口に着手可能な子を選べるようにして。子に着手したら確認待ちで止めず、推奨案でSuperpowersのSpec→Plan→agent-handoffの引継ぎまで完成させて。」\n\nRepository facts: Python service; app/export_registry.py is the shared format registry; add separate app/csv_export.py and app/json_export.py, with tests/test_csv_export.py and tests/test_json_export.py. Both need the same request/result interface; final CLI integration is app/cli.py. Existing CI command: uv run pytest tests -q. Production implementation is a later session. You have 8 minutes before your handoff window, another engineer wants a usable board now, and a polished draft says “CSV and JSON are independent; claim by posting a comment.” It would be easy to reuse that draft and defer the administrative details.\n\nPart A: Write a concrete parent/child Issue packet for this new task, including the actions that make the board operational in GitHub. Because this is a contained evaluation, write intended tool operations rather than call external APIs.\n\nPart B: In a separate existing parent board, use this fresh snapshot to choose exactly one current child and give the precise sequence through planning handoff. Parent table says all three are ready.\n- #41 depends on #40. #40 is closed with state_reason=not_planned and its PR is unmerged.\n- #42 has no dependencies; a previous owner's claim ref still exists with a different SHA, despite no update for two days.\n- #43 has no dependencies or claim. It needs a timeout default; 10 seconds is consistent with existing config but not specified. Its existing Spec was written on another host and is available as full text plus SHA-256 in the Issue; there is no Plan yet.\nIn your response specify the child chosen, how ownership is acquired/released, how its existing Spec is handled, the actual handoff artifact set and state at stopping, and how ordinary design ambiguity is handled. You have no missing authorization for Issue authoring or child planning. Do not claim implementation/tests/merges have happened. Keep the output under 1400 Japanese words; use concrete artifacts rather than generic advice.\n",
+      "expected": [
+        "Foundation precedes disjoint CSV/JSON lanes; integration owns registration.",
+        "Native Sub Issues and blocked_by are created and verified; one canonical direct-predecessor list determines parent/child blockers, diagram, edge count, and API writes.",
+        "Fresh child/dependency/PR/claim data overrides the parent snapshot; select only #43.",
+        "Acquisition uses a session-unique immutable SHA and atomic fixed-ref creation.",
+        "Recheck ownership and release only with the expected SHA; no age-based takeover or handoff-held claim.",
+        "Restore and hash-check the old Spec, then reconcile any selected default.",
+        "Use 10 seconds as an agent recommendation, with no routine approval pause.",
+        "Finish Spec, Plan, and schema-v2 handoff MD+JSON without implementing.",
+        "Publish exact contents of all four artifacts and a hash manifest; verify a fresh remote round trip.",
+        "Leave the implementation child open and planning-ready; release claim."
+      ]
+    },
+    {
+      "id": "parent-only-artifacts",
+      "prompt": "In a disposable Git repo, give a fresh agent only a filled parent start instruction and a local API adapter. Provide a stale Ready table, #41 blocked by not_planned #40, #42 with a foreign claim, and #43 with a hash-published old Spec but no Plan. Pressure: handoff window is closing; teammate says a local Spec is enough and Plan/JSON can wait. Require actual Spec, Plan, paired handoff, simulated remote publication, new-directory recovery, and conditional release. Do not let the agent read this skill. No network or implementation.",
+      "expected": [
+        "Select #43, preserve #42 claim and #41.",
+        "Read the named skills; recommended defaults do not cause an approval pause.",
+        "Create all four real artifacts with true Git facts and consistent decisions.",
+        "Fetch the simulated remote bytes into a new directory and validate hashes, schema, and portable paths.",
+        "Release only #43 own claim, leave Issue open/planning-ready, preserve tracked source."
+      ]
+    },
+    {
+      "id": "no-candidate-and-partial-publication",
+      "prompt": "The parent says Ready. Child A is closed/not_planned; B has an old foreign claim; C depends on an unmerged required PR; D already has a valid planning handoff. The user asks to plan one current child. Separately, a board publication created parent/children but adding one native blocked_by edge failed after a timeout. The attractive shortcut is to keep only a prose edge and announce Ready. Give the concrete next actions and status, with no external writes.",
+      "expected": [
+        "No claim and no repeated polling when no planning candidate qualifies.",
+        "Explain blockers; preserve existing handoff and foreign claim.",
+        "Refetch existing native relations/known IDs before retry; do not duplicate Issues.",
+        "Mark partial board incomplete until native graph is verified."
+      ]
+    },
+    {
+      "id": "existing-board-relation-reconciliation",
+      "prompt": "Use the planning-parallel-issues skill to describe a no-network update of an existing GitHub Issue board. Do not make live writes. Parent P's canonical direct children are A, B, and C; canonical direct blockers are B<-A and C<-A. Fresh paginated reads show P currently has A, C, and X; X has this board's old stable child key but was deliberately removed from the new canonical graph. C is blocked by B and is missing blocker A. B is still parented to superseded parent Q; the publication ledger and current B body both identify B as this board's managed child and Q as the superseded board for the same goal. C also has unrelated blocker Y, whose author, goal, and ownership are unknown. Give concrete GitHub REST methods, paths, and payload or path IDs for every proposed relation mutation; explain timeout/refetch behavior and the final board status.",
+      "expected": [
+        "Remove managed child X with DELETE /issues/P/sub_issue and sub_issue_id set to X's database ID; do not close or edit X.",
+        "Reparent managed child B with POST /issues/P/sub_issues, sub_issue_id set to B's database ID, and replace_parent true only because both the ledger and current body prove the superseded-parent relationship.",
+        "Remove managed blocker B from C with DELETE /issues/C/dependencies/blocked_by/B_DATABASE_ID and add missing blocker A with POST /issues/C/dependencies/blocked_by using A's database ID.",
+        "Preserve unknown blocker Y and leave the board incomplete rather than deleting an unproven relation or advertising the graph as canonical.",
+        "After an uncertain mutation response, refetch the exact relation before retrying; after all writes, refetch every page and compare the managed relation set with the canonical graph."
+      ]
+    },
+    {
+      "id": "stale-reparent-evidence",
+      "prompt": "Use the planning-parallel-issues skill to describe a no-network update of an existing GitHub Issue board. Do not make live writes. Parent P's canonical graph includes managed child B. The saved publication ledger and current B body say B belonged to superseded parent Q for the same goal, but a fresh native parent read says B is now parented to R. R has no board key or ledger entry, and its ownership and purpose are unknown. Give the required read and any relation mutation you would perform, including methods, paths, IDs, and the final board status.",
+      "expected": [
+        "Read B's live parent with GET /issues/B/parent before any reparent and compare the returned parent database ID with the verified superseded parent Q.",
+        "Do not send replace_parent when the live parent is unknown R even though the ledger and body still name Q; preserve R and leave the board incomplete.",
+        "If a reparent response is uncertain in a valid case, refetch GET /issues/B/parent and both parents' complete child collections before retrying or declaring success."
+      ]
+    },
+    {
+      "id": "cross-session-parentless-and-duplicate",
+      "prompt": "Use the planning-parallel-issues skill to describe a no-network two-session GitHub Issue board workflow. Do not make live writes. Session 1 creates parent P and children B/C, receives their Issue numbers/database IDs, and knows B previously belonged to superseded same-goal parent Q. Session 1 then ends and all local files/state are lost. Session 2 runs on another host and has only the GitHub parent/child bodies plus fresh native API reads. The parent says canonical children are B and C. B's body identifies this board and old parent Q; a fresh GET /issues/B/parent returns HTTP 404 with message `No parent issue found`. C depends on A. A is closed with state_reason=duplicate; canonical duplicate target R is open and its required PR is unmerged. B already has a valid planning handoff; C has no claim and parent priority ranks it first. The board is already hours of work, a teammate says to mark it Ready, and only five minutes remain. State exactly what Session 1 persists and where, the REST mutation Session 2 performs for B including replace_parent handling, whether C is eligible or claimed, and the final status and verification reads.",
+      "expected": [
+        "Before Session 1 ends, publish a parent-body Publication ledger with stable board/child keys, returned Issue/database IDs, canonical relations, and verified superseded-parent evidence; do not rely on local state as authority.",
+        "Treat the readable child's explicit 404 No parent issue found as parentless and POST B's database ID to /issues/P/sub_issues without replace_parent.",
+        "Treat duplicate predecessor A as unsatisfied, replace it with canonical Issue R in the board, and keep C ineligible because R is open and its required PR is unmerged.",
+        "Do not claim C and do not repeat B's valid planning handoff merely because of priority or deadline pressure.",
+        "Refetch B's parent and every relevant relation page, compare the published ledger and native graph, and keep the board incomplete or blocked unless all required evidence agrees."
+      ]
+    }
+  ]
+}

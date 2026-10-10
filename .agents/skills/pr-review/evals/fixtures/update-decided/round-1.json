@@ -1,0 +1,61 @@
+{
+  "schema": "review-records/v1",
+  "pr": {
+    "repository": "example/syncer",
+    "number": 7
+  },
+  "round": 1,
+  "reviewed_head": "{{H1}}",
+  "recorded_at": "2026-06-01T00:30:00Z",
+  "planner": {
+    "model": "eval-planner",
+    "runtime": "claude-code",
+    "agent_id": "eval-planner"
+  },
+  "seats": [
+    {
+      "review_file": "eval-reviewer",
+      "model": "eval-reviewer",
+      "runtime": "claude-code",
+      "file_head": "{{H1:12}}",
+      "mode": "Initial",
+      "rerun": true,
+      "merge_recommendation": "Approve"
+    }
+  ],
+  "decisions": [
+    {
+      "id": "eval-reviewer#M-1@{{H1:12}}",
+      "sources": [
+        "eval-reviewer#M-1@{{H1:12}}"
+      ],
+      "summary": "load_plan が worktree の外を指す変更対象を、計画の段階で受け付ける",
+      "locations": [
+        "syncer/plan.py:9"
+      ],
+      "state": "fix",
+      "change": "new",
+      "severity": "Medium",
+      "pr_relation": "introduced",
+      "reason": "計画を受け付けた後に apply_changes が途中で止まり、先に書いたファイルだけが残ることを現行 HEAD で確かめた。計画の段階で拒否する"
+    },
+    {
+      "id": "eval-reviewer#L-1@{{H1:12}}",
+      "sources": [
+        "eval-reviewer#L-1@{{H1:12}}"
+      ],
+      "summary": "append_log がログを書いた後に fsync しない",
+      "locations": [
+        "syncer/log.py:8"
+      ],
+      "state": "skip",
+      "change": "new",
+      "severity": "Low",
+      "pr_relation": "introduced",
+      "reason": "ログは調査用で、欠けても計画と適用の結果は変わらない。耐久性は要件に無い",
+      "revisit_when": "ログの欠落で計画か適用の結果が変わる再現が出たとき、または利用者が指定したとき"
+    }
+  ],
+  "outcome": "fixes_pushed",
+  "commit": "{{FIX}}"
+}

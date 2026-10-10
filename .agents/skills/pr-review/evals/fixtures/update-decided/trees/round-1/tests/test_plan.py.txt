@@ -1,0 +1,12 @@
+import json
+from pathlib import Path
+
+from syncer.plan import load_plan
+
+
+def test_load_plan_reads_changes(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    plan = tmp_path / "plan.json"
+    plan.write_text(json.dumps({"changes": [{"target": "docs/a.md", "text": "a"}]}), encoding="utf-8")
+    assert load_plan(plan, root) == {"docs/a.md": "a"}

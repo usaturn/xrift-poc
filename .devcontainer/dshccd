@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# DeepSeek Harness pi-tui の新規セッション用モデルを選ぶ。
+set -euo pipefail
+script="$(readlink -f -- "${BASH_SOURCE[0]}")"
+exec bash "$(dirname -- "$script")/dsh-launcher.bash" dshccd "$@"

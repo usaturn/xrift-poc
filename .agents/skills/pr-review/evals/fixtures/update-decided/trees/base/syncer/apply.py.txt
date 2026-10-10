@@ -1,0 +1,22 @@
+"""計画の変更対象を worktree へ書き込む。"""
+
+from pathlib import Path
+
+
+def _check_target(root: Path, target: str) -> Path:
+    """target を root からの相対パスとして解決し、root の外を指せば ValueError にする。"""
+    resolved = (root / target).resolve()
+    if not resolved.is_relative_to(root.resolve()):
+        raise ValueError(f"target escapes the worktree: {target}")
+    return resolved
+
+
+def apply_changes(root: Path, changes: dict[str, str]) -> list[Path]:
+    """changes の各 target に text を書き、書いたパスの一覧を返す。"""
+    written: list[Path] = []
+    for target, text in changes.items():
+        path = _check_target(root, target)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        written.append(path)
+    return written

@@ -1,0 +1,9 @@
+"""調査用のログを追記する。"""
+
+from pathlib import Path
+
+
+def append_log(path: Path, message: str) -> None:
+    """message を 1 行として path に追記する。"""
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(message + "\n")

@@ -1,0 +1,41 @@
+[theme.custom]
+# accent はフォーカス中ペインの枠やハイライトに使われる。
+# catppuccin 既定の青系は非フォーカス枠との差が小さいため、
+# ダーク背景で一目で分かる高コントラストの yellow に変える
+accent = "#f9e2af"
+
+[keys]
+prefix = "ctrl+k"
+
+# Spaces の git_name（長い branch）が切れにくい幅
+[ui]
+sidebar_width = 40
+sidebar_min_width = 28
+sidebar_max_width = 56
+# 状態を色だけに依存させず、記号でも判別できるようにする
+status_indicators = "symbols"
+# 複数ペインを並べたとき、各ペインの枠にエージェント名を表示して識別しやすくする
+show_agent_labels_on_pane_borders = true
+
+[ui.sidebar.spaces]
+# Space 間に空行を作らない（既定値だが意図として固定する）
+row_gap = 0
+rows = [
+  ["state_icon", "workspace"],
+  [
+    { token = "$git_clean",  fg = "#50FA7B" },
+    { token = "$git_staged", fg = "#E5A700" },
+    { token = "$git_dirty",  fg = "#FF5555" },
+  ],
+  [{ token = "$git_name" }],
+  [{ token = "$clock", fg = "#8BE9FD" }],
+]
+
+# 1 行目: 状態記号 + エージェント + 状態語 + タブ名
+# 2 行目: herdr-agent-task が投稿するタスク名
+[ui.sidebar.agents]
+row_gap = 0
+rows = [
+  ["state_icon", "agent", { token = "state_text", dim = true }, "tab"],
+  [{ token = "$task" }],
+]

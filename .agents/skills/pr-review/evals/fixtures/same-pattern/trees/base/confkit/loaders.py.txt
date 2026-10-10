@@ -1,0 +1,13 @@
+"""設定ファイルの読み込み。"""
+
+from pathlib import Path
+
+
+def read_pairs(path: Path) -> list[tuple[str, str]]:
+    """KEY=VALUE の行を、出現順の組の一覧として読む。"""
+    pairs: list[tuple[str, str]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            pairs.append((key.strip(), value.strip()))
+    return pairs

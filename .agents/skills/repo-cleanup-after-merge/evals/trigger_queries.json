@@ -1,0 +1,82 @@
+{
+  "skill_name": "repo-cleanup-after-merge",
+  "queries": [
+    {
+      "id": "q1",
+      "query": "PR が全て Merge されたことを確認して branch, worktree を整理し、ローカルを更新して",
+      "should_trigger": true,
+      "expected_terms": ["PR", "branch", "worktree", "整理"],
+      "notes": "本スキルの原型となった依頼"
+    },
+    {
+      "id": "q2",
+      "query": "マージ済みのブランチを消して、ローカルを origin/main に追従させて",
+      "should_trigger": true,
+      "expected_terms": ["マージ済み", "ブランチ", "origin/main"],
+      "notes": "branch 削除と origin/main 追従"
+    },
+    {
+      "id": "q3",
+      "query": "git worktree list に使い終わった作業ツリーが溜まっているので掃除して",
+      "should_trigger": true,
+      "expected_terms": ["worktree", "掃除"],
+      "notes": "worktree 整理を症状から述べた依頼"
+    },
+    {
+      "id": "q4",
+      "query": "/tmp に pr-review の残骸が残っているので片付けて",
+      "should_trigger": true,
+      "expected_terms": ["pr-review", "残骸"],
+      "notes": "ゲート A の対象である残骸掃除"
+    },
+    {
+      "id": "q5",
+      "query": "PR がマージされたのでリポジトリを整理して最新にして",
+      "should_trigger": true,
+      "expected_terms": ["マージ", "整理"],
+      "notes": "曖昧な言い回しの整理依頼"
+    },
+    {
+      "id": "q6",
+      "query": "Clean up the merged branches and stale worktrees, then update the local checkout to origin/main.",
+      "should_trigger": true,
+      "expected_terms": ["merged", "worktree", "origin/main"],
+      "notes": "英語表現"
+    },
+    {
+      "id": "q7",
+      "query": "この PR をレビューして指摘をまとめて",
+      "should_trigger": false,
+      "expected_terms": [],
+      "notes": "Negative: pr-review スキルの領域"
+    },
+    {
+      "id": "q8",
+      "query": "feature ブランチを origin/main に rebase してコンフリクトを解消して",
+      "should_trigger": false,
+      "expected_terms": [],
+      "notes": "Negative: 未マージ作業の rebase とコンフリクト解消"
+    },
+    {
+      "id": "q9",
+      "query": "新しい作業用の worktree を作って feature ブランチを切って",
+      "should_trigger": false,
+      "expected_terms": [],
+      "notes": "Negative: worktree の作成であって整理ではない"
+    },
+    {
+      "id": "q10",
+      "query": "バージョンを 0.1.0 に上げて公開リポジトリに反映してリリースして",
+      "should_trigger": false,
+      "expected_terms": [],
+      "notes": "Negative: version-export スキルの領域"
+    },
+    {
+      "id": "q11",
+      "query": "worktree を整理したいので、まず未コミットの変更を全部コミットして push して",
+      "should_trigger": false,
+      "expected_terms": [],
+      "notes": "Hard negative: worktree 整理の語を含むが、実体は commit と push の依頼"
+    }
+  ]
+}

@@ -1,0 +1,99 @@
+#!/usr/bin/env zsh
+
+set -euo pipefail
+
+#
+# pi-superagents のランチャー別設定を適用する共通ヘルパ。
+# install_beforehand.bash は本体と一緒に ~/.local/bin へ配置する。
+# リポジトリから直接実行する場合は .devcontainer/ 側を使う。
+#
+typeset -a PI_SUPERAGENTS_HELPER_CANDIDATES=(
+    "${0:A:h}/pi-superagents-exec.zsh"
+    "${HOME}/.local/bin/pi-superagents-exec.zsh"
+)
+typeset PI_SUPERAGENTS_HELPER=""
+for _candidate in "${PI_SUPERAGENTS_HELPER_CANDIDATES[@]}"; do
+    if [[ -f "${_candidate}" ]]; then
+        PI_SUPERAGENTS_HELPER="${_candidate}"
+        break
+    fi
+done
+unset _candidate
+if [[ -z "${PI_SUPERAGENTS_HELPER}" ]]; then
+    print -ru2 -- "[${0:t}] ERROR: pi-superagents-exec.zsh が見つかりません。"
+    print -ru2 -- ""
+    print -ru2 -- "リポジトリのルートで setup スクリプトを一度実行してください:"
+    print -ru2 -- ""
+    print -ru2 -- "  zsh scripts/setup_pi_superagents.zsh"
+    exit 1
+fi
+source "${PI_SUPERAGENTS_HELPER}"
+
+readonly PI_DIR="${PI_CODING_AGENT_DIR:-${HOME}/.pi/agent}"
+readonly MODELS_JSON="${PI_DIR}/models.json"
+
+#
+# pi + Command Code GOAT
+#
+# commandcode は pi の built-in provider ではないため、provider 定義は
+# models.json（bind mount した ~/.pi 側）にしか無い。
+# install_beforehand.bash は models.json を「無い場合のみ」配置する一方、
+# このランチャは毎回上書きで配置されるため、既存の models.json を持つ
+# 環境では「piccg はあるが provider は無い」状態になりうる。その場合 pi は
+# `Unknown provider "commandcode"` で落ちるので、先に案内して終了する。
+#
+# 判定できないとき（python3 が無い、models.json が読めない・壊れている）は
+# チェックをスキップして pi に委ねる。ランチャが余計に起動を妨げないため。
+#
+if command -v python3 >/dev/null 2>&1 && [[ -f "${MODELS_JSON}" ]]; then
+    if ! python3 - "${MODELS_JSON}" <<'PY'
+import json
+import sys
+
+try:
+    data = json.loads(open(sys.argv[1]).read())
+except Exception:
+    sys.exit(0)
+
+if not isinstance(data, dict):
+    sys.exit(0)
+
+providers = data.get("providers")
+if not isinstance(providers, dict):
+    sys.exit(0)
+
+sys.exit(0 if isinstance(providers.get("commandcode"), dict) else 1)
+PY
+    then
+        print -ru2 -- '[piccg] ERROR: provider "commandcode" is not defined in'
+        print -ru2 -- "  ${MODELS_JSON}"
+        print -ru2 -- ""
+        print -ru2 -- "リポジトリのルートで setup スクリプトを一度実行してください:"
+        print -ru2 -- ""
+        print -ru2 -- "  zsh scripts/setup_pi_commandcode_goat.zsh"
+        exit 1
+    fi
+fi
+
+#
+# 認証は models.json の apiKey フィールド（"$COMMANDCODE_API_KEY"）が
+# 実行時の環境変数を参照して解決する。pigo（auth.json 経由）と違い、
+# 実行のたびに COMMANDCODE_API_KEY が必要。
+#
+if [[ -z "${COMMANDCODE_API_KEY:-}" ]]; then
+    print -ru2 -- "[piccg] ERROR: COMMANDCODE_API_KEY is not set."
+    print -ru2 -- ""
+    print -ru2 -- "Command Code の API キーを export してから再実行してください:"
+    print -ru2 -- ""
+    print -ru2 -- '  export COMMANDCODE_API_KEY="..."'
+    print -ru2 -- ""
+    print -ru2 -- "キーは https://commandcode.ai/settings/keys で作成できます。"
+    exit 1
+fi
+
+pi_superagents_exec piccg \
+    --provider commandcode \
+    --model meta/muse-spark-1.3 \
+    --models "meta/muse-spark-1.3,meta/muse-spark-1.3-contributor" \
+    --thinking max \
+    "$@" || exit 1

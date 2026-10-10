@@ -1,0 +1,6 @@
+interface:
+  display_name: "Planning Parallel Issues"
+  short_description: "並行して進める Issue ボードを準備し、planning の handoff まで完了させる"
+  default_prompt: "$planning-parallel-issues を使い、親 Issue と並行して進める Sub Issue を準備するか、着手できる子を 1 つ選んで Spec、Plan、agent-handoff まで進めてください。"
+policy:
+  allow_implicit_invocation: true

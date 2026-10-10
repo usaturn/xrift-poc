@@ -1,0 +1,24 @@
+{
+  "repository": "example/confkit",
+  "number": 12,
+  "title": "環境ファイル・ラベル・--set の読み込みを足す",
+  "body": "## 概要\n\n`confkit/loaders.py` に 3 つの読み込みを足し、`confkit show` から使う。\n\n- `load_env_file`: `KEY=VALUE` の行を読む（空行と `#` で始まる行は無視する）\n- `load_labels`: `ラベル名=色` の行を読む\n- `parse_overrides`: `--set KEY=VALUE` を辞書にする\n\n## テスト\n\n`tests/test_loaders.py` を足した。\n",
+  "base_branch": "main",
+  "head_branch": "feat/loaders",
+  "steps": [
+    {
+      "label": "BASE",
+      "branch": "base",
+      "tree": "base",
+      "message": "confkit: KEY=VALUE の組を読む"
+    },
+    {
+      "label": "HEAD",
+      "branch": "head",
+      "tree": "pr",
+      "message": "loaders: 環境ファイル・ラベル・--set の読み込みを足す"
+    }
+  ],
+  "previous_review": null,
+  "comments": []
+}

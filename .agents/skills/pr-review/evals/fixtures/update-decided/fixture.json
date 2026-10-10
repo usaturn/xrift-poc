@@ -1,0 +1,56 @@
+{
+  "repository": "example/syncer",
+  "number": 7,
+  "title": "計画の JSON を読み込む load_plan を足す",
+  "body": "## 概要\n\n計画（JSON）の `changes` を読み、`{target: text}` を返す `load_plan` と、調査用のログを追記する `append_log` を足す。\n\n## 1 巡目のレビューへの対応\n\n- M-1: worktree の外を指す変更対象を、計画の段階で拒否するようにした（`_is_inside`。`apply.py` の `_check_target` と同じ規則で判定する）\n- L-1: 対応しない（判断は状況コメントを参照）\n",
+  "base_branch": "main",
+  "head_branch": "feat/plan-loader",
+  "steps": [
+    {
+      "label": "BASE",
+      "branch": "base",
+      "tree": "base",
+      "message": "syncer: 計画の変更を worktree に書き込む"
+    },
+    {
+      "label": "H1",
+      "branch": "head",
+      "tree": "round-1",
+      "message": "plan: 計画の JSON を読み込む"
+    },
+    {
+      "label": "MAIN2",
+      "branch": "base",
+      "tree": "main-2",
+      "message": "docs: README の誤記を直す"
+    },
+    {
+      "label": "MERGE",
+      "branch": "head",
+      "merge": "base",
+      "message": "Merge branch 'main' into feat/plan-loader"
+    },
+    {
+      "label": "FIX",
+      "branch": "head",
+      "tree": "fix",
+      "message": "plan: worktree の外を指す変更対象を計画の段階で拒否する（M-1）"
+    }
+  ],
+  "previous_review": "previous-review.md",
+  "comments": [
+    {
+      "id": 1000,
+      "author": "owner",
+      "association": "OWNER",
+      "text": "1 巡目のレビューをお願いします。"
+    },
+    {
+      "id": 1001,
+      "author": "owner",
+      "association": "OWNER",
+      "record": "round-1.json",
+      "body": "status-round-1.md"
+    }
+  ]
+}

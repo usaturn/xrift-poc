@@ -1,0 +1,9 @@
+{
+  "superagents": {
+    "modelTiers": {
+      "cheap": { "model": "opencode-go/deepseek-v4.1-flash", "thinking": "max" },
+      "balanced": { "model": "openai-codex/gpt-6.1-sol", "thinking": "xhigh" },
+      "max": { "model": "openai-codex/gpt-6.1-sol", "thinking": "max" }
+    }
+  }
+}

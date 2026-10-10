@@ -1,0 +1,19 @@
+from pathlib import Path
+
+from confkit.loaders import load_env_file, load_labels, parse_overrides
+
+
+def test_load_env_file_skips_comments(tmp_path: Path) -> None:
+    path = tmp_path / "app.env"
+    path.write_text("# comment\nNAME=demo\n\nPORT = 8080\n", encoding="utf-8")
+    assert load_env_file(path) == {"NAME": "demo", "PORT": "8080"}
+
+
+def test_load_labels(tmp_path: Path) -> None:
+    path = tmp_path / "labels.txt"
+    path.write_text("bug=red\nfeature=green\n", encoding="utf-8")
+    assert load_labels(path) == {"bug": "red", "feature": "green"}
+
+
+def test_parse_overrides() -> None:
+    assert parse_overrides(["MODE=fast", "LEVEL=2"]) == {"MODE": "fast", "LEVEL": "2"}

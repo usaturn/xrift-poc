@@ -1,0 +1,12 @@
+---
+description: Route application work to usaturn/maatlog and environment work to usaturn/maatlog-poc
+alwaysApply: true
+---
+
+# Repository ownership
+
+- アプリケーション（`src/`・`tests/`・`docs/` 等の公開内容）の Issue・worktree・検証・PR は `public/` submodule の実体 `usaturn/maatlog` が操作先。worktree は公開側の `origin/main` から作る
+- 開発環境（`.agents/`・`.claude/`・`tools/`・`scripts/` 等）の同じ操作は親 `usaturn/maatlog-poc` が操作先。worktree は親の `origin/main` から作る
+- 操作前に、親の `git remote get-url origin` が `usaturn/maatlog-poc` を指し、`git -C public remote get-url origin` が `.gitmodules` の `submodule.public.url`（`usaturn/maatlog`）と一致することを確認する
+- 親での通常 commit に `public` の gitlink を stage しない
+- 手順は `.agents/skills/repository-ownership/SKILL.md` に定義する

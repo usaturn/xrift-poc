@@ -1,0 +1,52 @@
+#!/usr/bin/env zsh
+
+set -euo pipefail
+
+typeset -a PI_SUPERAGENTS_HELPER_CANDIDATES=(
+    "${0:A:h}/pi-superagents-exec.zsh"
+    "${HOME}/.local/bin/pi-superagents-exec.zsh"
+)
+typeset PI_SUPERAGENTS_HELPER=""
+for _candidate in "${PI_SUPERAGENTS_HELPER_CANDIDATES[@]}"; do
+    if [[ -f "${_candidate}" ]]; then
+        PI_SUPERAGENTS_HELPER="${_candidate}"
+        break
+    fi
+done
+unset _candidate
+if [[ -z "${PI_SUPERAGENTS_HELPER}" ]]; then
+    print -ru2 -- "[${0:t}] ERROR: pi-superagents-exec.zsh が見つかりません。"
+    print -ru2 -- ""
+    print -ru2 -- "リポジトリのルートで setup スクリプトを一度実行してください:"
+    print -ru2 -- ""
+    print -ru2 -- "  zsh scripts/setup_pi_superagents.zsh"
+    exit 1
+fi
+source "${PI_SUPERAGENTS_HELPER}"
+
+pi_xai_require_oauth || exit 1
+
+#
+# Compatibility with the environment variable used by an older setup.
+#
+if [[ -z "${OPENCODE_API_KEY:-}" && -n "${OPENCODE_GO_API_KEY:-}" ]]; then
+    export OPENCODE_API_KEY="${OPENCODE_GO_API_KEY}"
+fi
+
+#
+# xai は pi の built-in provider で、grok-4.7 も組み込みのモデルカタログに
+# あるため pi-models.json への定義追加は不要。認証は XAI_API_KEY ではなく
+# SuperGrok / X Premium の OAuth（auth.json）を使う。
+#
+# grok-4.7 の thinking level は low / medium / high / xhigh で、他ランチャーの
+# max ではなく実際の最大値である xhigh を明示する。
+#
+# cheap / balanced tier の子 Pi は opencode-go/deepseek-v4.1-flash を使う。
+# opencode-go の資格情報は auth.json の api_key または OPENCODE_API_KEY で
+# 解決されるため、pigo / pigod と同じく起動前の認証チェックは行わない。
+#
+pi_superagents_exec pixg \
+    --provider xai \
+    --model grok-4.7 \
+    --thinking xhigh \
+    "$@" || exit 1

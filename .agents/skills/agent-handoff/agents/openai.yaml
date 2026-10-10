@@ -1,0 +1,6 @@
+interface:
+  display_name: "Agent Handoff"
+  short_description: "エージェント間で作業を移すときに handoff を書く・読む"
+  default_prompt: "他のエージェントの作業を続ける前、または自分の作業を他のエージェントに渡す前に、$agent-handoff を使ってください。"
+policy:
+  allow_implicit_invocation: true

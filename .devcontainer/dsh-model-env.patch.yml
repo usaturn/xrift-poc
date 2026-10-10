@@ -1,0 +1,10 @@
+# dshccd / dshgo の起動時だけ重ねる patch 層。実行中の provider / model を
+# モデル向けシェルへ DSH_* として渡すプラグイン（#577）を挿入する。
+#
+# name は絶対パスで、install_beforehand.bash が雛形のプレースホルダを実際の配置先
+# （${HOME}/.local/share/maatlog/dsh-model-env.mjs）へ置換して
+# ~/.local/bin/dsh-model-env.patch.yml を作る。~/.dsh 配下の patch・profile は
+# 書き換えないため、この層はランチャー経由の起動にだけ効く。
+- insert:
+    - id: maatlog-dsh-model-env
+      name: '__PLUGIN_PATH__'

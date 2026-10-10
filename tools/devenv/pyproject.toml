@@ -1,0 +1,34 @@
+[project]
+name = "maatlog-devenv"
+version = "0.0.0"
+requires-python = ">=3.14"
+dependencies = ["pydantic>=2.12,<3"]
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = ["pytest", "ruff", "pyright", "pyyaml", "types-pyyaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "../devenv_migration/tests", "../../.agents", "../review_triage/tests", "../agent_runner/tests", "../test_support/tests"]
+addopts = ["--import-mode=importlib"]
+pythonpath = ["../.."]
+
+[tool.pyright]
+pythonVersion = "3.14"
+typeCheckingMode = "strict"
+include = [".", "../devenv_migration", "../../.agents", "../review_triage", "../agent_runner", "../test_support"]
+extraPaths = ["../.."]
+exclude = ["**/.venv", "../../.agents/skills/*/evals/fixtures", "**/__pycache__", "**/.git", "**/.pytest_cache", "**/.ruff_cache"]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 119
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = ["F", "B", "I", "E", "W"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["tools"]
