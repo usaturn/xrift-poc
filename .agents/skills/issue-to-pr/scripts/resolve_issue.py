@@ -78,12 +78,15 @@ def resolve_issue(argument: str) -> dict[str, str | int]:
         "gh", "issue", "view", str(number), "--repo", repo, "--json", "number,title,body,state,url"
     )
     issue = Issue.model_validate_json(response)
-    expected_url = f"https://github.com/{repo}/issues/{number}"
-    if issue.number != number or issue.url != expected_url:
+    # GitHub のリポジトリ名は大文字小文字を区別しないため、照合は小文字で行い、返す名前は応答の URL のものにする
+    prefix = "https://github.com/"
+    expected_url = f"{prefix}{repo}/issues/{number}"
+    if issue.number != number or issue.url.lower() != expected_url.lower():
         raise ValueError("応答は指定した Issue ではありません（PR または URL/番号の不一致）")
     if issue.state != "OPEN":
         raise ValueError(f"Issue は closed です: {issue.url}")
-    return {"repo": repo, "number": number, "url": issue.url, "title": issue.title, "body": issue.body}
+    canonical = issue.url.removeprefix(prefix).removesuffix(f"/issues/{number}")
+    return {"repo": canonical, "number": number, "url": issue.url, "title": issue.title, "body": issue.body}
 
 
 def main() -> int:

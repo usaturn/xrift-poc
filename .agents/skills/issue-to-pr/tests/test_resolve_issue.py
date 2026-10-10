@@ -57,7 +57,7 @@ def gh_stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         "if args[:3] != ['issue', 'view', '42'] or '--repo' not in args:\n"
         "    sys.exit(64)\n"
         "repo = args[args.index('--repo') + 1]\n"
-        "if repo != os.environ['EXPECTED_REPO']:\n"
+        "if repo.lower() != os.environ['EXPECTED_REPO'].lower():\n"
         "    sys.exit(65)\n"
         "if os.environ.get('GH_FAIL'):\n"
         "    print('HTTP 404: not found', file=sys.stderr)\n"
@@ -77,8 +77,10 @@ def set_response(
     state: str = "OPEN",
     kind: str = "issues",
     number: int = 42,
+    canonical: str | None = None,
 ) -> None:
     monkeypatch.setenv("EXPECTED_REPO", repo)
+    shown = canonical or repo
     monkeypatch.setenv(
         "GH_RESPONSE",
         json.dumps(
@@ -87,7 +89,7 @@ def set_response(
                 "title": "Fix a regression",
                 "body": "Keep unrelated work intact.",
                 "state": state,
-                "url": f"https://github.com/{repo}/{kind}/{number}",
+                "url": f"https://github.com/{shown}/{kind}/{number}",
             }
         ),
     )
@@ -183,3 +185,23 @@ def test_reports_missing_issue_without_trying_another_repository(
     assert result.stdout == ""
     assert result.stderr.startswith("issue-to-pr:")
     assert "404" in result.stderr
+
+
+def test_accepts_repository_name_in_a_different_case(
+    env: EnvRepo, gh_stub: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    set_response(monkeypatch, "USATURN/XRift-Poc", canonical="usaturn/xrift-poc")
+    result = run("https://github.com/USATURN/XRift-Poc/issues/42", env.root, env)
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["repo"] == "usaturn/xrift-poc"
+    assert payload["url"] == "https://github.com/usaturn/xrift-poc/issues/42"
+
+
+def test_product_origin_in_lowercase_accepts_mixed_case_response(
+    env: EnvRepo, gh_stub: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    set_response(monkeypatch, "someone/my-world", canonical="Someone/My-World")
+    result = run("#42", location(env, "product"), env)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["repo"] == "Someone/My-World"
