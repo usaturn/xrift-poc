@@ -181,3 +181,21 @@ def test_cli_uses_xrift_poc_root_and_rejects_a_wrong_one(env: EnvRepo, tmp_path:
     environ = {**os.environ, "XRIFT_POC_ROOT": str(other.root)}
     result = run_cli(SCRIPT, env.root, environ)
     assert (result.returncode, result.stdout) == (1, "")
+
+
+def test_uninitialized_products_in_env_worktrees_stop(env: EnvRepo, tmp_path: Path) -> None:
+    inside = create_owned_worktree(env.root, env.root / ".worktrees", name="feature")
+    outside = create_owned_worktree(env.root, tmp_path / "elsewhere", name="feature")
+    for worktree in (inside, outside):
+        project = worktree / "worlds" / "w"
+        (project / "src").mkdir(parents=True)
+        assert summary(worktree / "worlds", env)[:2] == ("stop", "product_base")
+        for path in (project, project / "src"):
+            result = route_target.route(path, env.root)
+            assert (result.kind, result.code, result.repository) == ("stop", "product_uninitialized", None)
+            assert result.project_root == str(project.resolve())
+        # worktree の worlds/ の中に独立した Git があるときは、従来どおり unknown。
+        nested = worktree / "worlds" / "n"
+        nested.mkdir()
+        subprocess.run(["git", "init", "-q", str(nested)], check=True)
+        assert summary(nested, env)[:2] == ("stop", "unknown")

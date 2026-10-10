@@ -38,6 +38,9 @@ PRODUCT_KINDS = ("items", "worlds")
 EXIT_ERROR = 1
 EXIT_STOP = 3
 
+_BASE_REASON = "items/ か worlds/ そのものは制作物ではない。items/<name> か worlds/<name> を指定する"
+_UNINITIALIZED_REASON = "制作物の Git が初期化されていない。祖先の xrift-poc の Git を制作物の Git と取り違えない"
+
 Kind = Literal["env", "product", "stop"]
 
 
@@ -167,16 +170,14 @@ def route(path: Path, env_root: Path) -> Route:
         target = target.parent
     env_root = env_root.resolve()
     if target in _product_bases(env_root):
-        return _stop(
-            "product_base", "items/ か worlds/ そのものは制作物ではない。items/<name> か worlds/<name> を指定する"
-        )
+        return _stop("product_base", _BASE_REASON)
     git_root = _toplevel(target)
     project = _product_project(target, env_root)
     if project is not None:
         if git_root is None or not git_root.is_relative_to(project):
             return _stop(
                 "product_uninitialized",
-                "制作物の Git が初期化されていない。祖先の xrift-poc の Git を制作物の Git と取り違えない",
+                _UNINITIALIZED_REASON,
                 git_root=git_root,
                 project_root=project,
             )
@@ -185,6 +186,14 @@ def route(path: Path, env_root: Path) -> Route:
     if git_root is None or common is None:
         return _stop("not_git", "Git の作業ツリーではない")
     if common == env_root / ".git":
+        # env の feature worktree でも items/・worlds/ は制作物の置き場所（.gitignore の /worlds/ が効く）。
+        if target in _product_bases(git_root):
+            return _stop("product_base", _BASE_REASON, git_root=git_root)
+        worktree_project = _product_project(target, git_root)
+        if worktree_project is not None:
+            return _stop(
+                "product_uninitialized", _UNINITIALIZED_REASON, git_root=git_root, project_root=worktree_project
+            )
         if not _is_env_repository(origin_repository(git_root)):
             return _stop("env_origin_mismatch", f"origin が {ENV_REPOSITORY} ではない", git_root=git_root)
         return Route("env", "env", ENV_REPOSITORY, str(git_root), None, "開発環境のリポジトリ")
