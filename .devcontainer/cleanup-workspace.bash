@@ -14,6 +14,8 @@
 #
 # 汎用 cleanup の安全条件（Issue #152 共有仕様 §4。すべて AND で判断する）:
 #   - 未コミット変更のある git 作業ツリーを含むものは削除しない
+#   - git 作業ツリーの items/・worlds/ にデータ（親で無視したファイルを含む）があるものは削除しない
+#     （AGENTS.md「items/・worlds/ は片付けの対象にしない」。空のディレクトリだけなら対象にする）
 #   - 使用中（プロセスの cwd）と判定できるものは削除しない
 #   - 経過日数のみを削除条件にしない
 #   - 冪等に何度でも実行できる。削除した対象と件数を必ず出力する
@@ -127,11 +129,12 @@ release_registered_worktree() {
 # $1 配下に見つかった git 作業ツリーをすべて検査する。
 #   - git 状態が判定不能、または未コミット変更がある -> 1 を返す（呼び出し元は
 #     ディレクトリ全体を削除しない）
+#   - items/・worlds/ にデータ（無視されたファイルを含む）がある -> 1 を返す
 #   - 登録済みでクリーン -> git worktree remove で撤去する（失敗したら 1 を返す）
 #   - 未登録でクリーン（既に手動 remove 済みの抜け殻）-> 何もしない
 # すべて安全に処理できたら 0 を返す（この後ディレクトリ全体を rm -rf してよい）。
 resolve_git_worktrees_inside() {
-    local dir="$1" git_entry gitdir real_gitdir status_out
+    local dir="$1" git_entry gitdir real_gitdir status_out product_out
     local -a git_entries=()
 
     # 削除・remove で配下を変更しながら同時に find で辿ると事故りやすいため、
@@ -158,6 +161,19 @@ resolve_git_worktrees_inside() {
         }
         if [ -n "$status_out" ]; then
             echo "block (uncommitted changes): ${real_gitdir}" >&2
+            return 1
+        fi
+
+        # items/・worlds/ は親で無視しているため status --porcelain に出ないが、
+        # git worktree remove（--force の有無に関係なく）と rm -rf は中身ごと消す。
+        # 空のディレクトリは出ないので、空なら従来どおり撤去する。
+        # --untracked-files=no の設定では !! も出なくなるため、normal を明示する。
+        product_out="$(git -C "$real_gitdir" status --porcelain --ignored --untracked-files=normal -- items worlds 2>/dev/null)" || {
+            echo "block (unverifiable git state): ${real_gitdir}" >&2
+            return 1
+        }
+        if [ -n "$product_out" ]; then
+            echo "block (product data in items/ or worlds/): ${real_gitdir}" >&2
             return 1
         fi
 
@@ -209,7 +225,7 @@ cleanup_tmp_dirs() {
         fi
 
         if ! resolve_git_worktrees_inside "$dir"; then
-            echo "skip (dirty or unverifiable git worktree inside): ${dir}"
+            echo "skip (dirty, unverifiable, or product-data git worktree inside): ${dir}"
             skipped=$((skipped + 1))
             continue
         fi
