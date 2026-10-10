@@ -330,7 +330,7 @@ uv run --no-project python "$TOPLEVEL/.agents/scripts/review_records.py" validat
 {
   "schema": "review-records/v1",
   "pr": {
-    "repository": "usaturn/maatlog-poc",
+    "repository": "usaturn/xrift-poc",
     "number": 900
   },
   "round": 1,
@@ -557,7 +557,7 @@ planner は、巡ごとに新しい状況コメントを作る。前の巡のコ
 {
   "schema": "review-records/v1",
   "pr": {
-    "repository": "usaturn/maatlog-poc",
+    "repository": "usaturn/xrift-poc",
     "number": 900
   },
   "round": 2,

@@ -18,7 +18,7 @@ assert SPEC is not None and SPEC.loader is not None
 mod: Any = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(mod)
 
-REPO = "usaturn/maatlog-poc"
+REPO = "usaturn/xrift-poc"
 HEAD = "1" * 40
 PR = 900
 
@@ -51,13 +51,13 @@ def checks() -> dict[str, Any]:
     return {"head": HEAD, "commands": [{"argv": ["./scripts/ci/verify-devenv.sh"], "exit_code": 0}]}
 
 
-PUBLIC = "usaturn/maatlog"
+PUBLIC = "usaturn/example-world"
 GREEN = {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"}
 FAILED = {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "FAILURE"}
 RUNNING = {"__typename": "CheckRun", "status": "IN_PROGRESS", "conclusion": None}
 
 
-def public_record() -> dict[str, Any]:
+def product_record() -> dict[str, Any]:
     value = record()
     value["pr"]["repository"] = PUBLIC
     return value
@@ -134,7 +134,7 @@ class FakeGh:
         ]
 
 
-@pytest.mark.parametrize("repo", [REPO, "usaturn/maatlog"])
+@pytest.mark.parametrize("repo", [REPO, PUBLIC])
 def test_no_fix_result_requires_post_merge_confirmation_and_issue_update(repo: str) -> None:
     gh = FakeGh(repo=repo)
     value = record()
@@ -191,14 +191,14 @@ def test_invalid_pr_state_does_not_post_or_merge(condition: str) -> None:
         [GREEN, RUNNING],
     ],
 )
-def test_public_ci_still_running_waits_and_the_rerun_finalizes(rollup: list[Any]) -> None:
+def test_product_ci_still_running_waits_and_the_rerun_finalizes(rollup: list[Any]) -> None:
     gh = FakeGh(repo=PUBLIC)
     gh.view["statusCheckRollup"] = rollup
-    first = mod.finalize(public_record(), "状況", checks(), runner=gh)
+    first = mod.finalize(product_record(), "状況", checks(), runner=gh)
     assert first["outcome"] == "stopped" and first["wait_for"] == "ci"
     assert first["stop_reason"].startswith("external:") and gh.writes() == []
     gh.view["statusCheckRollup"] = [GREEN]
-    second = mod.finalize(public_record(), "状況", checks(), runner=gh)
+    second = mod.finalize(product_record(), "状況", checks(), runner=gh)
     assert second["outcome"] == "no_fix_needed" and "wait_for" not in second
     assert [call[1:3] for call in gh.writes()] == [("api", "--method"), ("pr", "merge"), ("issue", "close")]
 
@@ -213,10 +213,19 @@ def test_public_ci_still_running_waits_and_the_rerun_finalizes(rollup: list[Any]
         [{"__typename": "StatusContext", "state": "ERROR"}],
     ],
 )
-def test_public_ci_failure_or_absence_stops_without_waiting(rollup: list[Any]) -> None:
+def test_product_ci_failure_or_absence_stops_without_waiting(rollup: list[Any]) -> None:
     gh = FakeGh(repo=PUBLIC)
     gh.view["statusCheckRollup"] = rollup
-    result = mod.finalize(public_record(), "状況", checks(), runner=gh)
+    result = mod.finalize(product_record(), "状況", checks(), runner=gh)
+    assert result["outcome"] == "stopped" and "wait_for" not in result
+    assert gh.writes() == []
+
+
+def test_env_repository_also_requires_ci_results() -> None:
+    """親（環境）のPRもCIの結果が無ければ止まる。CI免除は無い。"""
+    gh = FakeGh(repo=REPO)
+    gh.view["statusCheckRollup"] = []
+    result = mod.finalize(record(), "状況", checks(), runner=gh)
     assert result["outcome"] == "stopped" and "wait_for" not in result
     assert gh.writes() == []
 
@@ -246,12 +255,6 @@ def test_wait_after_post_reruns_by_updating_the_same_comment() -> None:
         ("pr", "merge"),
         ("issue", "close"),
     ]
-
-
-def test_parent_ci_is_not_required_but_actual_verification_is() -> None:
-    gh = FakeGh()
-    gh.view["statusCheckRollup"] = []
-    assert mod.finalize(record(), "状況", checks(), runner=gh)["outcome"] == "no_fix_needed"
 
 
 def test_comment_rejection_cannot_be_bypassed_with_manual_post() -> None:
@@ -301,15 +304,15 @@ def test_merged_without_this_no_fix_record_is_stopped_but_merged(posted: str) ->
     assert gh.writes() == []
 
 
-@pytest.mark.parametrize("first_stop", ["mergeable", "draft", "public_ci"])
+@pytest.mark.parametrize("first_stop", ["mergeable", "draft", "product_ci"])
 def test_manual_merge_after_a_stop_before_posting_is_not_no_fix_needed(first_stop: str) -> None:
     """#597 指摘2の再現: 投稿前に止まり、その間に同じHEADで手動マージされた。"""
-    gh = FakeGh(repo=PUBLIC if first_stop == "public_ci" else REPO)
-    value = public_record() if first_stop == "public_ci" else record()
+    gh = FakeGh(repo=PUBLIC if first_stop == "product_ci" else REPO)
+    value = product_record() if first_stop == "product_ci" else record()
     key, state = {
         "mergeable": ("mergeable", "UNKNOWN"),
         "draft": ("isDraft", True),
-        "public_ci": ("statusCheckRollup", [RUNNING]),
+        "product_ci": ("statusCheckRollup", [RUNNING]),
     }[first_stop]
     gh.view[key] = state
     assert mod.finalize(value, "状況", checks(), runner=gh)["outcome"] == "stopped"

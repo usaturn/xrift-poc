@@ -40,7 +40,7 @@ PENDING_STATUSES = frozenset({"PENDING", "EXPECTED"})
 class Stop(Exception):
     """秘密を含まない、具体的な障害。
 
-    wait_for は、待てば解消する状態（ci: 公開CIの実行中・待機中、mergeable: GitHubがマージ可否を計算中）。
+    wait_for は、待てば解消する状態（ci: CIの実行中・待機中、mergeable: GitHubがマージ可否を計算中）。
     司令塔が待ってから同じ記録で再実行する。
     """
 
@@ -76,12 +76,10 @@ def check_evidence(checks: Mapping[str, Any], head: str) -> None:
 
 
 def check_ci(view: Mapping[str, Any], repo: str) -> None:
-    # CI免除は親だけ。公開側や他repositoryに広げない。
-    if repo == "usaturn/maatlog-poc":
-        return
+    # どのリポジトリのPRもCIの結果を確かめる（usaturn/xrift-poc はCIを必須にしている）。
     checks = view.get("statusCheckRollup")
     if not isinstance(checks, list) or not checks:
-        raise Stop("external: 公開PRのCI結果が無い")
+        raise Stop(f"external: {repo} のPRのCI結果が無い")
     passed = pending = False
     for check in cast(list[Any], checks):
         if not isinstance(check, dict):
@@ -92,19 +90,19 @@ def check_ci(view: Mapping[str, Any], repo: str) -> None:
             pending = True
         elif kind == "CheckRun":
             if check.get("conclusion") not in GREEN_CONCLUSIONS:
-                raise Stop("external: 公開PRのCIに失敗した検査がある")
+                raise Stop(f"external: {repo} のPRのCIに失敗した検査がある")
             passed |= check.get("conclusion") == "SUCCESS"
         elif kind == "StatusContext" and check.get("state") in PENDING_STATUSES:
             pending = True
         elif kind == "StatusContext" and check.get("state") == "SUCCESS":
             passed = True
         else:
-            raise Stop("external: 公開PRのCI状態が成功ではない")
+            raise Stop(f"external: {repo} のPRのCI状態が成功ではない")
     # 失敗はすぐ止める。未完了は、全件に失敗が無いときだけ待てば進む停止にする。
     if pending:
-        raise Stop("external: 公開PRのCIが完了していない（実行中・待機中）", wait_for="ci")
+        raise Stop(f"external: {repo} のPRのCIが完了していない（実行中・待機中）", wait_for="ci")
     if not passed:
-        raise Stop("external: 公開PRのCIに成功した検査が無い")
+        raise Stop(f"external: {repo} のPRのCIに成功した検査が無い")
 
 
 def check_view(view: Mapping[str, Any], head: str, *, allow_merged: bool = False) -> None:

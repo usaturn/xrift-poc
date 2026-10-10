@@ -2,7 +2,7 @@
 name: review-verify
 description: >-
   レビューディレクトリ（親の `reviews/<owner>/<repo>/#<PR>-<ブランチ>/`。パス・PR 番号・PR の URL で指定）にある全レビュアーの候補（`findings/` の候補一覧、無ければ `<model>.md`）を、現在の HEAD のコミット済みの内容と隔離した worktree で確かめてまとめ、確認済みの一覧（`verified/<HEAD>.json`）を作るときに使う。review-fix-planning が計画の前に呼ぶほか、「レビュー結果が本当か確かめて」「指摘を再現して確認済みの一覧を作って」で使う。push 前の修正の確認（`mode: fix_check`）にも使う。採否は決めない
-allowed-tools: Read, Grep, Glob, Bash(git *), Bash(gh *), Bash(mktemp *), Bash(rm *), Bash(test *), Bash(mv *), Bash(sha256sum *), Bash(date *), Bash(tar *), Bash(uv run --no-project python *review_findings.py *), Bash(uv run *), Write(reviews/*/*/*/verified/**), Edit(reviews/*/*/*/verified/**), Write(reviews/*/verified/**), Edit(reviews/*/verified/**), Write(public/reviews/*/verified/**), Edit(public/reviews/*/verified/**), Write(//tmp/review-fix-planning.*/**), Edit(//tmp/review-fix-planning.*/**)
+allowed-tools: Read, Grep, Glob, Bash(git *), Bash(gh *), Bash(mktemp *), Bash(rm *), Bash(test *), Bash(mv *), Bash(sha256sum *), Bash(date *), Bash(tar *), Bash(uv run --no-project python *review_findings.py *), Bash(uv run *), Write(reviews/*/*/*/verified/**), Edit(reviews/*/*/*/verified/**), Write(//tmp/review-fix-planning.*/**), Edit(//tmp/review-fix-planning.*/**)
 ---
 
 # レビュー候補の確認（review-verify）
@@ -28,7 +28,7 @@ allowed-tools: Read, Grep, Glob, Bash(git *), Bash(gh *), Bash(mktemp *), Bash(r
   TARGET_JSON=$(uv run --no-project python "$TOPLEVEL/.agents/scripts/review_target.py" review-dir "<引数>" --for-planning)
   ```
 
-  - 番号・URL は、PR のリポジトリの `<親の main worktree>/reviews/<owner>/<repo>/` の直下で `#<PR>-` で始まるディレクトリだけを見る。別のリポジトリのディレクトリを横断しない。旧配置（`reviews/#<PR>-*`・`public/reviews/#<PR>-*`）は、明示したパスでだけ使う。
+  - 番号・URL は、PR のリポジトリの `<親の main worktree>/reviews/<owner>/<repo>/` の直下で `#<PR>-` で始まるディレクトリだけを見る。別のリポジトリのディレクトリを横断しない。
   - 終了コードが 0 以外なら、理由を報告して止まる。usaturn 以外のオーナーの PR（終了コード 10）は、保存済みレビューも読まずに「対象外」と報告して止まる。保存済みレビューが無い（8）、候補が複数（9。候補の完全パスを示してパス指定を求める）、パスから PR を決められない（11）、PR が無い・確認できない（3〜7）を区別して報告する。
   - JSON から `REVIEW_DIR`（`.review_dir`）、`PR_REPO`（`.repository`）、`PR_NUMBER`（`.number`）、`PR_URL`（`.url`）、Git 操作の対象 `TARGET_REPO_ROOT`（`.target_root`）を取り出す。`target_root` が `null`（親・登録済み submodule の checkout が無い usaturn のリポジトリ）なら、再現の節で一時 clone を作って `TARGET_REPO_ROOT` にする。ディレクトリ名からリポジトリを自分で推測しない。
 - モードは 2 つ。
@@ -167,7 +167,7 @@ dispatch の終了コードは次のとおり。出力の JSON 行は `state`・
 - behavior: 別の入力・境界・失敗状態も実行する。
 - static: コミット済みの記述を読む。実行が必要な主張を static へ読み替えない。
 
-変更ファイルは道具が全パスを列挙する。各ファイルに適用する lint・型検査・ビルドの規則を定義元から読む。たとえば RST は [rst-core-style-guide](../rst-writer/references/rst-core-style-guide.md) と対象プロフィール、リポジトリの検証は AGENTS.md。規則をここに写さない。削除/rename/テストも検査欄から落とさない。コマンドを `to` の隔離 worktree で実行し、規則の定義元、コマンド、HEAD、終了コード、結果を `fix_evidence.files` に残す。削除や適用する検査が無い場合だけ理由付き not_applicable。環境不足・時間切れは unchecked と coverage.remaining。lint 規則が `--fix` を使う場合は隔離コピーでだけ実行し、実行前後の hash/diff も保存する。終了 0 でも修正が発生したらコミット済みの原文は規則違反なので failed の指摘にする。自動修正後のコピーを元のコミットの合格証拠にしない。
+変更ファイルは道具が全パスを列挙する。各ファイルに適用する lint・型検査・ビルドの規則を定義元から読む。たとえば親の検証は AGENTS.md の検証の節、制作物の検証は制作物の `package.json` の scripts と `xrift check <world|item> --build`。規則をここに写さない。削除/rename/テストも検査欄から落とさない。コマンドを `to` の隔離 worktree で実行し、規則の定義元、コマンド、HEAD、終了コード、結果を `fix_evidence.files` に残す。削除や適用する検査が無い場合だけ理由付き not_applicable。環境不足・時間切れは unchecked と coverage.remaining。lint 規則が `--fix` を使う場合は隔離コピーでだけ実行し、実行前後の hash/diff も保存する。終了 0 でも修正が発生したらコミット済みの原文は規則違反なので failed の指摘にする。自動修正後のコピーを元のコミットの合格証拠にしない。
 
 確認を始めたら、文書候補と主張と変更ファイルを道具で列挙してから照合する。
 

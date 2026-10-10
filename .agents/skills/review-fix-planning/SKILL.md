@@ -23,9 +23,9 @@ TARGET_JSON=$(uv run --no-project python "$TOPLEVEL/.agents/scripts/review_targe
 
 - JSONの `.review_dir` → `REVIEW_DIR`、`.repository` → `PR_REPO`、`.number` → `PR_NUMBER`、`.url` → `PR_URL`、`.target_root` → `TARGET_REPO_ROOT`。repoをディレクトリ名から独自に推測しない。helperは親の `TOPLEVEL` から使う。
 - 番号/URLは親main rootの `reviews/<owner>/<repo>/#<number>-*` だけを探索する。1件なら採用。無し（exit 8）は保存レビュー無し、複数（9）は完全パス一覧を報告し対象指定が不足したpermission障害とする。新規レビュー・修正を始めない。
-- 旧 `reviews/#<number>-*` / `public/reviews/#<number>-*` は利用者がそのパスを渡した場合だけ扱う。パスの識別・head branch不一致はexit 11で停止。
+- レビューディレクトリのパスの識別・head branch不一致はexit 11で停止。
 - exit 10は対象外owner、3〜7は存在・アクセス・認証・API・親rootの障害。stderrと具体的な不足を報告する。API失敗を「PRが存在しない」にしない。
-- `TARGET_REPO_ROOT` は親、確認済みpublic checkout、または他repoならnull。対象repositoryのroot/remoteを確認してから検証する。入力helperの成功はcommit/push/mergeの認可ではない。
+- `TARGET_REPO_ROOT` は親、確認済みの制作物のcheckout（items/<name>・worlds/<name>）、または他repoならnull。対象repositoryのroot/remoteを確認してから検証する。入力helperの成功はcommit/push/mergeの認可ではない。
 - 任意オプション: `hold-action=fix|skip`（Holdだけへの利用者の明示選択）、runnerのtemplate/configと `implement` / `self-review` / `fix-check` の割当。空欄は設定どおり、未指定を名指し・選択に作り替えない。役割CLIは `references/execution.md`。
 
 ## 1. 入力を全件読む
@@ -95,7 +95,7 @@ Unverifiedは必要確認を自力で続ける。Skip/Resolved/Holdへ隠さな�
 
 `superpowers:brainstorming` で経路を分類し、推奨案を選ぶ。すべての経路にSpecを残す。利用者から委任された通常判断は自分で決めて続ける。仕様・範囲・名指し採用の認可を捏造しない。
 
-親main rootは `uv run --no-project python "$TOPLEVEL/.agents/scripts/agent_tmp.py" root` で得る。Spec/Planはその `docs_draft/superpowers/` に保存し、commitしない。feature worktree、public、他repoのclone、`docs/superpowers/`には置かない。
+親main rootは `uv run --no-project python "$TOPLEVEL/.agents/scripts/agent_tmp.py" root` で得る。Spec/Planはその `docs_draft/superpowers/` に保存し、commitしない。feature worktree、制作物、他repoのclone、`docs/superpowers/`には置かない。
 
 Spec: `YYYY-MM-DD-<topic>-review-fixes-design.md`。全指摘と出典→判断対応、現行/base SHA、変更種類、重大度と再評価、状態/基準/理由、継承/変更/新根拠、未確認、Hold選択、必須と追加Fix、持ち越し、全読/実行範囲を残す。各Fixに原因/性質/同種範囲/検索結果、手法、採用しない変更、全violates変種・inconsistent記述の対象/受け入れ基準を書く。uncheckedなら不足と理由を書く。使用一覧、verdict件数、レビュアー表、plannerの正確なモデル、fix-checkの回数/ファイル/指摘、状況コメントURL、結果/停止理由も追記する。
 
@@ -126,7 +126,7 @@ Spec: `YYYY-MM-DD-<topic>-review-fixes-design.md`。全指摘と出典→判断�
 | `no_fix_needed` | Fix/Hold/Unverified無し、全件精読/関連確認/正式検証、最終状況投稿、同HEADのマージ確認、関連Issue更新まで完了 |
 | `stopped` | 自力で解消できないpermission/environment/externalの具体的障害。未完了項目・現在HEAD・local commit・未push/マージ状況・再開条件を報告 |
 
-修正不要なら短いSpec/Planを保存し、空commit・新機能・新レビューを作らない。正式検証のhead付き実行記録を作り `scripts/finalize.py` を使う。PRの全コメントに照合した状況投稿後、公開側CI green・draft/mergeable/HEADを再確認し、match-head-commitでマージ、MERGED/head読戻し、同repoのclosingIssueを更新してCLOSEDを確認する。admin/auto mergeやbranch削除はしない。すでに同HEADでマージ済みなら、このサイクルの自分のno_fix_needed記録が投稿済みのときだけ二重マージせずIssue更新を復旧する。記録が無い・食い違うまま手動マージされた場合はIssueを更新せず `merged: true` の `stopped`（マージ後は投稿できない。PR上の記録が無い・stoppedなら再実行でも解消しない）。結果が `wait_for`（`ci`: 公開CIの実行中・待機中、`mergeable`: GitHubがマージ可否を計算中）付きの `stopped` なら、`monitoring-long-tasks` で期限を決めて待ち、同じ記録・本文・実証ファイルで再実行する。期限を過ぎても解消しなければ `stopped` として報告する。操作要求/CLI exit0だけでは終了しない。マージ後のIssue更新失敗も `stopped`（マージ済みであることは別に報告）。
+修正不要なら短いSpec/Planを保存し、空commit・新機能・新レビューを作らない。正式検証のhead付き実行記録を作り `scripts/finalize.py` を使う。PRの全コメントに照合した状況投稿後、CI green・draft/mergeable/HEADを再確認し、match-head-commitでマージ、MERGED/head読戻し、同repoのclosingIssueを更新してCLOSEDを確認する。admin/auto mergeやbranch削除はしない。すでに同HEADでマージ済みなら、このサイクルの自分のno_fix_needed記録が投稿済みのときだけ二重マージせずIssue更新を復旧する。記録が無い・食い違うまま手動マージされた場合はIssueを更新せず `merged: true` の `stopped`（マージ後は投稿できない。PR上の記録が無い・stoppedなら再実行でも解消しない）。結果が `wait_for`（`ci`: CIの実行中・待機中、`mergeable`: GitHubがマージ可否を計算中）付きの `stopped` なら、`monitoring-long-tasks` で期限を決めて待ち、同じ記録・本文・実証ファイルで再実行する。期限を過ぎても解消しなければ `stopped` として報告する。操作要求/CLI exit0だけでは終了しない。マージ後のIssue更新失敗も `stopped`（マージ済みであることは別に報告）。
 
 新しい記録の停止は `stop_reason: "permission|environment|external: <具体的障害>"`。権限不足/明示認可不足、実行環境/正式検証不能、認証/通信/API/競合状態等を区別する。単なる通常判断・時間を使ったこと・計画完成は障害ではない。古いawaiting_approval/stopped_*記録はparserで読み、履歴を変換しないが、新実行の終点として書かない。
 

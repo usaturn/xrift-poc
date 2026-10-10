@@ -1,6 +1,6 @@
 # 通常requestによる役割実行と最終化
 
-`TOPLEVEL` は読んだskillのsource checkout root、`TARGET_REPO_ROOT` は対象commitを持つcheckout。helperをpublicや外部repoから探さない。Python 3.14+、既存tools/devenv projectを使う。設定loaderの優先順はtemplate→personal→明示assign、fallbackは維持する。存在しないagentや投影できない同モデル制約をselfへ黙って変更しない。
+`TOPLEVEL` は読んだskillのsource checkout root、`TARGET_REPO_ROOT` は対象commitを持つcheckout。helperを制作物や外部repoから探さない。Python 3.14+、既存tools/devenv projectを使う。設定loaderの優先順はtemplate→personal→明示assign、fallbackは維持する。存在しないagentや投影できない同モデル制約をselfへ黙って変更しない。
 
 ## 1. 修正の依頼
 
@@ -11,7 +11,7 @@
   "repository": "/absolute/target-checkout",
   "source_head": "1111111111111111111111111111111111111111",
   "revision": "1111111111111111111111111111111111111111",
-  "pr": {"repository": "usaturn/maatlog-poc", "number": 900},
+  "pr": {"repository": "usaturn/xrift-poc", "number": 900},
   "prompt": {
     "implement": "採用したFixの全文、守る性質、Spec/Plan、担当ファイル、受け入れコマンド、境界、結果をここに置く",
     "self-review": "同じPRのローカルcommitを通常pr-reviewで全体再レビューし、保存/cleanupまで確認する完全依頼",
@@ -106,9 +106,9 @@ uv run --project "$TOPLEVEL/tools/devenv" --locked python \
   --result-file "$FINAL_RESULT"
 ```
 
-helperの順序: 全コメントの照合→既存投稿helper→HEAD/draft/mergeable/CI再確認→match-head-commit付きの通常のmerge commit（`--merge`。squash/rebaseは使わない）→MERGED/mergedAt/head確認→同repoのclosingIssuesReferencesだけclose/読戻し。親maatlog-pocだけCI免除、公開maatlogや他repoはCI成功が必須。admin/auto/delete-branchは使わない。対象が同headで既にMERGEDなら、このサイクルの自分のコメントの記録が渡したno_fix_needed記録と一致するときだけ、投稿/mergeを重複せずIssue更新の復旧だけを行う。コメントが無い・記録が食い違う（stoppedに置き換えた等）ならIssueを更新せず `merged: true` のstopped。
+helperの順序: 全コメントの照合→既存投稿helper→HEAD/draft/mergeable/CI再確認→match-head-commit付きの通常のmerge commit（`--merge`。squash/rebaseは使わない）→MERGED/mergedAt/head確認→同repoのclosingIssuesReferencesだけclose/読戻し。どのrepoのPRもCI成功が必須（CI免除は無い）。admin/auto/delete-branchは使わない。対象が同headで既にMERGEDなら、このサイクルの自分のコメントの記録が渡したno_fix_needed記録と一致するときだけ、投稿/mergeを重複せずIssue更新の復旧だけを行う。コメントが無い・記録が食い違う（stoppedに置き換えた等）ならIssueを更新せず `merged: true` のstopped。
 
-外部操作前に結果の一時保存先を確保し、結果ファイルのdirectory/symlinkは拒否する。既存の通常ファイルへの結果更新は一括置換する。result_fileのoutcomeがno_fix_needed、exit0で初めて最終化完了。exit1はstopped/stop_reason、mergedフラグと更新済みissuesも残す。待てば進む停止はstop_reasonがexternalのまま `wait_for` を持つ。`ci`（公開CIのCheckRunが未完了、StatusContextがPENDING/EXPECTED。失敗が混ざればwait_for無しですぐ止まる）は `gh pr checks <PR> --repo <repo> --watch` を `monitoring-long-tasks` で監視して待ち、`mergeable`（UNKNOWN）は少し間を置き、どちらも同じ記録・本文・実証ファイルで再実行する。投稿後に止まった場合も、再実行は同じサイクルのコメントを更新して続きから進む。期限内に解消しなければstoppedとして報告する。状況本文の不備やPR上の過去の記録との照合失敗は `environment:`（照合失敗は判断IDを添える）、gh/APIの失敗は `external:`。exit2は入力/結果ファイルの障害。副作用後の保存失敗はstdoutのstoppedにも実際のmerged/issuesを残すので、exit2だけから未操作と推測しない。同HEADのMERGEDを観測済みなら後続エラーでもその事実を維持する。Issue更新失敗時はマージ済みを隠さず未完了と報告し、同HEADの同記録で復旧する。moving HEAD、投稿拒否、CI不足、未停止/欠損成果、保存/cleanup失敗を「指摘なし」にしない。別repo/URL不一致のIssueを閉じない。
+外部操作前に結果の一時保存先を確保し、結果ファイルのdirectory/symlinkは拒否する。既存の通常ファイルへの結果更新は一括置換する。result_fileのoutcomeがno_fix_needed、exit0で初めて最終化完了。exit1はstopped/stop_reason、mergedフラグと更新済みissuesも残す。待てば進む停止はstop_reasonがexternalのまま `wait_for` を持つ。`ci`（CIのCheckRunが未完了、StatusContextがPENDING/EXPECTED。失敗が混ざればwait_for無しですぐ止まる）は `gh pr checks <PR> --repo <repo> --watch` を `monitoring-long-tasks` で監視して待ち、`mergeable`（UNKNOWN）は少し間を置き、どちらも同じ記録・本文・実証ファイルで再実行する。投稿後に止まった場合も、再実行は同じサイクルのコメントを更新して続きから進む。期限内に解消しなければstoppedとして報告する。状況本文の不備やPR上の過去の記録との照合失敗は `environment:`（照合失敗は判断IDを添える）、gh/APIの失敗は `external:`。exit2は入力/結果ファイルの障害。副作用後の保存失敗はstdoutのstoppedにも実際のmerged/issuesを残すので、exit2だけから未操作と推測しない。同HEADのMERGEDを観測済みなら後続エラーでもその事実を維持する。Issue更新失敗時はマージ済みを隠さず未完了と報告し、同HEADの同記録で復旧する。moving HEAD、投稿拒否、CI不足、未停止/欠損成果、保存/cleanup失敗を「指摘なし」にしない。別repo/URL不一致のIssueを閉じない。
 
 ## 4. 既存PRだけに反映・後片付け
 

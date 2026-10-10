@@ -18,10 +18,10 @@ PR 全体の差分を隔離 worktree で読み、検証した指摘を助言と�
 ## 実行時の共通規則
 
 - アプリケーションのコード・テストを変更しない。レビュー対象 `$WT` 内にログ・キャッシュ・再現スクリプトを残さない。保存が済むまでは本文と候補は helper が返した draft だけへ書く。
-- `./scripts/ci/verify.sh` を再実行しない。関連 pytest、REPL、最小再現はよい。このレビューの規則は `AGENTS.md` の通常の検証入口より優先する。
+- `./scripts/ci/verify-devenv.sh` を再実行しない。関連 pytest、REPL、最小再現はよい。このレビューの規則は `AGENTS.md` の通常の検証入口より優先する。
 - `git clean`、強制 checkout/reset、既存 worktree の再利用をしない。セッション・pinned ref の削除は helper の cleanup だけ。拒否を手動削除で代行しない。
-- 保存先は親の main worktree の `reviews/<owner>/<repo>/#<PR>-<branch>/`。PR 番号は親 origin の repo、URL はその repo を使う。別 repo の同じ番号を探さない。公開側・外部 PR も保存先と対象 checkout を混同しない。
-- 自モデルの既存レビューは `previous_review` の snapshot だけを読む。ライブ destination、他モデルのレビュー本文は、重複確認・重点観点・反証を含むどんな目的でも読まない。親の旧配置・公開側 reviews・PR に同梱された reviews も同じ。
+- 保存先は親の main worktree の `reviews/<owner>/<repo>/#<PR>-<branch>/`。PR 番号は親 origin の repo、URL はその repo を使う。別 repo の同じ番号を探さない。制作物・外部 PR も保存先と対象 checkout を混同しない。
+- 自モデルの既存レビューは `previous_review` の snapshot だけを読む。ライブ destination、他モデルのレビュー本文は、重複確認・重点観点・反証を含むどんな目的でも読まない。PR に同梱された reviews も同じ。
 - PR head と reviewed commit を区別する。通常は同じ SHA。明示 `--review-commit` は未 push でもよいが full SHA を渡し、その object を持つ main checkout を `--source-root` に指定する。linked worktree の object はmain checkoutと共有される。
 - 通常は `<model>.md`、明示 commit は `<model>-commit-<fullSHA>.md`。同じ PR・model・モード・対象の更新は同じファイルを上書きする。通常 head・指定 commit・別 commit の結果は混ぜない。パスを手で組み立てない。
 - 初回も更新も、prepare が返した merge-base から reviewed commit までの**全体 diff**を読む。commit 単体差分、前回からの増分、動いている PR の live diff を代用しない。rebase 後も同じ。
@@ -82,7 +82,7 @@ Issue・仕様に無い機能や形式を受け入れ条件に足して、実装
 
 1. **精読**: 指摘に関わる実コードパスを最後まで読む（途中の早期 return・ガード・呼び出し規約を見落とさない）
 2. **反証試行**: 「この指摘が誤りだとしたらどこか」を明示的に検討する（既存のガード、テストによる固定、ドキュメント化された意図的トレードオフ等）。要件の指摘では、承認済みの仕様変更・対象外・別の場所での実装でないかも確かめる。反証に成功したら報告しない
-3. **実行検証**: 実行時の挙動についての Critical・High・Medium の候補は、worktree 側のコードで最小再現を実行して確かめる（関連する pytest、REPL、最小再現スクリプト）。それ以外も、挙動が不確かなら実行する。`$WT` の中にファイルを作らず、一時ファイルは追加スクラッチに置く。テストの実行方法が分からなくても、最小再現スクリプトで確かめる。`./scripts/ci/verify.sh` は実行しない。外部からの入力・新しい作業環境を扱うコードでは、入力・環境の変化も試す（「実行による確認と判断の記録」）。一時ホームが必要な場合は `env HOME="$tmpdir" ...` のワンショットだけを使い、永続シェルへ `export HOME=...` してはならない（後続の `gh` が別ホームを見て未認証になる）
+3. **実行検証**: 実行時の挙動についての Critical・High・Medium の候補は、worktree 側のコードで最小再現を実行して確かめる（関連する pytest、REPL、最小再現スクリプト）。それ以外も、挙動が不確かなら実行する。`$WT` の中にファイルを作らず、一時ファイルは追加スクラッチに置く。テストの実行方法が分からなくても、最小再現スクリプトで確かめる。`./scripts/ci/verify-devenv.sh` は実行しない。外部からの入力・新しい作業環境を扱うコードでは、入力・環境の変化も試す（「実行による確認と判断の記録」）。一時ホームが必要な場合は `env HOME="$tmpdir" ...` のワンショットだけを使い、永続シェルへ `export HOME=...` してはならない（後続の `gh` が別ホームを見て未認証になる）
 4. **同種箇所**: 欠陥を確かめたら、同じパターンを PR の差分の全ファイルで検索し、該当箇所を 1 件の指摘にまとめる
 5. **期限確認**: phase 境界・呼び出し復帰時・委譲開始前・新規候補や実行検証の開始前に現在時刻を確認し、調査期限と委譲期限（絶対期限・実質無進捗 5 分）を再評価する。期限超過後は新規調査を増やさず保存へ進む
 

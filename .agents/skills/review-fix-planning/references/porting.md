@@ -29,9 +29,9 @@ helperは位置をresolveして `parents[4]` から共通module/runnerを読む�
 
 採否（H/D1/N/Hold/Unverified/Skip・安全性3項目）、3結果、1回レビューの上限、同原因・継承の規則は共通。変えるのは以下だけ:
 
-- 対象PR/レビューdirectory/cloneの解決。MaatLogではparent main rootのreviews/<owner>/<repo>、番号は親origin、他usaturn repoはtemporary clone。
+- 対象PR/レビューdirectory/cloneの解決。xrift-pocではparent main rootのreviews/<owner>/<repo>、番号は親origin、他usaturn repoはtemporary clone。
 - owner範囲（review_target.PLANNING_OWNERSはusaturnのみ）、fork拒否、旧レビュー配置は明示パスだけ。
-- Spec/Planとscratch保存、所有repository、既存PR head branchへの反映、正式検証入口/必要CI。**親maatlog-pocのCI免除を他repositoryへ広げない。**
+- Spec/Planとscratch保存、所有repository、既存PR head branchへの反映、正式検証入口/必要CI。**xrift-pocはどのPRもCIを確かめる。**
 - root取得helperとPython project、runtimeモデル/Requestの測定。変更対象とhelper source rootを分ける。
 
 旧loop callerの移行は #570 の作業。private文字列でこのスキルを別手順へ戻さない。共通Request/Receipt/Resultと識別情報の形式を移植のために勝手に変えない。
@@ -48,5 +48,5 @@ helperは位置をresolveして `parents[4]` から共通module/runnerを読む�
 1. 実体のtests、共通parser testsとlayoutを対象repositoryのPython projectで実行する。fake gh/adapterと一時Gitだけで、実PRをmergeするテストにしない。
 2. 記録無しPRのfoldはrounds空/exit0。旧awaiting_approval/stopped_*と新stoppedの読取、理由不足の拒否を確認する。
 3. evals/decision-packet.md・safety-packet.mdとpressureの無スキル/旧版/新版本文のfresh応答を目視採点する。過去validation.mdは履歴、新3結果の採点はevals/2026-10-08-rework.md。fixed wordingを通常pytestで照合しない。
-4. role実行でself/外部/混合、2回目拒否、成果欠落/停止未確認/保存先変更を確認する。finalizerでmoving HEAD、公開CI不足、手動MERGED、Issue更新失敗が誤完了にならないことをfake ghで確かめる。
+4. role実行でself/外部/混合、2回目拒否、成果欠落/停止未確認/保存先変更を確認する。finalizerでmoving HEAD、CI不足、手動MERGED、Issue更新失敗が誤完了にならないことをfake ghで確かめる。
 5. スキルの参照実在・frontmatter/JSON・実行可能なコードblockを検査し、repositoryの正式入口を実行する。
