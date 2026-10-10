@@ -23,4 +23,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends zsh bubblewrap ripgrep
           zsh --version
+      # pi の起動スクリプトのテストは実物の pi を使う。pi は node 上で動く（1.1.0 は node >=22.19.0）。Dev Container と同じ Node.js 24 を使う。
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      # CI は確かめた版に固定する。Dev Container の pi を更新したら合わせる。
+      # install_beforehand.bash と同じく --ignore-scripts で入れる。
+      - run: |
+          npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.1.0
+          pi --version
+      # bubblewrap は非特権 user namespace を使う。ubuntu-latest は AppArmor で制限しているため解除する。
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: ./scripts/ci/verify-devenv.sh
