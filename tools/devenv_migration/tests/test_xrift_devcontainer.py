@@ -55,6 +55,23 @@ def test_initialize_stops_when_xrift_is_not_a_directory(tmp_path: Path) -> None:
     assert (home / ".xrift").read_text(encoding="utf-8") == "x\n"
 
 
+def test_initialize_stops_when_xrift_is_a_symlink_and_names_the_cause(tmp_path: Path) -> None:
+    # ディレクトリへのシンボリックリンク（dotfiles 管理）も拒否する。理由の表示が「ディレクトリではない」だけだと、
+    # 実体がディレクトリの利用者には原因が分からないので、シンボリックリンクであることを表示に含める。
+    home = tmp_path / "home"
+    real = tmp_path / "dotfiles" / "xrift"
+    real.mkdir(parents=True)
+    (real / "config.json").write_text('{"synthetic":"not-a-secret"}\n', encoding="utf-8")
+    home.mkdir()
+    (home / ".xrift").symlink_to(real, target_is_directory=True)
+    result = run_initialize(home)
+    assert result.returncode != 0
+    assert str(home / ".xrift") in result.stderr
+    assert "symlink" in result.stderr
+    assert os.readlink(home / ".xrift") == str(real)
+    assert (real / "config.json").read_text(encoding="utf-8") == '{"synthetic":"not-a-secret"}\n'
+
+
 def _strip_jsonc(text: str) -> str:
     """文字列の中を除いて // と /* */ のコメントを取り除き、末尾のカンマを外す。"""
     out: list[str] = []

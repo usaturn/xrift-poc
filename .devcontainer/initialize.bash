@@ -25,6 +25,6 @@ touch \
 if [ ! -e "${HOME}/.xrift" ] && [ ! -L "${HOME}/.xrift" ]; then
   mkdir -m 700 "${HOME}/.xrift"
 elif [ ! -d "${HOME}/.xrift" ] || [ -L "${HOME}/.xrift" ]; then
-  echo "initialize: ${HOME}/.xrift exists but is not a directory; leaving it unchanged." >&2
+  echo "initialize: ${HOME}/.xrift exists but is a symlink or not a directory; leaving it unchanged." >&2
   exit 1
 fi
