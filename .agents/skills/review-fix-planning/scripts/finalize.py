@@ -76,7 +76,8 @@ def check_evidence(checks: Mapping[str, Any], head: str) -> None:
 
 
 def check_ci(view: Mapping[str, Any], repo: str) -> None:
-    # どのリポジトリのPRもCIの結果を確かめる（usaturn/xrift-poc はCIを必須にしている）。
+    # どのリポジトリのPRもCIの結果を確かめる。GitHub側でマージの条件にしているかはリポジトリの設定による
+    # （usaturn/xrift-poc のブランチ保護は未設定。PORTING.md の未実施を参照）。
     checks = view.get("statusCheckRollup")
     if not isinstance(checks, list) or not checks:
         raise Stop(f"external: {repo} のPRのCI結果が無い")

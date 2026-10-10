@@ -87,6 +87,16 @@
 - エージェント、XRift CLI、XRift 公式スキルの更新は、README の「更新」の節に書いてある（手順を二重に書かない）。更新したら、この文書の「検証の記録」に確かめた版を追記する
 - 移植元の修正の取り込み: 移植元の `git log <前回の SHA>..origin/main -- <パス>` で対象の変更を確かめ、同じパスに手で適用する。適用した移植元の SHA をこの文書に追記する
 
+## CI をマージの条件にする（未実施）
+
+Spec 2 章の決定（PR のマージには CI の green を必須にする）は、GitHub 側の設定がまだ無い。2026-10-10 の時点で `gh api repos/usaturn/xrift-poc/branches/main/protection` は 404（Branch not protected）、`gh api repos/usaturn/xrift-poc/rulesets` は `[]` だった。リポジトリの設定は人間が行うので、初回の CI の実行の後に、利用者が次の手順で設定する。
+
+1. PR で `.github/workflows/ci.yml` が実行され、job `devenv` の check が表示されることを確かめる
+2. GitHub の Settings → Rules → Rulesets（またはブランチ保護）で、`main` に「Require status checks to pass」を設定し、`devenv` を必須の check にする
+3. `gh api repos/usaturn/xrift-poc/rulesets`（ブランチ保護なら `gh api repos/usaturn/xrift-poc/branches/main/protection`）で設定を確かめる
+
+設定するまでは、README・`AGENTS.md` の手順どおり CI の green を確かめてからマージする。review-fix-planning の finalize は、GitHub 側の設定にかかわらず、どのリポジトリでも CI の結果を確かめる。
+
 ## 検証の記録（2026-10-10）
 
 この Dev Container（Ubuntu 26.04、Node.js v24.21.0、npm 11.19.0、uv、Python 3.14）で確かめた。作業は `tmp/agents/` の一時ディレクトリで行い、制作物・fixture・ログはこのリポジトリに入れていない。エージェントの確認は、一時の `HOME`・`CODEX_HOME` を使い、モデルへは送信していない。
@@ -173,6 +183,7 @@ fixture の親を `XRIFT_POC_ROOT` にして実行した。最終レビューの
 - ホストでの Dev Container の新規作成とセットアップの完走、再構築（`${containerWorkspaceFolder}` が `XRIFT_POC_ROOT` に展開されることを含む）
 - ホストのブラウザでのプレビュー
 - アカウントを使う `xrift login`・`xrift whoami`・アップロード（`xrift upload`）
+- `main` で CI の `devenv` をマージの必須条件にする設定（上の「CI をマージの条件にする」。初回の CI の後に利用者が行う）
 - Cursor CLI（`agent`）・Grok Build・DSH の読み込み: モデルに送信せずに確かめる方法が見つからなかった。`--help` に該当の確認コマンドが無い。Cursor・Grok は `.claude/skills`・`.agents/skills` を読む見込み、DSH は未確認。手動で確かめるときは、制作物の中で各エージェントを起動し、スキルの一覧（`/skills` など）に `xrift-world` と `repository-ownership` が出るかを見る
 - Devin の指示（`AGENTS.md`）の読み込み
 - pi の指示の読み込みの実行（実装の確認だけ）

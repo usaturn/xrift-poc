@@ -25,7 +25,7 @@ TARGET_JSON=$(uv run --no-project python "$TOPLEVEL/.agents/scripts/review_targe
 - 番号/URLは親main rootの `reviews/<owner>/<repo>/#<number>-*` だけを探索する。1件なら採用。無し（exit 8）は保存レビュー無し、複数（9）は完全パス一覧を報告し対象指定が不足したpermission障害とする。新規レビュー・修正を始めない。
 - レビューディレクトリのパスの識別・head branch不一致はexit 11で停止。
 - exit 10は対象外owner、3〜7は存在・アクセス・認証・API・親rootの障害。stderrと具体的な不足を報告する。API失敗を「PRが存在しない」にしない。
-- `TARGET_REPO_ROOT` は親、確認済みの制作物のcheckout（items/<name>・worlds/<name>）、または他repoならnull。対象repositoryのroot/remoteを確認してから検証する。入力helperの成功はcommit/push/mergeの認可ではない。
+- `TARGET_REPO_ROOT` は親のPRなら親のcheckout、制作物や他repoのPRならnull。nullなら下の再現・実装の前に一時cloneを作って使い、`items/<name>`・`worlds/<name>` のcheckoutは使わない。対象repositoryのroot/remoteを確認してから検証する。入力helperの成功はcommit/push/mergeの認可ではない。
 - 任意オプション: `hold-action=fix|skip`（Holdだけへの利用者の明示選択）、runnerのtemplate/configと `implement` / `self-review` / `fix-check` の割当。空欄は設定どおり、未指定を名指し・選択に作り替えない。役割CLIは `references/execution.md`。
 
 ## 1. 入力を全件読む
