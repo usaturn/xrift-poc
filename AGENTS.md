@@ -108,7 +108,7 @@ xrift-poc は、XRift のワールドとアイテムを作るための開発環�
 - 親の変更は、最新の `origin/main` から feature branch の worktree を作り、PR で取り込む。`main` へ commit しない
 - 制作物の変更は、その制作物のリポジトリの既定ブランチから branch を作る。制作物は親の main checkout の下で扱う（親の feature worktree の中では扱わない）。worktree は制作物のディレクトリの中（例: `worlds/<name>/.worktrees/<branch>`）に作り、`.worktrees/` を制作物の `.git/info/exclude` に加える。制作物の外（親の外）に作った worktree は、共有の指示とスキルを読めない
 - ユーザの指示なしに commit しない。ただし `.claude/worktrees/`・`.worktrees/`・`/tmp/` 配下の worktree branch では commit と PR 作成を許可する
-- `superpowers:executing-plans` または `superpowers:subagent-driven-development` で更新するときは、worktree で commit し、PR まで作成する
+- `superpowers:executing-plans` または `superpowers:subagent-driven-development` で更新するときは、worktree で commit し、PR まで作成する。ただし Git 未初期化の制作物には当てはめない（上記「編集前の確認」を参照）
 - 親の PR は CI（`.github/workflows/ci.yml`）の green を確認してからマージする。review-fix-planning の finalize はどのリポジトリでも CI の結果を確認する。CI の無い制作物のリポジトリでは停止して報告する
 - デプロイとプロビジョニングは人間が行う。XRift への公開（`xrift upload world`・`xrift upload item`）は、利用者が明示的に指示したときだけ実行する。セキュリティチェックを省略するオプションを標準の手順にしない
 
@@ -140,8 +140,10 @@ rm / rmdir の削除対象にシェル変数を使う場合は、各変数に ${
 ## 編集前の確認（必須）
 
 - `git status --porcelain` と `git worktree list` を確認する
-- 親の main checkout（`$XRIFT_POC_ROOT`）では編集しない。親の変更は worktree で行う
-- 修正は、対象リポジトリの最新の既定ブランチから superpowers:using-git-worktrees で worktree を作り、PR まで行う（ユーザの指示なしに commit しないの **例外** である）
+- 親の追跡ファイル（開発環境）は、main checkout（`$XRIFT_POC_ROOT`）では編集しない。親の変更は worktree で行う。制作物（`items/<name>`・`worlds/<name>`）は main checkout の下で扱う
+- 親の修正は、最新の `origin/main` から superpowers:using-git-worktrees で worktree を作り、PR まで行う（ユーザの指示なしに commit しないの **例外** である）
+- Git 管理された制作物（`route_target.py` が `product`）の修正は、その制作物の最新の既定ブランチから、制作物のディレクトリの中（例: `worlds/<name>/.worktrees/<branch>`）に worktree を作り、その制作物のリポジトリの PR まで行う
+- Git 未初期化の制作物（`stop`・`product_uninitialized`）はその場で編集し、commit・worktree・PR を作らない。Git の設定（`git init`・`git remote add origin <URL>`）を利用者に説明する
 
 ## エージェント運用
 
