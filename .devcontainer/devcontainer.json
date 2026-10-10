@@ -15,7 +15,8 @@
 		"source=${localEnv:HOME}/.config/gh,target=/home/vscode/.config/gh,type=bind,consistency=cached",
 		"source=${localEnv:HOME}/.cursor,target=/home/vscode/.cursor,type=bind,consistency=cached",
 		"source=${localEnv:HOME}/.config/cursor,target=/home/vscode/.config/cursor,type=bind,consistency=cached",
-		"source=${localEnv:HOME}/.config/gcloud,target=/home/vscode/.config/gcloud,type=bind,consistency=cached"
+		"source=${localEnv:HOME}/.config/gcloud,target=/home/vscode/.config/gcloud,type=bind,consistency=cached",
+		"source=${localEnv:HOME}/.xrift,target=/home/vscode/.xrift,type=bind,consistency=cached"
 	],
     // 既定の loginInteractiveShell は ~/.zshrc を読むため herdrstart が走り、
     // herdr を起動したままハングする。残留シェルが herdr サーバを
@@ -26,7 +27,9 @@
         "SHELL": "/usr/bin/zsh",
         // #561: cwd に依存せず system Python を優先し、旧版の暗黙 download を止める。
         "UV_PYTHON_PREFERENCE": "system",
-        "UV_PYTHON_DOWNLOADS": "manual"
+        "UV_PYTHON_DOWNLOADS": "manual",
+        // route_target.py・project_link.py・xrift-link が使う、環境の main checkout のパス。
+        "XRIFT_POC_ROOT": "${containerWorkspaceFolder}"
     },
 	"initializeCommand": "/bin/bash .devcontainer/initialize.bash",
 	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
@@ -57,10 +60,17 @@
 	// Features to add to the dev container. More info: https://containers.dev/features.
 	// "features": {},
 
-	// Use 'forwardPorts' to make a list of ports inside the container available locally.
-	// "forwardPorts": [],
-	// #282: 3080 は dsh web の既定ポート。
-	"forwardPorts": [3080],
+	// 5173: XRift のプレビュー（Vite）。複数のプロジェクトは 5174 以降を使う。
+	// 3000: xrift login のコールバック（CLI が localhost:3000/callback に固定している）。
+	//       ホスト側で使われていたら別のポートへ振り替えずに失敗させる（requireLocalPort）。
+	// 3080: DSH の web（#282）。
+	"forwardPorts": [5173, 3000, 3080],
+	"portsAttributes": {
+		"5173": { "label": "XRift preview (Vite)" },
+		"5174-5179": { "label": "XRift preview (Vite, additional projects)" },
+		"3000": { "label": "xrift login callback", "requireLocalPort": true },
+		"3080": { "label": "DSH web" }
+	},
 
 	// Use 'postCreateCommand' to run commands after the container is created.
 	// "postCreateCommand": "uname -a",
