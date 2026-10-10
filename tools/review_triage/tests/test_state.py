@@ -43,7 +43,7 @@ PAIR_BETA = "beta/active/L-1"
 
 
 def _batch(directory: Path = SYNTHETIC) -> ReviewBatch:
-    return load_reviews(directory, repository=Repository.PARENT, reviewed_head=REVIEWED_HEAD)
+    return load_reviews(directory, repository=Repository.ENV, reviewed_head=REVIEWED_HEAD)
 
 
 def _low_finding(code: str, title: str, content: str) -> str:

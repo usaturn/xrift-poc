@@ -79,7 +79,7 @@ def candidates() -> dict[str, Any]:
         "schema": "review-findings/v1",
         "kind": "candidates",
         "source": "reviewer",
-        "pr": {"repository": "usaturn/maatlog-poc", "number": 542},
+        "pr": {"repository": "usaturn/xrift-poc", "number": 542},
         "reviewed_head": HEAD,
         "base": BASE,
         "reviewer": {"model": "claude-opus-5-5", "runtime": "claude-code", "review_file": "claude-opus-5-5.md"},
@@ -128,7 +128,7 @@ def verified() -> dict[str, Any]:
         "schema": "review-findings/v1",
         "kind": "verified",
         "mode": "cycle",
-        "pr": {"repository": "usaturn/maatlog-poc", "number": 542},
+        "pr": {"repository": "usaturn/xrift-poc", "number": 542},
         "reviewed_head": HEAD,
         "base": BASE,
         "verifier": {"model": "claude-opus-5-5", "runtime": "claude-code"},
@@ -212,7 +212,7 @@ def planning() -> dict[str, Any]:
     return {
         "schema": "review-findings/v1",
         "kind": "planning",
-        "pr": {"repository": "usaturn/maatlog-poc", "number": 542},
+        "pr": {"repository": "usaturn/xrift-poc", "number": 542},
         "reviewed_head": HEAD,
         "planner": {"model": "claude-opus-5-5", "runtime": "claude-code"},
         "verified_file": f"verified/{HEAD[:12]}.json",
@@ -576,7 +576,7 @@ def test_markdown_source_relaxes_reviewer_only_fields() -> None:
         "schema": "review-findings/v1",
         "kind": "candidates",
         "source": "markdown",
-        "pr": {"repository": "usaturn/maatlog-poc", "number": 542},
+        "pr": {"repository": "usaturn/xrift-poc", "number": 542},
         "reviewed_head": "unknown",
         "reviewer": {"model": "gpt-6.1-sol", "runtime": "unknown", "review_file": "gpt-6.1-sol.md"},
         "findings": [
@@ -686,7 +686,7 @@ def test_candidates_from_markdown_is_a_valid_markdown_source_document() -> None:
     value = review_findings.candidates_from_markdown(
         REVIEW_MD,
         review_file="claude-opus-5-5.md",
-        repository="usaturn/maatlog-poc",
+        repository="usaturn/xrift-poc",
         number=542,
         model="claude-opus-5-5",
         runtime="claude-code",
@@ -1371,7 +1371,7 @@ def test_cli_from_markdown_and_check_pair(tmp_path: Path, capsys: pytest.Capture
                 "--review-file",
                 "claude-opus-5-5.md",
                 "--repo",
-                "usaturn/maatlog-poc",
+                "usaturn/xrift-poc",
                 "--pr",
                 "542",
                 "--model",
@@ -1645,7 +1645,7 @@ def test_format_document_commands_are_accepted_by_the_cli() -> None:
 def test_from_markdown_refuses_findings_it_cannot_read(markdown: str, expected: str) -> None:
     with pytest.raises(review_findings.FindingsError) as caught:
         review_findings.candidates_from_markdown(
-            markdown, review_file="m.md", repository="usaturn/maatlog-poc", number=1, model="m", runtime="r"
+            markdown, review_file="m.md", repository="usaturn/xrift-poc", number=1, model="m", runtime="r"
         )
     assert any(expected in problem for problem in caught.value.problems), caught.value.problems
 
@@ -1657,7 +1657,7 @@ def test_from_markdown_still_reads_coverage_subsections_and_matching_summaries()
         "## Review coverage\n\n### 実行した確認\n\n- 何か\n"
     )
     value = review_findings.candidates_from_markdown(
-        markdown, review_file="m.md", repository="usaturn/maatlog-poc", number=1, model="m", runtime="r"
+        markdown, review_file="m.md", repository="usaturn/xrift-poc", number=1, model="m", runtime="r"
     )
     assert [item["id"] for item in value["findings"]] == ["H-1"]
 

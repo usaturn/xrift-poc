@@ -198,8 +198,8 @@ def test_client_outcome_invariants() -> None:
 def _finding(finding_id: str = "claude-opus-5/active/L-1", **overrides: object) -> ReviewFinding:
     fields: dict[str, object] = {
         "finding_id": finding_id,
-        "finding_key": finding_key(Repository.PARENT, "#406-feature-issue-382-rst-writer-foundation", finding_id),
-        "repository": Repository.PARENT,
+        "finding_key": finding_key(Repository.ENV, "#406-feature-issue-382-rst-writer-foundation", finding_id),
+        "repository": Repository.ENV,
         "review_dir": "#406-feature-issue-382-rst-writer-foundation",
         "source_file": "claude-opus-5.md",
         "model_name": "claude-opus-5",
@@ -222,7 +222,7 @@ def _finding(finding_id: str = "claude-opus-5/active/L-1", **overrides: object) 
 
 def _batch(*findings: ReviewFinding) -> ReviewBatch:
     return ReviewBatch(
-        repository=Repository.PARENT,
+        repository=Repository.ENV,
         review_dir="#406-feature-issue-382-rst-writer-foundation",
         reviewed_head="e0bff6690762",
         files=(ReviewFile(source_file="claude-opus-5.md", model_name="claude-opus-5"),),
@@ -248,10 +248,10 @@ def _prepared(sections: dict[str, str], *, allowed: bool = True, **overrides: ob
 
 
 def test_finding_key_is_deterministic_12_hex() -> None:
-    key = finding_key(Repository.PARENT, "#1-dir", "m/active/L-1")
+    key = finding_key(Repository.ENV, "#1-dir", "m/active/L-1")
     assert len(key) == 12 and int(key, 16) >= 0
-    assert key == finding_key(Repository.PARENT, "#1-dir", "m/active/L-1")
-    assert key != finding_key(Repository.PUBLIC, "#1-dir", "m/active/L-1")
+    assert key == finding_key(Repository.ENV, "#1-dir", "m/active/L-1")
+    assert key != finding_key(Repository.ENV, "#1-dir", "m/active/L-2")
 
 
 def test_review_finding_allows_unknown_severity_and_rejects_bad_lines_code_body() -> None:
@@ -325,7 +325,7 @@ def _decision(proposal: Proposal = Proposal.REJECT, **overrides: object) -> Tria
 
 def _report(status: ReportStatus, *decisions: TriageDecision) -> TriageReport:
     return TriageReport(
-        repository=Repository.PARENT,
+        repository=Repository.ENV,
         review_dir="#406-feature-issue-382-rst-writer-foundation",
         reviewed_head="e0bff6690762",
         model_id_requested="jev-latest",

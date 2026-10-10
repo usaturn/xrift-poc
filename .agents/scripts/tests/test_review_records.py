@@ -133,7 +133,7 @@ def decision(decision_id: str, state: str, *, change: str = "new", **extra: Any)
 def round_one() -> dict[str, Any]:
     return {
         "schema": "review-records/v1",
-        "pr": {"repository": "usaturn/maatlog-poc", "number": 484},
+        "pr": {"repository": "usaturn/xrift-poc", "number": 484},
         "round": 1,
         "reviewed_head": HEAD_1,
         "recorded_at": "2026-10-01T01:40:13Z",
@@ -157,7 +157,7 @@ def round_two() -> dict[str, Any]:
     }
     return {
         "schema": "review-records/v1",
-        "pr": {"repository": "usaturn/maatlog-poc", "number": 484},
+        "pr": {"repository": "usaturn/xrift-poc", "number": 484},
         "round": 2,
         "reviewed_head": HEAD_2,
         "recorded_at": "2026-10-01T02:25:26Z",
@@ -248,9 +248,9 @@ INVALID_RECORDS = [
         "schema: must be review-records/v1 or review-records/v2",
         id="other-schema",
     ),
-    pytest.param(set_value("pr", value="usaturn/maatlog-poc#484"), "pr: must be an object", id="pr-as-text"),
+    pytest.param(set_value("pr", value="usaturn/xrift-poc#484"), "pr: must be an object", id="pr-as-text"),
     pytest.param(
-        set_value("pr", "repository", value="maatlog-poc"),
+        set_value("pr", "repository", value="xrift-poc"),
         "pr.repository: must be owner/name",
         id="repository-without-owner",
     ),
@@ -627,7 +627,7 @@ VALID_VARIANTS = [
         id="sha256-heads",
     ),
     pytest.param(
-        set_value("decisions", 1, "carry_over", value={"issue": "https://github.com/usaturn/maatlog-poc/issues/486"}),
+        set_value("decisions", 1, "carry_over", value={"issue": "https://github.com/usaturn/xrift-poc/issues/486"}),
         id="carry-over-issue-url",
     ),
     pytest.param(
@@ -740,7 +740,7 @@ EMPTY_STATE: dict[str, Any] = {
     "decisions": [],
     "ignored_comments": [],
 }
-POC_PR: dict[str, Any] = {"repository": "usaturn/maatlog-poc", "number": 484}
+POC_PR: dict[str, Any] = {"repository": "usaturn/xrift-poc", "number": 484}
 
 
 def prior_after_round_one() -> dict[str, Any]:
@@ -808,7 +808,7 @@ def test_fold_keeps_split_decisions_apart() -> None:
 
 def test_fold_rejects_records_of_another_pull_request() -> None:
     other = round_two()
-    other["pr"] = {"repository": "usaturn/maatlog", "number": 484}
+    other["pr"] = {"repository": "usaturn/xrift-sample-world", "number": 484}
     records = [
         (101, review_records.validate_record(round_one())),
         (202, review_records.validate_record(other)),
@@ -818,7 +818,7 @@ def test_fold_rejects_records_of_another_pull_request() -> None:
 
 def test_fold_blames_the_records_that_differ_from_the_expected_pull_request() -> None:
     other = round_one()
-    other["pr"] = {"repository": "usaturn/maatlog", "number": 484}
+    other["pr"] = {"repository": "usaturn/xrift-sample-world", "number": 484}
     records = [
         (7, review_records.validate_record(other)),
         (101, review_records.validate_record(round_one())),
@@ -1037,7 +1037,7 @@ def test_stopped_round_requires_a_concrete_allowed_category(reason: object) -> N
 
 
 HUMAN_PART = "\n".join(["## review-fix-planning（claude-opus-5-5）", "", "### レビュー状況", "", "- 分類: 例"])
-LOOP_COMMENT = "<!-- review-fix-planning:agent:maatlog-pr-review-loop -->\nPR review fix loop: round 1"
+LOOP_COMMENT = "<!-- review-fix-planning:agent:xrift-poc-pr-review-loop -->\nPR review fix loop: round 1"
 
 
 def status_body(record: dict[str, Any]) -> str:
@@ -1148,7 +1148,7 @@ def test_compose_comment_rejects_a_comment_over_the_limit() -> None:
 
 
 def test_comments_from_api_accepts_slurped_pages_and_flat_arrays() -> None:
-    raw = {**api_comment(1, "a"), "html_url": "https://github.com/usaturn/maatlog-poc/pull/484#issuecomment-1"}
+    raw = {**api_comment(1, "a"), "html_url": "https://github.com/usaturn/xrift-poc/pull/484#issuecomment-1"}
     expected = [comment(1, "a")]
     assert review_records.comments_from_api([[raw]]) == expected
     assert review_records.comments_from_api([raw]) == expected
@@ -1245,7 +1245,7 @@ def test_read_state_lists_ignored_comments_and_checks_the_pull_request() -> None
     state = review_records.read_state(comments, expected_pr=POC_PR)
     assert [entry["round"] for entry in state["rounds"]] == [1]
     assert [entry["comment_id"] for entry in state["ignored_comments"]] == [180]
-    other_pr = {"repository": "usaturn/maatlog", "number": 484}
+    other_pr = {"repository": "usaturn/xrift-sample-world", "number": 484}
     assert problems_of(lambda: review_records.read_state(comments, expected_pr=other_pr)) == (
         "comment 101: belongs to a different pull request",
     )
@@ -1287,7 +1287,7 @@ def test_cli_fold_prints_the_current_state(
     body = status_body(review_records.validate_record(round_one()))
     pages = [[api_comment(101, body), api_comment(150, "普通のコメント")]]
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(pages, ensure_ascii=False)))
-    assert review_records.main(["fold", "--repo", "usaturn/maatlog-poc", "--pr", "484"]) == 0
+    assert review_records.main(["fold", "--repo", "usaturn/xrift-poc", "--pr", "484"]) == 0
     state = json.loads(capsys.readouterr().out)
     assert [entry["id"] for entry in state["decisions"]] == [
         "Grok-4.7#M-1@25e76f6c513f",
@@ -1311,13 +1311,13 @@ def test_cli_fold_reports_records_of_another_pull_request(
 ) -> None:
     body = status_body(review_records.validate_record(round_one()))
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps([[api_comment(101, body)]], ensure_ascii=False)))
-    assert review_records.main(["fold", "--repo", "usaturn/maatlog", "--pr", "484"]) == 65
+    assert review_records.main(["fold", "--repo", "usaturn/xrift-sample-world", "--pr", "484"]) == 65
     assert "comment 101: belongs to a different pull request" in capsys.readouterr().err
 
 
 def test_cli_fold_needs_both_repo_and_pr() -> None:
     with pytest.raises(SystemExit) as raised:
-        review_records.main(["fold", "--repo", "usaturn/maatlog-poc"])
+        review_records.main(["fold", "--repo", "usaturn/xrift-poc"])
     assert raised.value.code == 2
 
 
@@ -1426,7 +1426,7 @@ def test_document_finding_example_is_read_by_from_markdown() -> None:
     value = review_findings.candidates_from_markdown(
         "## Medium\n\n" + document_examples()["finding"] + "\n",
         review_file="claude-opus-5-5.md",
-        repository="usaturn/maatlog-poc",
+        repository="usaturn/xrift-poc",
         number=900,
         model="claude-opus-5-5",
         runtime="claude-code",

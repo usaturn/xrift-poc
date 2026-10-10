@@ -92,7 +92,7 @@ def inputs(tmp_path: Path) -> tuple[dict[str, Any], Path, dict[str, Any]]:
         "repository": str(repo),
         "source_head": source,
         "revision": target,
-        "pr": {"repository": "usaturn/maatlog-poc", "number": 900},
+        "pr": {"repository": "usaturn/xrift-poc", "number": 900},
         "prompt": {
             name: f"{name}: inspect all assigned committed input" for name in ("implement", "self-review", "fix-check")
         },

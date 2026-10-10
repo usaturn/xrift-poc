@@ -562,7 +562,7 @@ def _parser() -> argparse.ArgumentParser:
         "--review-dir",
         type=Path,
         required=True,
-        help="review directory such as reviews/usaturn/maatlog-poc/#123-branch",
+        help="review directory such as reviews/usaturn/xrift-poc/#123-branch",
     )
     parser.add_argument(
         "--repository",

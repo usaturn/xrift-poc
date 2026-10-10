@@ -53,7 +53,7 @@ def _review_dir(tmp_path: Path, files: dict[str, str], name: str = "pr-999-runti
 
 
 def _load(
-    directory: Path, *, repository: Repository = Repository.PARENT, reviewed_head: str = REVIEWED_HEAD
+    directory: Path, *, repository: Repository = Repository.ENV, reviewed_head: str = REVIEWED_HEAD
 ) -> ReviewBatch:
     return load_reviews(directory, repository=repository, reviewed_head=reviewed_head)
 
@@ -93,7 +93,7 @@ def test_rejects_bad_reviewed_head_repository_and_review_dir(tmp_path: Path) -> 
     directory = _review_dir(tmp_path, {"ok.md": MINIMAL})
     for head in ("", "abc123", "A" * 40, "a" * 41, "g" * 12, "a" * 12 + "\n"):
         with pytest.raises(ReviewInputError):
-            load_reviews(directory, repository=Repository.PARENT, reviewed_head=head)
+            load_reviews(directory, repository=Repository.ENV, reviewed_head=head)
     with pytest.raises(ReviewInputError):
         load_reviews(
             directory,
@@ -264,25 +264,27 @@ def test_accepts_repository_given_as_string(tmp_path: Path) -> None:
     directory = _review_dir(tmp_path, {"ok.md": MINIMAL})
     batch = load_reviews(
         directory,
-        repository="usaturn/maatlog",  # pyright: ignore[reportArgumentType]
+        repository="usaturn/xrift-poc",  # pyright: ignore[reportArgumentType]
         reviewed_head=REVIEWED_HEAD,
     )
-    assert batch.repository is Repository.PUBLIC
+    assert batch.repository is Repository.ENV
     assert batch.review_dir == "pr-999-runtime"
     assert batch.reviewed_head == REVIEWED_HEAD
     assert [review_file.source_file for review_file in batch.files] == ["ok.md"]
     assert batch.files[0].model_name == "ok"
 
 
-def test_finding_key_depends_on_the_repository(tmp_path: Path) -> None:
-    directory = _review_dir(tmp_path, {"m.md": MINIMAL})
-    keys: dict[Repository, str] = {}
-    for repository in (Repository.PUBLIC, Repository.PARENT):
-        [finding] = _load(directory, repository=repository).findings
-        assert finding.repository is repository
-        assert finding.finding_key == finding_key(repository, "pr-999-runtime", "m/active/L-1")
-        keys[repository] = finding.finding_key
-    assert keys[Repository.PUBLIC] != keys[Repository.PARENT]
+@pytest.mark.parametrize(
+    "repository", ["usaturn/xrift-sample-world", "usaturn/xrift-sample-world", "someone/xrift-poc", ""]
+)
+def test_rejects_repository_other_than_the_env_repository(tmp_path: Path, repository: str) -> None:
+    directory = _review_dir(tmp_path, {"ok.md": MINIMAL})
+    with pytest.raises(ReviewInputError, match="unknown repository"):
+        load_reviews(
+            directory,
+            repository=repository,  # pyright: ignore[reportArgumentType]
+            reviewed_head=REVIEWED_HEAD,
+        )
 
 
 @pytest.mark.parametrize(
@@ -317,7 +319,7 @@ def test_relative_review_dir_gives_the_same_batch_as_the_absolute_path(
     assert relative.review_dir == "pr-999-runtime"
     assert relative.model_dump() == absolute.model_dump()
     [finding] = relative.findings
-    assert finding.finding_key == finding_key(Repository.PARENT, "pr-999-runtime", "m/active/L-1")
+    assert finding.finding_key == finding_key(Repository.ENV, "pr-999-runtime", "m/active/L-1")
 
 
 def test_skips_entries_it_must_not_read(tmp_path: Path) -> None:
@@ -610,7 +612,7 @@ def test_header_line_variants(
     tmp_path: Path, first_line: str, expected: tuple[int | None, str | None, str | None]
 ) -> None:
     directory = _review_dir(tmp_path, {"m.md": first_line + "\n\n## Summary\n\n本文。\n"})
-    batch = load_reviews(directory, repository=Repository.PARENT, reviewed_head="0123456789ab")
+    batch = load_reviews(directory, repository=Repository.ENV, reviewed_head="0123456789ab")
     review_file = batch.files[0]
     assert (review_file.target_pr, review_file.header_head, review_file.header_date) == expected
     assert ("m.md:1: unrecognized header line" in batch.anomalies) == (expected[0] is None)
@@ -979,12 +981,12 @@ def test_finding_fields_lines_and_body() -> None:
     )
     assert (finding.reviewed_head, finding.detected_head, finding.missing) == ("aaaaaaaaaaaa", "999999999999", ())
     assert (finding.repository, finding.review_dir, finding.source_file, finding.model_name) == (
-        Repository.PARENT,
+        Repository.ENV,
         "pr-901-synthetic",
         "alpha-model.md",
         "alpha-model",
     )
-    assert finding.finding_key == finding_key(Repository.PARENT, "pr-901-synthetic", "alpha-model/active/L-1")
+    assert finding.finding_key == finding_key(Repository.ENV, "pr-901-synthetic", "alpha-model/active/L-1")
 
 
 def test_markers_missing_fields_and_recorded_anomalies() -> None:
@@ -1619,7 +1621,7 @@ def test_same_input_gives_same_batch_on_any_host(tmp_path: Path) -> None:
     assert first.model_dump() == second.model_dump()
     assert first.model_dump() == _load(SYNTHETIC).model_dump()
     for finding in first.findings:
-        assert finding.finding_key == finding_key(Repository.PARENT, "pr-901-synthetic", finding.finding_id)
+        assert finding.finding_key == finding_key(Repository.ENV, "pr-901-synthetic", finding.finding_id)
 
 
 def test_reads_only_direct_children_without_network_subprocess_or_writes(

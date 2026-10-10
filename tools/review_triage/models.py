@@ -40,8 +40,7 @@ class _FromApi(BaseModel):
 
 
 class Repository(enum.StrEnum):
-    PARENT = "usaturn/maatlog-poc"
-    PUBLIC = "usaturn/maatlog"
+    ENV = "usaturn/xrift-poc"
 
 
 class Severity(enum.StrEnum):

@@ -1689,7 +1689,7 @@ def findings_document(commit: str, **overrides: Any) -> dict[str, Any]:
         "schema": "review-findings/v1",
         "kind": "candidates",
         "source": "reviewer",
-        "pr": {"repository": "usaturn/maatlog-poc", "number": 4},
+        "pr": {"repository": "usaturn/xrift-poc", "number": 4},
         "reviewed_head": commit,
         "base": commit,
         "reviewer": {"model": "gpt-5.6-sol", "runtime": "codex", "review_file": "gpt-5.6-sol.md"},
@@ -1930,7 +1930,7 @@ def make_parent(path: Path, *, ignore_reviews: bool = True) -> Path:
     (path / ".gitignore").write_text("/reviews/\n" if ignore_reviews else "/build/\n", encoding="utf-8")
     git(path, "add", ".gitignore")
     git(path, "commit", "-m", "parent")
-    git(path, "remote", "add", "origin", "https://github.com/usaturn/maatlog-poc.git")
+    git(path, "remote", "add", "origin", "https://github.com/usaturn/xrift-poc.git")
     return path.resolve()
 
 

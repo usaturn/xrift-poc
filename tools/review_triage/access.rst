@@ -18,7 +18,7 @@ TypeSafe API キーと疎通確認
 前提条件
 ========
 
-- 親リポジトリ（ ``usaturn/maatlog-poc`` ）の checkout の root で作業する
+- 親（ ``usaturn/xrift-poc`` ）の checkout の root で作業する
 - ``tools/devenv`` の Python 環境を ``uv sync --project tools/devenv --locked`` で同期してある
 - 疎通確認には、Phase 0 で取得した API キーと ``api.typesafe.ai`` へ proxy なしで HTTPS 接続できるネットワークが要る。
   キーなしの確認はどちらも要らない

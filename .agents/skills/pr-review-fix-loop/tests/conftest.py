@@ -19,7 +19,7 @@ import pytest
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = Path(__file__).resolve().parents[4]
-REPOSITORY = "usaturn/maatlog-poc"
+REPOSITORY = "usaturn/xrift-poc"
 NUMBER = 900
 BRANCH = "feature/demo"
 PR_URL = f"https://github.com/{REPOSITORY}/pull/{NUMBER}"
@@ -211,7 +211,7 @@ class LoopEnv:
 
     @property
     def review_dir(self) -> Path:
-        return self.parent / "reviews" / "usaturn" / "maatlog-poc" / f"#{NUMBER}-feature-demo"
+        return self.parent / "reviews" / "usaturn" / "xrift-poc" / f"#{NUMBER}-feature-demo"
 
     def push(self, message: str) -> str:
         """PR の branch に commit を 1 つ足して bare remote に push する。"""

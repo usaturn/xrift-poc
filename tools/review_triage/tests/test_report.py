@@ -52,7 +52,7 @@ def _report(
     responded: str | None = "jev-1.13.0",
 ) -> TriageReport:
     return TriageReport(
-        repository=Repository.PARENT,
+        repository=Repository.ENV,
         review_dir="reviews/#999-feature-example",
         reviewed_head=HEAD,
         model_id_requested="jev-latest",

@@ -37,7 +37,7 @@ def prepared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         (checkout / ".gitignore").write_text("/reviews/\n", encoding="utf-8")
         git(checkout, "add", ".gitignore")
         git(checkout, "commit", "-m", "base")
-    git(parent, "remote", "add", "origin", "https://github.com/usaturn/maatlog-poc.git")
+    git(parent, "remote", "add", "origin", "https://github.com/usaturn/xrift-poc.git")
     git(source, "switch", "-c", "feature")
     (source / "README.md").write_text("a harmless fixture\n", encoding="utf-8")
     git(source, "add", "README.md")

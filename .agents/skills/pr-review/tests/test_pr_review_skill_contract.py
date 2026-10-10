@@ -275,13 +275,13 @@ def test_output_history_modes_can_be_recorded_for_commit_reviews(tmp_path: Path,
         rendered = rendered.replace(placeholder, value)
     review_file = f"test-reviewer-commit-{head}"
     (tmp_path / f"{review_file}.md").write_text(rendered, encoding="utf-8")
-    batch = load_reviews(tmp_path, repository=Repository.PARENT, reviewed_head=head)
+    batch = load_reviews(tmp_path, repository=Repository.ENV, reviewed_head=head)
     assert not batch.anomalies
     latest = batch.files[0].history[-1]
     records = _load_module("review_records_for_history", REVIEW_RECORDS_SCRIPT)
     record = {
         "schema": records.SCHEMA_ID,
-        "pr": {"repository": "usaturn/maatlog-poc", "number": 593},
+        "pr": {"repository": "usaturn/xrift-poc", "number": 593},
         "round": 1,
         "reviewed_head": head,
         "recorded_at": latest.reviewed_at,

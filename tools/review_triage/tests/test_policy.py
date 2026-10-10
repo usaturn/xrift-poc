@@ -65,8 +65,8 @@ def _finding(
     finding_id = f"{model_name}/{status.value}/{code}"
     return ReviewFinding(
         finding_id=finding_id,
-        finding_key=finding_key(Repository.PARENT, REVIEW_DIR, finding_id),
-        repository=Repository.PARENT,
+        finding_key=finding_key(Repository.ENV, REVIEW_DIR, finding_id),
+        repository=Repository.ENV,
         review_dir=REVIEW_DIR,
         source_file=f"{model_name}.md",
         model_name=model_name,
@@ -98,7 +98,7 @@ def _batch(*findings: ReviewFinding, unparsed: int = 0, anomalies: tuple[str, ..
     if unparsed:
         files.setdefault("alpha.md", "alpha")
     return ReviewBatch(
-        repository=Repository.PARENT,
+        repository=Repository.ENV,
         review_dir=REVIEW_DIR,
         reviewed_head=TARGET,
         files=tuple(ReviewFile(source_file=name, model_name=model) for name, model in sorted(files.items())),

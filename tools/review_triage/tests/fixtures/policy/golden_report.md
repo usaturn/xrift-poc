@@ -8,7 +8,7 @@
 | --- | --- |
 | status | `advisory` |
 | reason | `advisory: 2 of 4 active finding(s) have an advisory proposal; unparsed blocks: 1 (not triaged; check the review files); input anomalies: 1` |
-| repository | `usaturn/maatlog-poc` |
+| repository | `usaturn/xrift-poc` |
 | review_dir | `reviews/#999-feature-example` |
 | reviewed_head | `fdfc294f57fb773d9024d041d834e7ede1c7cd78` |
 | model_id_requested | `jev-latest` |
@@ -63,9 +63,9 @@
   - `request:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee`
   - `response:req-a`
 - 回答:
-  - `applies_a7451b2be7d7`: noul `1.0`
-  - `proposal_a7451b2be7d7`: choice `fix_now` confidence `0.95`
-  - `same_2526f15c0d8e_a7451b2be7d7`: noul `0.97`
+  - `applies_d40ab58ac648`: noul `1.0`
+  - `proposal_d40ab58ac648`: choice `fix_now` confidence `0.95`
+  - `same_53e99ccc3161_d40ab58ac648`: noul `0.97`
 
 ### 2. `beta/active/M-1`
 
@@ -88,10 +88,10 @@
   - `request:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee`
   - `request:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff`
 - 回答:
-  - `applies_2526f15c0d8e`: noul `1.0`
-  - `proposal_2526f15c0d8e`: choice `fix_now` confidence `0.95`
-  - `same_2151e44ffd06_2526f15c0d8e`: noul `0.5`
-  - `same_2526f15c0d8e_a7451b2be7d7`: noul `0.97`
+  - `applies_53e99ccc3161`: noul `1.0`
+  - `proposal_53e99ccc3161`: choice `fix_now` confidence `0.95`
+  - `same_3a520c9eac8e_53e99ccc3161`: noul `0.5`
+  - `same_53e99ccc3161_d40ab58ac648`: noul `0.97`
 
 ### 3. `gamma/active/L-1`
 
@@ -102,7 +102,7 @@
 - 重複候補:
   - `beta/active/M-1`
 - エスカレーション理由:
-  - `proposal_low_confidence: proposal_2151e44ffd06 confidence=0.5 < 0.9`
+  - `proposal_low_confidence: proposal_3a520c9eac8e confidence=0.5 < 0.9`
   - `duplicate_uncertain: partner=beta/active/M-1 noul=0.5`
 - 根拠参照:
   - `review:gamma.md#L10-L16`
@@ -112,9 +112,9 @@
   - `request:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc`
   - `request:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff`
 - 回答:
-  - `applies_2151e44ffd06`: noul `1.0`
-  - `proposal_2151e44ffd06`: choice `fix_now` confidence `0.5`
-  - `same_2151e44ffd06_2526f15c0d8e`: noul `0.5`
+  - `applies_3a520c9eac8e`: noul `1.0`
+  - `proposal_3a520c9eac8e`: choice `fix_now` confidence `0.5`
+  - `same_3a520c9eac8e_53e99ccc3161`: noul `0.5`
 
 ### 4. `delta/active/I-1`
 
@@ -130,8 +130,8 @@
   - `detected_head:fdfc294f57fb`
   - `request:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd`
 - 回答:
-  - `applies_00c5cc59b894`: noul `1.0`
-  - `proposal_00c5cc59b894`: choice `separate_issue` confidence `0.93`
+  - `applies_34f7243e5dba`: noul `1.0`
+  - `proposal_34f7243e5dba`: choice `separate_issue` confidence `0.93`
 
 ### 5. `alpha/resolved/L-2`
 

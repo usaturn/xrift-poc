@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "repository": "usaturn/maatlog-poc",
+  "repository": "usaturn/xrift-poc",
   "review_dir": "reviews/#999-feature-example",
   "reviewed_head": "fdfc294f57fb773d9024d041d834e7ede1c7cd78",
   "model_id_requested": "jev-latest",
@@ -43,17 +43,17 @@
       ],
       "escalation_reasons": [],
       "answers": {
-        "applies_a7451b2be7d7": {
+        "applies_d40ab58ac648": {
           "type": "noul",
           "noul": 1.0
         },
-        "proposal_a7451b2be7d7": {
+        "proposal_d40ab58ac648": {
           "type": "choice",
           "choice": "fix_now",
           "probabilities": null,
           "confidence": 0.95
         },
-        "same_2526f15c0d8e_a7451b2be7d7": {
+        "same_53e99ccc3161_d40ab58ac648": {
           "type": "noul",
           "noul": 0.97
         }
@@ -90,21 +90,21 @@
         "duplicate_uncertain: partner=gamma/active/L-1 noul=0.5"
       ],
       "answers": {
-        "applies_2526f15c0d8e": {
+        "applies_53e99ccc3161": {
           "type": "noul",
           "noul": 1.0
         },
-        "proposal_2526f15c0d8e": {
+        "proposal_53e99ccc3161": {
           "type": "choice",
           "choice": "fix_now",
           "probabilities": null,
           "confidence": 0.95
         },
-        "same_2151e44ffd06_2526f15c0d8e": {
+        "same_3a520c9eac8e_53e99ccc3161": {
           "type": "noul",
           "noul": 0.5
         },
-        "same_2526f15c0d8e_a7451b2be7d7": {
+        "same_53e99ccc3161_d40ab58ac648": {
           "type": "noul",
           "noul": 0.97
         }
@@ -135,21 +135,21 @@
         "request:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
       ],
       "escalation_reasons": [
-        "proposal_low_confidence: proposal_2151e44ffd06 confidence=0.5 < 0.9",
+        "proposal_low_confidence: proposal_3a520c9eac8e confidence=0.5 < 0.9",
         "duplicate_uncertain: partner=beta/active/M-1 noul=0.5"
       ],
       "answers": {
-        "applies_2151e44ffd06": {
+        "applies_3a520c9eac8e": {
           "type": "noul",
           "noul": 1.0
         },
-        "proposal_2151e44ffd06": {
+        "proposal_3a520c9eac8e": {
           "type": "choice",
           "choice": "fix_now",
           "probabilities": null,
           "confidence": 0.5
         },
-        "same_2151e44ffd06_2526f15c0d8e": {
+        "same_3a520c9eac8e_53e99ccc3161": {
           "type": "noul",
           "noul": 0.5
         }
@@ -177,11 +177,11 @@
       ],
       "escalation_reasons": [],
       "answers": {
-        "applies_00c5cc59b894": {
+        "applies_34f7243e5dba": {
           "type": "noul",
           "noul": 1.0
         },
-        "proposal_00c5cc59b894": {
+        "proposal_34f7243e5dba": {
           "type": "choice",
           "choice": "separate_issue",
           "probabilities": null,

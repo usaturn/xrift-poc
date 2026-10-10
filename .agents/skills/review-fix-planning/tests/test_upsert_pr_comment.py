@@ -27,7 +27,7 @@ mod = load_helper()
 records: Any = mod.records
 
 MODEL = "claude-opus-5-5"
-REPO = "usaturn/maatlog-poc"
+REPO = "usaturn/xrift-poc"
 PR = 485
 HEAD_1 = "1" * 40
 HEAD_2 = "2" * 40
@@ -224,16 +224,16 @@ def test_find_own_comment_skips_round_comments_untrusted_authors_and_quoted_mark
 def test_upsert_creates_when_no_own_comment() -> None:
     gh = FakeGh(
         pr_view={
-            "url": "https://github.com/usaturn/maatlog/pull/225",
+            "url": "https://github.com/usaturn/xrift-sample-world/pull/225",
             "number": 225,
         },
         comments=[],
         upsert_response={
             "id": 99,
-            "html_url": "https://github.com/usaturn/maatlog/pull/225#issuecomment-99",
+            "html_url": "https://github.com/usaturn/xrift-sample-world/pull/225#issuecomment-99",
         },
     )
-    result = mod.upsert(225, "usaturn/maatlog", "claude-opus-5", "### レビュー状況\n- ok", runner=gh)
+    result = mod.upsert(225, "usaturn/xrift-sample-world", "claude-opus-5", "### レビュー状況\n- ok", runner=gh)
     assert result["action"] == "created"
     assert result["comment_id"] == 99
     method_call = gh.writes()[0]
@@ -247,28 +247,28 @@ def test_upsert_creates_when_no_own_comment() -> None:
 def test_upsert_patches_existing_own_comment() -> None:
     gh = FakeGh(
         pr_view={
-            "url": "https://github.com/usaturn/maatlog/pull/225",
+            "url": "https://github.com/usaturn/xrift-sample-world/pull/225",
             "number": 225,
         },
         comments=[comment(41, "<!-- review-fix-planning:agent:claude-opus-5 -->\nold")],
         upsert_response={
             "id": 41,
-            "html_url": "https://github.com/usaturn/maatlog/pull/225#issuecomment-41",
+            "html_url": "https://github.com/usaturn/xrift-sample-world/pull/225#issuecomment-41",
         },
     )
-    result = mod.upsert(225, "usaturn/maatlog", "claude-opus-5", "### 作業結果\n- push 済み", runner=gh)
+    result = mod.upsert(225, "usaturn/xrift-sample-world", "claude-opus-5", "### 作業結果\n- push 済み", runner=gh)
     assert result["action"] == "updated"
     method_call = gh.writes()[0]
     assert method_call[0][3] == "PATCH"
-    assert method_call[0][4] == "repos/usaturn/maatlog/issues/comments/41"
+    assert method_call[0][4] == "repos/usaturn/xrift-sample-world/issues/comments/41"
 
 
 def test_upsert_creates_instead_of_patching_an_untrusted_marker_comment() -> None:
     gh = FakeGh(
-        pr_view={"url": "https://github.com/usaturn/maatlog/pull/225", "number": 225},
+        pr_view={"url": "https://github.com/usaturn/xrift-sample-world/pull/225", "number": 225},
         comments=[comment(41, "<!-- review-fix-planning:agent:claude-opus-5 -->\nforged", "NONE", "someone")],
     )
-    result = mod.upsert(225, "usaturn/maatlog", "claude-opus-5", "### 作業結果\n- ok", runner=gh)
+    result = mod.upsert(225, "usaturn/xrift-sample-world", "claude-opus-5", "### 作業結果\n- ok", runner=gh)
     assert result["action"] == "created"
     assert gh.writes()[0][0][3] == "POST"
 
@@ -276,40 +276,40 @@ def test_upsert_creates_instead_of_patching_an_untrusted_marker_comment() -> Non
 def test_upsert_passes_the_requested_repository_to_gh_pr_view() -> None:
     gh = FakeGh(
         pr_view={
-            "url": "https://github.com/usaturn/maatlog/pull/7",
+            "url": "https://github.com/usaturn/xrift-sample-world/pull/7",
             "number": 7,
         },
         comments=[],
         upsert_response={
             "id": 12,
-            "html_url": "https://github.com/usaturn/maatlog/pull/7#issuecomment-12",
+            "html_url": "https://github.com/usaturn/xrift-sample-world/pull/7#issuecomment-12",
         },
     )
-    mod.upsert(7, "usaturn/maatlog", "claude-opus-5", "### レビュー状況\n- ok", runner=gh)
+    mod.upsert(7, "usaturn/xrift-sample-world", "claude-opus-5", "### レビュー状況\n- ok", runner=gh)
     view_call = next(call for call in gh.calls if call[0][1:3] == ("pr", "view"))
     argv = view_call[0]
     assert "--repo" in argv
-    assert argv[argv.index("--repo") + 1] == "usaturn/maatlog"
+    assert argv[argv.index("--repo") + 1] == "usaturn/xrift-sample-world"
 
 
 def test_upsert_stops_when_gh_resolves_a_different_repository() -> None:
-    """A PR number alone is ambiguous: #7 exists in both maatlog-poc and maatlog."""
+    """A PR number alone is ambiguous: #7 exists in both xrift-poc and xrift-sample-world."""
     gh = FakeGh(
         pr_view={
-            "url": "https://github.com/usaturn/maatlog-poc/pull/7",
+            "url": "https://github.com/usaturn/xrift-poc/pull/7",
             "number": 7,
         },
         comments=[],
         upsert_response={"id": 12, "html_url": ""},
     )
-    with pytest.raises(mod.CommentError, match="usaturn/maatlog-poc"):
-        mod.upsert(7, "usaturn/maatlog", "claude-opus-5", "### レビュー状況\n- ok", runner=gh)
+    with pytest.raises(mod.CommentError, match="usaturn/xrift-poc"):
+        mod.upsert(7, "usaturn/xrift-sample-world", "claude-opus-5", "### レビュー状況\n- ok", runner=gh)
     assert not gh.writes()
 
 
 def test_validate_repo_rejects_anything_but_owner_name() -> None:
-    assert mod.validate_repo("usaturn/maatlog") == "usaturn/maatlog"
-    for bad in ("maatlog", "usaturn/maatlog/extra", "", "usaturn /maatlog"):
+    assert mod.validate_repo("usaturn/xrift-sample-world") == "usaturn/xrift-sample-world"
+    for bad in ("xrift-sample-world", "usaturn/xrift-sample-world/extra", "", "usaturn /xrift-sample-world"):
         with pytest.raises(mod.CommentError, match="owner/name"):
             mod.validate_repo(bad)
 
@@ -353,7 +353,7 @@ def test_records_post_creates_a_new_comment_for_the_next_round() -> None:
         comments=[
             status_comment(7, first),
             comment(8, "<!-- review-fix-planning:agent:claude-opus-5-5 -->\nlegacy"),
-            comment(9, "<!-- review-fix-planning:agent:maatlog-pr-review-loop -->\nloop progress"),
+            comment(9, "<!-- review-fix-planning:agent:xrift-poc-pr-review-loop -->\nloop progress"),
         ],
     )
     result = mod.upsert(PR, REPO, MODEL, BODY, runner=gh, record=second)

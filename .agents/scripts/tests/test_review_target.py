@@ -17,7 +17,7 @@ assert SPEC is not None and SPEC.loader is not None
 target = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(target)
 
-PARENT_ORIGIN = "https://github.com/usaturn/maatlog-poc.git"
+PARENT_ORIGIN = "https://github.com/usaturn/xrift-poc.git"
 
 
 def git(repo: Path, *args: str) -> str:
@@ -140,10 +140,10 @@ def test_parse_number_url_and_reject_other() -> None:
 
 
 def test_github_repository_reads_https_and_ssh() -> None:
-    assert target.github_repository("https://github.com/usaturn/maatlog-poc.git") == "usaturn/maatlog-poc"
-    assert target.github_repository("https://github.com/usaturn/maatlog") == "usaturn/maatlog"
-    assert target.github_repository("git@github.com:usaturn/maatlog.git") == "usaturn/maatlog"
-    assert target.github_repository("ssh://git@github.com/usaturn/maatlog") == "usaturn/maatlog"
+    assert target.github_repository("https://github.com/usaturn/xrift-poc.git") == "usaturn/xrift-poc"
+    assert target.github_repository("https://github.com/usaturn/xrift-sample-world") == "usaturn/xrift-sample-world"
+    assert target.github_repository("git@github.com:usaturn/xrift-sample-world.git") == "usaturn/xrift-sample-world"
+    assert target.github_repository("ssh://git@github.com/usaturn/xrift-sample-world") == "usaturn/xrift-sample-world"
     assert target.github_repository("file:///tmp/remote.git") is None
     assert target.github_repository("https://github.com/usaturn/..") is None
 
@@ -152,7 +152,7 @@ def test_review_directory_uses_owner_and_repo_levels(tmp_path: Path) -> None:
     assert target.review_directory(tmp_path, "usaturn/wabun-rst-ulint", 3, "hogehoge") == (
         tmp_path / "reviews" / "usaturn" / "wabun-rst-ulint" / "#3-hogehoge"
     )
-    assert target.review_directory(tmp_path, "usaturn/maatlog", 12, "feature/x").name == "#12-feature-x"
+    assert target.review_directory(tmp_path, "usaturn/xrift-sample-world", 12, "feature/x").name == "#12-feature-x"
 
 
 @pytest.mark.parametrize("value", ["usaturn/..", "usaturn/.", "../x", "a/b/c", "a", "-a/b", "a/b c"])
@@ -176,25 +176,25 @@ def test_naming_rules_keep_the_helper_messages() -> None:
 
 
 def test_fetch_pull_request_success() -> None:
-    gh = gh_for(pull("usaturn/maatlog", 12, "feat/x", head_repository="someone/maatlog"))
+    gh = gh_for(pull("usaturn/xrift-sample-world", 12, "feat/x", head_repository="someone/xrift-sample-world"))
 
-    pr = target.fetch_pull_request("usaturn/maatlog", 12, runner=gh)
+    pr = target.fetch_pull_request("usaturn/xrift-sample-world", 12, runner=gh)
 
-    assert pr.repository == "usaturn/maatlog"
+    assert pr.repository == "usaturn/xrift-sample-world"
     assert pr.head_ref == "feat/x"
-    assert pr.head_repository == "someone/maatlog"
-    assert pr.clone_url == "https://github.com/usaturn/maatlog.git"
-    assert gh.calls == [["gh", "api", "-i", "repos/usaturn/maatlog/pulls/12"]]
+    assert pr.head_repository == "someone/xrift-sample-world"
+    assert pr.clone_url == "https://github.com/usaturn/xrift-sample-world.git"
+    assert gh.calls == [["gh", "api", "-i", "repos/usaturn/xrift-sample-world/pulls/12"]]
 
 
 def test_fetch_pull_request_not_found_when_repository_exists() -> None:
-    gh = FakeGh({"repos/usaturn/maatlog-poc": (http(200, {}), "")})
+    gh = FakeGh({"repos/usaturn/xrift-poc": (http(200, {}), "")})
 
     with pytest.raises(target.TargetError) as excinfo:
-        target.fetch_pull_request("usaturn/maatlog-poc", 999, runner=gh)
+        target.fetch_pull_request("usaturn/xrift-poc", 999, runner=gh)
 
     assert error_code(excinfo) == target.EXIT_PR_NOT_FOUND
-    assert "usaturn/maatlog-poc に PR #999 は存在しません" in str(excinfo.value)
+    assert "usaturn/xrift-poc に PR #999 は存在しません" in str(excinfo.value)
     assert "PR URL" in str(excinfo.value)
 
 
@@ -207,19 +207,19 @@ def test_fetch_pull_request_repository_missing() -> None:
 
 @pytest.mark.parametrize("status", [401, 403])
 def test_fetch_pull_request_auth(status: int) -> None:
-    gh = FakeGh({"repos/usaturn/maatlog/pulls/1": (http(status, {"message": "Bad credentials"}), "")})
+    gh = FakeGh({"repos/usaturn/xrift-sample-world/pulls/1": (http(status, {"message": "Bad credentials"}), "")})
 
     with pytest.raises(target.TargetError) as excinfo:
-        target.fetch_pull_request("usaturn/maatlog", 1, runner=gh)
+        target.fetch_pull_request("usaturn/xrift-sample-world", 1, runner=gh)
 
     assert error_code(excinfo) == target.EXIT_AUTH
 
 
 def test_fetch_pull_request_without_status_is_api_failure() -> None:
-    gh = FakeGh({"repos/usaturn/maatlog/pulls/1": ("", "dial tcp: connection refused")})
+    gh = FakeGh({"repos/usaturn/xrift-sample-world/pulls/1": ("", "dial tcp: connection refused")})
 
     with pytest.raises(target.TargetError) as excinfo:
-        target.fetch_pull_request("usaturn/maatlog", 1, runner=gh)
+        target.fetch_pull_request("usaturn/xrift-sample-world", 1, runner=gh)
 
     assert error_code(excinfo) == target.EXIT_API
     assert "存在しません" not in str(excinfo.value)
@@ -227,12 +227,12 @@ def test_fetch_pull_request_without_status_is_api_failure() -> None:
 
 
 def test_fetch_pull_request_broken_body() -> None:
-    broken = pull("usaturn/maatlog", 1, "x")
+    broken = pull("usaturn/xrift-sample-world", 1, "x")
     del broken["head"]["sha"]
-    gh = FakeGh({"repos/usaturn/maatlog/pulls/1": (http(200, broken), "")})
+    gh = FakeGh({"repos/usaturn/xrift-sample-world/pulls/1": (http(200, broken), "")})
 
     with pytest.raises(target.TargetError) as excinfo:
-        target.fetch_pull_request("usaturn/maatlog", 1, runner=gh)
+        target.fetch_pull_request("usaturn/xrift-sample-world", 1, runner=gh)
 
     assert error_code(excinfo) == target.EXIT_API
 
@@ -249,13 +249,13 @@ def test_fetch_pull_request_uses_the_canonical_name_after_a_rename() -> None:
 
 def test_resolve_number_uses_parent_origin(tmp_path: Path) -> None:
     parent = make_parent(tmp_path / "parent")
-    gh = gh_for(pull("usaturn/maatlog-poc", 4, "fix/x"))
+    gh = gh_for(pull("usaturn/xrift-poc", 4, "fix/x"))
 
     result = target.resolve("#4", parent_root=parent, runner=gh)
 
-    assert gh.calls[0][3] == "repos/usaturn/maatlog-poc/pulls/4"
-    assert result["repository"] == "usaturn/maatlog-poc"
-    assert result["review_dir"] == str(parent / "reviews" / "usaturn" / "maatlog-poc" / "#4-fix-x")
+    assert gh.calls[0][3] == "repos/usaturn/xrift-poc/pulls/4"
+    assert result["repository"] == "usaturn/xrift-poc"
+    assert result["review_dir"] == str(parent / "reviews" / "usaturn" / "xrift-poc" / "#4-fix-x")
     assert result["target_root"] == str(parent)
     assert result["parent_root"] == str(parent)
 
@@ -273,28 +273,30 @@ def test_resolve_url_does_not_require_parent_relation(tmp_path: Path) -> None:
 
 def test_resolve_uses_canonical_repository_name(tmp_path: Path) -> None:
     parent = make_parent(tmp_path / "parent")
-    gh = FakeGh({"repos/Usaturn/Maatlog/pulls/3": (http(200, pull("usaturn/maatlog", 3, "feat/x")), "")})
+    gh = FakeGh(
+        {"repos/Usaturn/Xrift-Sample-World/pulls/3": (http(200, pull("usaturn/xrift-sample-world", 3, "feat/x")), "")}
+    )
 
-    result = target.resolve("https://github.com/Usaturn/Maatlog/pull/3", parent_root=parent, runner=gh)
+    result = target.resolve("https://github.com/Usaturn/Xrift-Sample-World/pull/3", parent_root=parent, runner=gh)
 
-    assert result["repository"] == "usaturn/maatlog"
-    assert result["review_dir"] == str(parent / "reviews" / "usaturn" / "maatlog" / "#3-feat-x")
+    assert result["repository"] == "usaturn/xrift-sample-world"
+    assert result["review_dir"] == str(parent / "reviews" / "usaturn" / "xrift-sample-world" / "#3-feat-x")
 
 
 def test_resolve_fork_uses_base_repository(tmp_path: Path) -> None:
     parent = make_parent(tmp_path / "parent")
-    gh = gh_for(pull("usaturn/maatlog", 5, "patch", head_repository="someone/maatlog"))
+    gh = gh_for(pull("usaturn/xrift-sample-world", 5, "patch", head_repository="someone/xrift-sample-world"))
 
-    result = target.resolve("https://github.com/usaturn/maatlog/pull/5", parent_root=parent, runner=gh)
+    result = target.resolve("https://github.com/usaturn/xrift-sample-world/pull/5", parent_root=parent, runner=gh)
 
-    assert result["repository"] == "usaturn/maatlog"
-    assert result["head_repository"] == "someone/maatlog"
+    assert result["repository"] == "usaturn/xrift-sample-world"
+    assert result["head_repository"] == "someone/xrift-sample-world"
     assert "usaturn" in str(result["review_dir"]).split("/reviews/")[1]
 
 
 def test_resolve_stops_without_parent_origin(tmp_path: Path) -> None:
     parent = make_parent(tmp_path / "parent", origin=None)
-    gh = gh_for(pull("usaturn/maatlog-poc", 4, "x"))
+    gh = gh_for(pull("usaturn/xrift-poc", 4, "x"))
 
     with pytest.raises(target.TargetError) as excinfo:
         target.resolve("4", parent_root=parent, runner=gh)
@@ -360,19 +362,21 @@ def add_submodule(parent: Path, tmp_path: Path, url: str, *, origin: str | None 
 
 def test_target_checkout_uses_parent_and_registered_submodule(tmp_path: Path) -> None:
     parent = make_parent(tmp_path / "parent")
-    public = add_submodule(parent, tmp_path, "https://github.com/usaturn/maatlog.git")
+    public = add_submodule(parent, tmp_path, "https://github.com/usaturn/xrift-sample-world.git")
 
-    assert target.target_checkout(parent, "usaturn/maatlog-poc") == parent
-    assert target.target_checkout(parent, "Usaturn/Maatlog") == public.resolve()
+    assert target.target_checkout(parent, "usaturn/xrift-poc") == parent
+    assert target.target_checkout(parent, "Usaturn/Xrift-Sample-World") == public.resolve()
     assert target.target_checkout(parent, "usaturn/wabun-rst-ulint") is None
 
 
 def test_target_checkout_stops_for_broken_submodule(tmp_path: Path) -> None:
     parent = make_parent(tmp_path / "parent")
-    add_submodule(parent, tmp_path, "https://github.com/usaturn/maatlog.git", origin="https://github.com/x/y.git")
+    add_submodule(
+        parent, tmp_path, "https://github.com/usaturn/xrift-sample-world.git", origin="https://github.com/x/y.git"
+    )
 
     with pytest.raises(target.TargetError) as excinfo:
-        target.target_checkout(parent, "usaturn/maatlog")
+        target.target_checkout(parent, "usaturn/xrift-sample-world")
 
     assert error_code(excinfo) == target.EXIT_PARENT
 
@@ -389,10 +393,10 @@ def review_dir(parent: Path, *parts: str) -> Path:
 
 def test_find_review_directory_by_number(tmp_path: Path) -> None:
     parent = make_parent(tmp_path / "parent")
-    directory = review_dir(parent, "usaturn", "maatlog-poc", "#4-feat-x")
+    directory = review_dir(parent, "usaturn", "xrift-poc", "#4-feat-x")
 
     result = target.find_review_directory(
-        "#4", parent_root=parent, for_planning=True, runner=gh_for(pull("usaturn/maatlog-poc", 4, "feat/x"))
+        "#4", parent_root=parent, for_planning=True, runner=gh_for(pull("usaturn/xrift-poc", 4, "feat/x"))
     )
 
     assert result["review_dir"] == str(directory)
@@ -405,7 +409,7 @@ def test_find_review_directory_reports_missing_review_and_legacy_dir(tmp_path: P
 
     with pytest.raises(target.TargetError) as excinfo:
         target.find_review_directory(
-            "4", parent_root=parent, for_planning=True, runner=gh_for(pull("usaturn/maatlog-poc", 4, "feat/x"))
+            "4", parent_root=parent, for_planning=True, runner=gh_for(pull("usaturn/xrift-poc", 4, "feat/x"))
         )
 
     assert error_code(excinfo) == target.EXIT_NO_REVIEW
@@ -415,11 +419,11 @@ def test_find_review_directory_reports_missing_review_and_legacy_dir(tmp_path: P
 
 def test_find_review_directory_does_not_cross_repositories(tmp_path: Path) -> None:
     parent = make_parent(tmp_path / "parent")
-    review_dir(parent, "usaturn", "maatlog", "#4-feat-x")
+    review_dir(parent, "usaturn", "xrift-sample-world", "#4-feat-x")
 
     with pytest.raises(target.TargetError) as excinfo:
         target.find_review_directory(
-            "#4", parent_root=parent, for_planning=True, runner=gh_for(pull("usaturn/maatlog-poc", 4, "feat/x"))
+            "#4", parent_root=parent, for_planning=True, runner=gh_for(pull("usaturn/xrift-poc", 4, "feat/x"))
         )
 
     assert error_code(excinfo) == target.EXIT_NO_REVIEW
@@ -427,12 +431,12 @@ def test_find_review_directory_does_not_cross_repositories(tmp_path: Path) -> No
 
 def test_find_review_directory_lists_multiple_candidates(tmp_path: Path) -> None:
     parent = make_parent(tmp_path / "parent")
-    first = review_dir(parent, "usaturn", "maatlog-poc", "#4-a")
-    second = review_dir(parent, "usaturn", "maatlog-poc", "#4-b")
+    first = review_dir(parent, "usaturn", "xrift-poc", "#4-a")
+    second = review_dir(parent, "usaturn", "xrift-poc", "#4-b")
 
     with pytest.raises(target.TargetError) as excinfo:
         target.find_review_directory(
-            "#4", parent_root=parent, for_planning=False, runner=gh_for(pull("usaturn/maatlog-poc", 4, "b"))
+            "#4", parent_root=parent, for_planning=False, runner=gh_for(pull("usaturn/xrift-poc", 4, "b"))
         )
 
     assert error_code(excinfo) == target.EXIT_AMBIGUOUS
@@ -470,20 +474,20 @@ def test_find_review_directory_without_planning_accepts_other_owner(tmp_path: Pa
 def test_find_review_directory_accepts_legacy_path(tmp_path: Path) -> None:
     parent = make_parent(tmp_path / "parent")
     legacy = review_dir(parent, "#4-feat-x")
-    gh = gh_for(pull("usaturn/maatlog-poc", 4, "feat/x"))
+    gh = gh_for(pull("usaturn/xrift-poc", 4, "feat/x"))
 
     result = target.find_review_directory(str(legacy), parent_root=parent, for_planning=True, runner=gh)
 
     assert result["review_dir"] == str(legacy)
-    assert gh.calls[0][3] == "repos/usaturn/maatlog-poc/pulls/4"
+    assert gh.calls[0][3] == "repos/usaturn/xrift-poc/pulls/4"
 
 
 def test_find_review_directory_accepts_legacy_submodule_path(tmp_path: Path) -> None:
     parent = make_parent(tmp_path / "parent")
-    public = add_submodule(parent, tmp_path, "https://github.com/usaturn/maatlog.git")
+    public = add_submodule(parent, tmp_path, "https://github.com/usaturn/xrift-sample-world.git")
     legacy = public / "reviews" / "#12-feat-x"
     legacy.mkdir(parents=True)
-    gh = gh_for(pull("usaturn/maatlog", 12, "feat/x"))
+    gh = gh_for(pull("usaturn/xrift-sample-world", 12, "feat/x"))
 
     result = target.find_review_directory(str(legacy), parent_root=parent, for_planning=True, runner=gh)
 
@@ -493,14 +497,14 @@ def test_find_review_directory_accepts_legacy_submodule_path(tmp_path: Path) -> 
 
 def test_find_review_directory_rejects_name_mismatch(tmp_path: Path) -> None:
     parent = make_parent(tmp_path / "parent")
-    directory = review_dir(parent, "usaturn", "maatlog-poc", "#4-old-name")
+    directory = review_dir(parent, "usaturn", "xrift-poc", "#4-old-name")
 
     with pytest.raises(target.TargetError) as excinfo:
         target.find_review_directory(
             str(directory),
             parent_root=parent,
             for_planning=True,
-            runner=gh_for(pull("usaturn/maatlog-poc", 4, "feat/x")),
+            runner=gh_for(pull("usaturn/xrift-poc", 4, "feat/x")),
         )
 
     assert error_code(excinfo) == target.EXIT_PATH
@@ -516,26 +520,26 @@ def write_findings(directory: Path, repository: str, number: int, name: str = "m
 def test_find_review_directory_from_findings_json(tmp_path: Path) -> None:
     parent = make_parent(tmp_path / "parent")
     elsewhere = tmp_path / "elsewhere"
-    write_findings(elsewhere, "usaturn/maatlog", 7)
-    gh = gh_for(pull("usaturn/maatlog", 7, "z"))
+    write_findings(elsewhere, "usaturn/xrift-sample-world", 7)
+    gh = gh_for(pull("usaturn/xrift-sample-world", 7, "z"))
 
     result = target.find_review_directory(str(elsewhere), parent_root=parent, for_planning=True, runner=gh)
 
     assert result["review_dir"] == str(elsewhere.resolve())
-    assert gh.calls[0][3] == "repos/usaturn/maatlog/pulls/7"
+    assert gh.calls[0][3] == "repos/usaturn/xrift-sample-world/pulls/7"
 
 
 def test_find_review_directory_rejects_findings_for_another_pr(tmp_path: Path) -> None:
     parent = make_parent(tmp_path / "parent")
-    directory = review_dir(parent, "usaturn", "maatlog-poc", "#4-feat-x")
-    write_findings(directory, "usaturn/maatlog", 4)
+    directory = review_dir(parent, "usaturn", "xrift-poc", "#4-feat-x")
+    write_findings(directory, "usaturn/xrift-sample-world", 4)
 
     with pytest.raises(target.TargetError) as excinfo:
         target.find_review_directory(
             str(directory),
             parent_root=parent,
             for_planning=True,
-            runner=gh_for(pull("usaturn/maatlog-poc", 4, "feat/x")),
+            runner=gh_for(pull("usaturn/xrift-poc", 4, "feat/x")),
         )
 
     assert error_code(excinfo) == target.EXIT_PATH
@@ -695,8 +699,8 @@ def test_cli_resolve_prints_json(
     parent = make_parent(tmp_path / "parent")
     monkeypatch.setattr(target, "default_parent_root", lambda: parent)
 
-    code = target.main(["resolve", "#4"], runner=gh_for(pull("usaturn/maatlog-poc", 4, "fix/x")))
+    code = target.main(["resolve", "#4"], runner=gh_for(pull("usaturn/xrift-poc", 4, "fix/x")))
 
     assert code == 0
     printed = json.loads(capsys.readouterr().out)
-    assert printed["review_dir"].endswith("/reviews/usaturn/maatlog-poc/#4-fix-x")
+    assert printed["review_dir"].endswith("/reviews/usaturn/xrift-poc/#4-fix-x")

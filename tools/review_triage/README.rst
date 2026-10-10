@@ -10,6 +10,7 @@ review_triage の CLI（トリアージ助言）
 ====
 
 ``tools/review_triage`` は、複数モデルのレビュー（ ``reviews/<PR>/`` ）の指摘を TypeSafe System One（Jev）に問い、指摘ごとの扱いの助言ドラフトを作る親リポジトリ専用の PoC である。
+対象は開発環境のリポジトリ ``usaturn/xrift-poc`` だけで、制作物（ ``items/`` ・ ``worlds/`` ）のリポジトリは対象にしない。
 CLI（ ``python -m tools.review_triage`` ）は、入力の確認・任意の API 評価・助言の保存を1つのコマンドで行う。
 出力は助言であり、Fix / Skip / Hold / Resolved の確定や検証済みマークの付与は既存の review-fix-planning 手順で行う
 
@@ -18,10 +19,9 @@ CLI（ ``python -m tools.review_triage`` ）は、入力の確認・任意の AP
 前提条件
 ========
 
-- 親リポジトリ（ ``usaturn/maatlog-poc`` ）の checkout の root で実行する
+- 親（ ``usaturn/xrift-poc`` ）の checkout の root で実行する
 - ``tools/devenv`` の Python 環境を ``uv sync --project tools/devenv --locked`` で同期してある
-- レビューの対象 HEAD の commit を、committed 内容を読む git の作業ツリー（ ``--source-repo`` 、既定は ``.`` ）が持っている。
-  公開リポジトリ（ ``usaturn/maatlog`` ）のレビューでは ``--source-repo public`` を渡す
+- レビューの対象 HEAD の commit を、committed 内容を読む git の作業ツリー（ ``--source-repo`` 、既定は ``.`` ）が持っている
 - 実送信（ ``--live`` ）だけが API キー ``TYPESAFE_API_KEY`` を使う。
   キーの用意と疎通確認は :ref:`access` に従う
 - 実データを送る前に、送る state の内容ハッシュの許可を得る（Issue #391 のゲート）
@@ -50,7 +50,7 @@ dry-run で送信候補を確かめる
 
 #. 出力先に、存在しないディレクトリを指定して dry-run を実行する ::
 
-       uv run --project tools/devenv --no-sync python -m tools.review_triage --review-dir 'reviews/usaturn/maatlog-poc/#123-feat-example' --repository usaturn/maatlog-poc --reviewed-head 0123abc --output-dir tmp/triage-123-dry
+       uv run --project tools/devenv --no-sync python -m tools.review_triage --review-dir 'reviews/usaturn/xrift-poc/#123-feat-example' --repository usaturn/xrift-poc --reviewed-head 0123abc --output-dir tmp/triage-123-dry
 
 #. 標準エラーの要約で、state の件数（ ``sendable`` ・ ``awaiting_approval`` ・ ``blocked`` ・ ``withheld`` ）を確かめる
 
@@ -74,7 +74,7 @@ dry-run で送信候補を確かめる
 
 #. キーを export したシェルで、 ``--live`` と許可ファイルを付けて実行する ::
 
-       uv run --project tools/devenv --no-sync python -m tools.review_triage --review-dir 'reviews/usaturn/maatlog-poc/#123-feat-example' --repository usaturn/maatlog-poc --reviewed-head 0123abc --output-dir tmp/triage-123-live --live --allow-file tmp/triage-123-allow.txt
+       uv run --project tools/devenv --no-sync python -m tools.review_triage --review-dir 'reviews/usaturn/xrift-poc/#123-feat-example' --repository usaturn/xrift-poc --reviewed-head 0123abc --output-dir tmp/triage-123-live --live --allow-file tmp/triage-123-allow.txt
 
 #. 送る request の数が ``--max-calls`` （既定 50）を超えるときは、何も送らずに終了コード 2 で止まる
 
@@ -86,7 +86,7 @@ dry-run で送信候補を確かめる
 #. live の ``outcomes.json`` と同じ許可ファイルを渡して再生する。
    通信とキーは使わない ::
 
-       uv run --project tools/devenv --no-sync python -m tools.review_triage --review-dir 'reviews/usaturn/maatlog-poc/#123-feat-example' --repository usaturn/maatlog-poc --reviewed-head 0123abc --output-dir tmp/triage-123-replay --response-file tmp/triage-123-live/outcomes.json --allow-file tmp/triage-123-allow.txt
+       uv run --project tools/devenv --no-sync python -m tools.review_triage --review-dir 'reviews/usaturn/xrift-poc/#123-feat-example' --repository usaturn/xrift-poc --reviewed-head 0123abc --output-dir tmp/triage-123-replay --response-file tmp/triage-123-live/outcomes.json --allow-file tmp/triage-123-allow.txt
 
 #. 今回の request と ``request_sha256`` が一致しない outcome は使わない。
    件数は標準エラーの ``unmatched`` と ``run.json`` に出る
@@ -119,7 +119,7 @@ dry-run で送信候補を確かめる
      - レビューディレクトリ。直下の ``*.md`` だけを読む
    * - ``--repository REPO``
      - 必須
-     - ``usaturn/maatlog-poc`` または ``usaturn/maatlog`` 。ディレクトリ名から推定しない
+     - ``usaturn/xrift-poc`` だけを受け付ける。ディレクトリ名から推定しない
    * - ``--reviewed-head SHA``
      - 必須
      - 対象 HEAD（7〜40 桁の小文字 hex）。 ``--source-repo`` で 40 桁に解決する

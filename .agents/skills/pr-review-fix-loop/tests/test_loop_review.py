@@ -54,7 +54,7 @@ def accepted_result(env: Any, tmp_path: Path) -> tuple[Result, str]:
         "request_id": "request-1",
         "agent_id": "alpha",
         "role": "inspect",
-        "repository": "usaturn/maatlog-poc",
+        "repository": "usaturn/xrift-poc",
         "pr_number": 900,
         "pr_head": head,
         "reviewed_head": head,
@@ -148,9 +148,7 @@ def broken(result: Result, case: str, env: Any, tmp_path: Path) -> Result:
 )
 def test_verify_reviewer_rejects_each_broken_condition(loop: Any, env: Any, tmp_path: Path, case: str) -> None:
     result, head = accepted_result(env, tmp_path)
-    pr = loop.PrRef(
-        repository="usaturn/maatlog-poc", number=900, url="https://github.com/usaturn/maatlog-poc/pull/900"
-    )
+    pr = loop.PrRef(repository="usaturn/xrift-poc", number=900, url="https://github.com/usaturn/xrift-poc/pull/900")
 
     entry = loop.verify_reviewer(broken(result, case, env, tmp_path), pr=pr, head=head, review_dir=env.review_dir)
 
@@ -160,9 +158,7 @@ def test_verify_reviewer_rejects_each_broken_condition(loop: Any, env: Any, tmp_
 
 def test_verify_reviewer_accepts_a_complete_payload_and_records_hashes(loop: Any, env: Any, tmp_path: Path) -> None:
     result, head = accepted_result(env, tmp_path)
-    pr = loop.PrRef(
-        repository="usaturn/maatlog-poc", number=900, url="https://github.com/usaturn/maatlog-poc/pull/900"
-    )
+    pr = loop.PrRef(repository="usaturn/xrift-poc", number=900, url="https://github.com/usaturn/xrift-poc/pull/900")
 
     entry = loop.verify_reviewer(result, pr=pr, head=head, review_dir=env.review_dir)
 
@@ -174,9 +170,7 @@ def test_verify_reviewer_accepts_a_complete_payload_and_records_hashes(loop: Any
 
 
 def test_reuse_counts_only_pairs_for_the_current_head(loop: Any, env: Any, kit: Any) -> None:
-    pr = loop.PrRef(
-        repository="usaturn/maatlog-poc", number=900, url="https://github.com/usaturn/maatlog-poc/pull/900"
-    )
+    pr = loop.PrRef(repository="usaturn/xrift-poc", number=900, url="https://github.com/usaturn/xrift-poc/pull/900")
     old = env.gh.head()
     env.place_review(old, "gamma")
     new = env.push("新しい commit")
@@ -624,9 +618,7 @@ def test_failed_cleanup_paths_are_reported(loop: Any, env: Any, tmp_path: Path) 
         retained_paths={"worktree": "/tmp/pr-review-900-x/worktree", "session_dir": "/tmp/pr-review-900-x"},
     )
     failed = result.model_copy(update={"attempts": [attempt.model_copy(update={"payload": payload})]})
-    pr = loop.PrRef(
-        repository="usaturn/maatlog-poc", number=900, url="https://github.com/usaturn/maatlog-poc/pull/900"
-    )
+    pr = loop.PrRef(repository="usaturn/xrift-poc", number=900, url="https://github.com/usaturn/xrift-poc/pull/900")
 
     entry = loop.verify_reviewer(failed, pr=pr, head=head, review_dir=env.review_dir)
 
@@ -686,7 +678,7 @@ def test_verify_reviewer_rejects_artifacts_that_do_not_belong_to_this_head(
     review, candidates = Path(payload["review_file"]), Path(payload["findings_file"])
     if case == "other_pr_document":
         document = read(candidates)
-        document["pr"] = {"repository": "usaturn/maatlog-poc", "number": 901}
+        document["pr"] = {"repository": "usaturn/xrift-poc", "number": 901}
         candidates.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
     elif case == "symlink_inside_dir":
         target = env.review_dir / "real.md"
@@ -694,9 +686,7 @@ def test_verify_reviewer_rejects_artifacts_that_do_not_belong_to_this_head(
         review.symlink_to(target)
     else:
         review.write_text(review.read_text(encoding="utf-8").replace(head[:12], "1" * 12), encoding="utf-8")
-    pr = loop.PrRef(
-        repository="usaturn/maatlog-poc", number=900, url="https://github.com/usaturn/maatlog-poc/pull/900"
-    )
+    pr = loop.PrRef(repository="usaturn/xrift-poc", number=900, url="https://github.com/usaturn/xrift-poc/pull/900")
 
     entry = loop.verify_reviewer(result, pr=pr, head=head, review_dir=env.review_dir)
 

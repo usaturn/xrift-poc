@@ -21,7 +21,7 @@ input・client・policy・CLI・評価の各担当は、この文書と ``models
 review_triage は、過去のレビュー指摘を TypeSafe System One の API へ送り、指摘ごとの扱いを助言させる PoC である。
 この文書では、TypeSafe System One のモデル（既定は ``jev-latest``）を Jev と呼ぶ。
 Jev は state（送信する本文）と質問の組を受け取り、質問ごとに型付きの回答を返す。
-ツールは親リポジトリ ``usaturn/maatlog-poc`` 限定であり、公開リポジトリ ``usaturn/maatlog`` へ依存やデータを持ち込まない
+ツールは親（ ``usaturn/xrift-poc`` ）限定であり、制作物のリポジトリへ依存やデータを持ち込まない
 
 Jev の回答は助言であり、指摘の成立を示す検証証拠ではない。
 次の境界を型と質問文で固定する
@@ -84,7 +84,7 @@ Jev の回答は助言であり、指摘の成立を示す検証証拠ではな�
      - 値
      - 意味
    * - ``Repository``
-     - ``usaturn/maatlog-poc`` ・ ``usaturn/maatlog``
+     - ``usaturn/xrift-poc``
      - レビュー対象のリポジトリ。ディレクトリ名や本文から推定せず、呼び出し側が明示する
    * - ``Severity``
      - ``critical`` ・ ``high`` ・ ``medium`` ・ ``low`` ・ ``info`` ・ ``unknown``

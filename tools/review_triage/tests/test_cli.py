@@ -152,7 +152,7 @@ def odd_ws(ws: Workspace) -> Workspace:
 
 
 def _batch(ws: Workspace) -> ReviewBatch:
-    return load_reviews(ws.reviews, repository=Repository.PARENT, reviewed_head=ws.head)
+    return load_reviews(ws.reviews, repository=Repository.ENV, reviewed_head=ws.head)
 
 
 def _numbered(path: Path, start: int, end: int) -> str:
@@ -198,7 +198,7 @@ def test_location_refs(location: str, expected: list[tuple[str, int, int]]) -> N
 def test_fixture_reviews_parse_cleanly(tmp_path: Path) -> None:
     """fixture は input の規則どおりに読め、anomaly と未解釈ブロックを出さない。"""
     head = "0123456789ab"
-    batch = load_reviews(_render_reviews(tmp_path, head), repository=Repository.PARENT, reviewed_head=head)
+    batch = load_reviews(_render_reviews(tmp_path, head), repository=Repository.ENV, reviewed_head=head)
     assert batch.anomalies == ()
     assert batch.unparsed == ()
     assert tuple(finding.finding_id for finding in batch.findings) == FINDING_IDS
@@ -276,7 +276,7 @@ def _args(ws: Workspace, out: str, *extra: str) -> list[str]:
         "--review-dir",
         os.fspath(ws.reviews),
         "--repository",
-        Repository.PARENT.value,
+        Repository.ENV.value,
         "--reviewed-head",
         ws.head[:12],
         "--output-dir",
@@ -554,7 +554,7 @@ def test_candidate_pairs_skip_the_same_file_and_missing_anchors(ws: Workspace) -
 
 # --- main: 引数と入力の検証 --------------------------------------------------------
 
-_BASE = ["--review-dir", "r", "--repository", "usaturn/maatlog-poc", "--reviewed-head", "abcdef1", "--output-dir", "o"]
+_BASE = ["--review-dir", "r", "--repository", "usaturn/xrift-poc", "--reviewed-head", "abcdef1", "--output-dir", "o"]
 
 
 def test_help_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:

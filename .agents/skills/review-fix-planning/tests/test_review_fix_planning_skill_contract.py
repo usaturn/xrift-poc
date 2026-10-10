@@ -64,7 +64,7 @@ def test_posting_snippet_runs_verbatim_and_keeps_names_literal(skill: Path, tmp_
         **os.environ,
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
         "PR_NUMBER": "7",
-        "PR_REPO": "usaturn/maatlog",
+        "PR_REPO": "usaturn/xrift-sample-world",
         "MODEL_NAME": "model-x",
         "ROUND_JSON": str(round_json),
         "ROUND": "1",
@@ -85,7 +85,7 @@ def test_posting_snippet_runs_verbatim_and_keeps_names_literal(skill: Path, tmp_
     helper = parent.resolve() / ".agents/skills/review-fix-planning/scripts/upsert_pr_comment.py"
     assert Path(args[args.index("python") + 1]) == helper
     # PR の番号だけでは親と公開側のどちらの PR か決まらないので、リポジトリを渡す
-    assert args[args.index("--repo") + 1] == "usaturn/maatlog"
+    assert args[args.index("--repo") + 1] == "usaturn/xrift-sample-world"
     assert args[args.index("--pr") + 1] == "7"
     assert args[args.index("--records-file") + 1] == str(round_json)
     body = stdin_file.read_text(encoding="utf-8")

@@ -323,7 +323,7 @@ def test_a_differently_cased_pr_url_shares_the_lock(loop: Any, env: Any, kit: An
 
     with pytest.raises(loop.LoopError) as error:
         loop.start(
-            "https://github.com/Usaturn/Maatlog-POC/pull/900",
+            "https://github.com/Usaturn/Xrift-POC/pull/900",
             controller_model="m",
             controller_runtime="claude-code",
             github=env.github,
