@@ -23,6 +23,9 @@ origin が親を指すかどうかは、origin の URL の設定値の末尾（`
 大文字小文字を区別せずに照合して決める。``https://user@github.com/...``・SSH のホスト別名・
 ``GitHub.com``・``http`` の書き方も親とみなす（制作物の origin が親を指していれば止める）。
 
+制作物の ``repository`` は ``review_target.github_repository`` で読む。``user@`` 付き・``GitHub.com``・``http`` も
+``owner/repo`` に直すが、SSH のホスト別名は行き先を決められないので読まない（``product_origin_not_github``）。
+
 標準ライブラリだけで書く（``uv run --no-project python`` で実行するため）。
 """
 
@@ -51,6 +54,15 @@ _BASE_REASON = "items/ か worlds/ そのものは制作物ではない。items/
 _UNINITIALIZED_REASON = "制作物の Git が初期化されていない。祖先の xrift-poc の Git を制作物の Git と取り違えない"
 _ENV_WORKTREE_REASON = (
     "親の worktree の items/・worlds/ は制作物の置き場所ではない。$XRIFT_POC_ROOT の main checkout 側で扱う"
+)
+_WITHOUT_ORIGIN_REASON = (
+    "制作物の Git だが、origin が無い。GitHub の操作（Issue・PR）はしない。"
+    "GitHub で管理するなら git remote add origin <URL> する"
+)
+_NOT_GITHUB_REASON = (
+    "制作物の origin を GitHub の URL として読めない（SSH のホスト別名・GitHub 以外のホストなど）。"
+    "GitHub の操作（Issue・PR）はしない。GitHub で管理しているなら "
+    "git remote set-url origin https://github.com/<owner>/<repo>.git にする"
 )
 
 Kind = Literal["env", "product", "stop"]
@@ -103,9 +115,14 @@ def origin_repository(git_root: Path) -> str | None:
     return cast(str | None, _review_target.origin_repository(git_root))
 
 
+def _origin_url(git_root: Path) -> str | None:
+    """origin の URL の設定値。origin が無ければ None（空の値は空文字列）。"""
+    return _git(git_root, "config", "--get", "remote.origin.url")
+
+
 def origin_points_to_env(git_root: Path) -> bool:
     """origin の URL の設定値が親（``usaturn/xrift-poc``）を指すか。"""
-    url = _git(git_root, "config", "--get", "remote.origin.url")
+    url = _origin_url(git_root)
     return url is not None and _ENV_ORIGIN_PATH.search(url) is not None
 
 
@@ -177,7 +194,6 @@ def _nearest_directory(path: Path) -> Path:
 
 
 def _product_route(git_root: Path, project_root: Path) -> Route:
-    repository = origin_repository(git_root)
     if origin_points_to_env(git_root):
         return _stop(
             "product_origin_is_env",
@@ -185,16 +201,15 @@ def _product_route(git_root: Path, project_root: Path) -> Route:
             git_root=git_root,
             project_root=project_root,
         )
-    if repository is None:
+    repository = origin_repository(git_root)
+    if repository is not None:
+        return Route("product", "product", repository, str(git_root), str(project_root), "制作物のリポジトリ")
+    # origin が既にあると git remote add は失敗するので、origin の有無で案内を分ける（usaturn/xrift-poc#7）。
+    if _origin_url(git_root) is None:
         return Route(
-            "product",
-            "product_without_github",
-            None,
-            str(git_root),
-            str(project_root),
-            "制作物の Git だが、origin が無いか GitHub ではない。GitHub の操作（Issue・PR）はしない",
+            "product", "product_without_origin", None, str(git_root), str(project_root), _WITHOUT_ORIGIN_REASON
         )
-    return Route("product", "product", repository, str(git_root), str(project_root), "制作物のリポジトリ")
+    return Route("product", "product_origin_not_github", None, str(git_root), str(project_root), _NOT_GITHUB_REASON)
 
 
 def route(path: Path, env_root: Path) -> Route:

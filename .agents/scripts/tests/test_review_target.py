@@ -148,6 +148,36 @@ def test_github_repository_reads_https_and_ssh() -> None:
     assert target.github_repository("https://github.com/usaturn/..") is None
 
 
+# 制作物・親の origin の設定値として使われる、GitHub を指すことが明らかな書き方（usaturn/xrift-poc#7）
+LENIENT_GITHUB_URLS = [
+    "https://user@github.com/someone/my-world.git",
+    "https://user:token@github.com/someone/my-world.git",
+    "https://GitHub.com/someone/my-world",
+    "http://github.com/someone/my-world/",
+    "git@GitHub.com:someone/my-world.git",
+]
+
+
+@pytest.mark.parametrize("url", LENIENT_GITHUB_URLS)
+def test_github_repository_reads_unambiguous_github_spellings(url: str) -> None:
+    assert target.github_repository(url) == "someone/my-world"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "github-personal:someone/my-world.git",  # SSH のホスト別名は行き先を決められない
+        "https://github.com@evil.test/someone/my-world",
+        "https://github.com.evil.test/someone/my-world",
+        "https://a@b@github.com/someone/my-world",
+        "https://github.com:443/someone/my-world",
+        "https://gitlab.com/someone/my-world.git",
+    ],
+)
+def test_github_repository_ignores_lookalike_hosts(url: str) -> None:
+    assert target.github_repository(url) is None
+
+
 def test_review_directory_uses_owner_and_repo_levels(tmp_path: Path) -> None:
     assert target.review_directory(tmp_path, "usaturn/wabun-rst-ulint", 3, "hogehoge") == (
         tmp_path / "reviews" / "usaturn" / "wabun-rst-ulint" / "#3-hogehoge"
@@ -676,6 +706,29 @@ def test_clone_rejects_existing_destination_and_foreign_url(tmp_path: Path) -> N
             }
         )
     assert error_code(excinfo) == target.EXIT_USAGE
+
+
+def clone_target_with_url(clone_url: str) -> Any:
+    return target.CloneTarget.from_json(
+        {
+            "repository": "someone/my-world",
+            "number": 3,
+            "head_ref": "hogehoge",
+            "head_sha": "a" * 40,
+            "head_repository": "someone/my-world",
+            "clone_url": clone_url,
+        }
+    )
+
+
+def test_clone_target_accepts_only_canonical_urls() -> None:
+    # clone_url はそのまま git clone に渡すので、平文の http や認証情報付きの URL は受け付けない
+    for url in ("https://github.com/someone/my-world.git", "git@github.com:someone/my-world.git"):
+        assert clone_target_with_url(url).clone_url == url
+    for url in LENIENT_GITHUB_URLS:
+        with pytest.raises(target.TargetError) as excinfo:
+            clone_target_with_url(url)
+        assert error_code(excinfo) == target.EXIT_USAGE
 
 
 # CLI
