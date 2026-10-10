@@ -130,7 +130,8 @@ def test_link_rejects_paths_that_are_not_a_product_git_root(env: EnvRepo, tmp_pa
     project = create_product(env.root, "worlds", "my-world", origin_url=ORIGIN)
     (project / "src").mkdir()
     outside = create_owned_worktree(project, tmp_path / "elsewhere")
-    for wrong in (env.root, env.root / "worlds", project / "src", outside):
+    inside_env = create_owned_worktree(project, env.root / "tmp", name="wt")
+    for wrong in (env.root, env.root / "worlds", project / "src", outside, inside_env):
         with pytest.raises(project_link.LinkError) as caught:
             project_link.link(wrong, env.root)
         assert caught.value.code == 2
@@ -176,3 +177,45 @@ def test_broken_markers_stop_before_any_change(env: EnvRepo) -> None:
         project_link.link(project, env.root)
     assert caught.value.code == 1
     assert not (project / ".agents" / "skills").exists()
+
+
+def test_unlink_in_a_worktree_keeps_the_exclusion_of_other_checkouts(env: EnvRepo) -> None:
+    project = create_product(env.root, "worlds", "my-world", origin_url=ORIGIN)
+    worktree = create_owned_worktree(project, project / ".worktrees", name="feature")
+    project_link.link(project, env.root)
+    project_link.link(worktree, env.root)
+
+    project_link.unlink(worktree, env.root)
+
+    assert git(project, "status", "--porcelain", "--", ".agents", ".claude") == ""
+    assert links(worktree) == {}
+    assert len(links(project)) == 2 * len(SKILLS)
+    project_link.unlink(project, env.root)
+    assert project_link.BLOCK_BEGIN not in exclude_text(project)
+
+
+def test_replaced_link_is_no_longer_excluded_after_relink(env: EnvRepo) -> None:
+    project = create_product(env.root, "worlds", "my-world", origin_url=ORIGIN)
+    project_link.link(project, env.root)
+    replaced = project / ".agents" / "skills" / "alpha"
+    replaced.unlink()
+    replaced.mkdir()
+    (replaced / "SKILL.md").write_text("own\n", encoding="utf-8")
+
+    project_link.link(project, env.root)
+
+    assert "/.agents/skills/alpha\n" not in exclude_text(project)
+    assert "alpha/SKILL.md" in git(project, "status", "--porcelain", "-uall")
+
+
+def test_relink_reports_user_files_hidden_by_another_worktrees_link(env: EnvRepo) -> None:
+    project = create_product(env.root, "worlds", "my-world", origin_url=ORIGIN)
+    worktree = create_owned_worktree(project, project / ".worktrees", name="feature")
+    own = worktree / ".agents" / "skills" / "alpha"
+    own.mkdir(parents=True)
+    (own / "SKILL.md").write_text("own\n", encoding="utf-8")
+    project_link.link(project, env.root)
+
+    report = project_link.link(worktree, env.root)
+
+    assert any(".agents/skills/alpha" in note and "他の worktree" in note for note in report.kept)

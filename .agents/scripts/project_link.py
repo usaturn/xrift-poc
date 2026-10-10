@@ -8,7 +8,9 @@ Claude Code・pi・Codex は、独立した Git リポジトリの中から起�
 - ``link [dir]``: ``<dir>/.agents/skills/<name>`` と ``<dir>/.claude/skills/<name>`` に、
   ``<root>/.agents/skills/<name>`` への絶対パスのリンクを置き、置いたリンクを ``info/exclude`` の
   管理ブロックに登録する。同じ名前のもの（壊れたリンクを含む）が既にあれば変えない
-- ``unlink [dir]``: 管理ブロックに登録され、ルートのスキルを指すリンクだけを消し、管理ブロックを外す
+- ``unlink [dir]``: 管理ブロックに登録され、ルートのスキルを指すリンクだけを消す
+- 管理ブロックの行は ``info/exclude`` が制作物のすべての worktree で共有されるため、link・unlink のたびに
+  「いずれかの worktree に実在する、ルートのスキルへのリンク」から作り直す。空になったときだけブロックを外す
 
 ``dir`` は ``<root>/items/<name>``・``<root>/worlds/<name>`` の配下にある Git の作業ツリーのルート
 （制作物のリポジトリか、その中に作った worktree）に限る。
@@ -84,8 +86,8 @@ def _target(directory: Path, env_root: Path) -> Path | None:
         return None
     if result.kind != "product":
         raise LinkError(EXIT_USAGE, f"制作物の Git リポジトリではない（{result.code}: {result.reason}）")
-    if not target.is_relative_to(env_root.resolve()):
-        raise LinkError(EXIT_USAGE, f"xrift-poc の外にある worktree には対応しない: {target}")
+    if result.project_root is None or not target.is_relative_to(Path(result.project_root)):
+        raise LinkError(EXIT_USAGE, f"制作物の配下ではない worktree には対応しない: {target}")
     if Path(result.git_root) != target:
         raise LinkError(EXIT_USAGE, f"Git の作業ツリーのルートを指定する: {result.git_root}")
     return target
@@ -145,6 +147,52 @@ def _blocked_component(target: Path, link_dir: Path) -> Path | None:
     return None
 
 
+def _worktrees(target: Path) -> list[Path]:
+    """``target`` と同じリポジトリのすべての worktree（``info/exclude`` を共有する）。"""
+    result = subprocess.run(
+        ["git", "-C", str(target), "worktree", "list", "--porcelain", "-z"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    found = [target]
+    if result.returncode != 0:
+        return found
+    for field_text in result.stdout.split("\0"):
+        if field_text.startswith("worktree "):
+            path = Path(field_text.removeprefix("worktree "))
+            if path.is_dir() and path.resolve() not in found:
+                found.append(path.resolve())
+    return found
+
+
+def _live_entries(target: Path, source: Path) -> list[str]:
+    """いずれかの worktree に実在する、``source`` 配下のスキルへのリンクの除外行。"""
+    entries: set[str] = set()
+    for worktree in _worktrees(target):
+        for link_dir in LINK_DIRS:
+            if _blocked_component(worktree, link_dir) is not None or not (worktree / link_dir).is_dir():
+                continue
+            for path in (worktree / link_dir).iterdir():
+                if path.is_symlink() and Path(os.readlink(path)) == source / path.name:
+                    entries.add(f"/{(link_dir / path.name).as_posix()}")
+    return sorted(entries)
+
+
+def _hidden_notes(target: Path, entries: list[str], source: Path) -> list[str]:
+    """除外行が残っているために、この worktree の利用者のものが Git から隠れている場合の注意。"""
+    notes: list[str] = []
+    for entry in entries:
+        relative = Path(entry.removeprefix("/"))
+        path = target / relative
+        ours = path.is_symlink() and Path(os.readlink(path)) == source / relative.name
+        if (path.exists() or path.is_symlink()) and not ours:
+            notes.append(
+                f"{relative.as_posix()}: 他の worktree のリンクのため除外されており、git status に表示されない"
+            )
+    return notes
+
+
 def link(directory: Path, env_root: Path) -> Report:
     report = Report()
     target = _target(directory, env_root)
@@ -169,9 +217,10 @@ def link(directory: Path, env_root: Path) -> Report:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.symlink_to(source / name, target_is_directory=True)
             report.created.append(relative)
-    merged = sorted(set(entries) | {f"/{relative}" for relative in report.created})
+    merged = _live_entries(target, source)
     if merged != entries:
         _write_atomic(exclude, _render(before, merged, after))
+    report.kept.extend(_hidden_notes(target, merged, source))
     report.exclude_file = str(exclude)
     return report
 
@@ -197,8 +246,10 @@ def unlink(directory: Path, env_root: Path) -> Report:
             report.removed.append(relative.as_posix())
         elif path.is_symlink() or path.exists():
             report.kept.append(f"{relative.as_posix()}: xrift-poc のスキルへのリンクではない")
-    if entries:
-        _write_atomic(exclude, _render(before, [], after))
+    merged = _live_entries(target, source)
+    if merged != entries:
+        _write_atomic(exclude, _render(before, merged, after))
+    report.kept.extend(_hidden_notes(target, merged, source))
     report.exclude_file = str(exclude)
     return report
 
