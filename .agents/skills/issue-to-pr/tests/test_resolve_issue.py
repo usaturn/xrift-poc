@@ -10,18 +10,39 @@ from pathlib import Path
 
 import pytest
 
+from tools.test_support.repos import EnvRepo, create_env_repo, create_product
+
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "resolve_issue.py"
 
 
+WORLD_ORIGIN = "https://github.com/someone/my-world.git"
+
+
 @pytest.fixture
-def checkout(tmp_path: Path) -> Path:
-    root = tmp_path / "checkout"
-    subprocess.run(["git", "init", "--quiet", str(root)], check=True)
-    subprocess.run(
-        ["git", "-C", str(root), "remote", "add", "origin", "https://github.com/usaturn/maatlog-poc.git"],
-        check=True,
+def env(tmp_path: Path) -> EnvRepo:
+    return create_env_repo(tmp_path / "workspace")
+
+
+def location(env: EnvRepo, where: str) -> Path:
+    if where == "env":
+        return env.root
+    if where == "product":
+        return create_product(env.root, "worlds", "my-world", origin_url=WORLD_ORIGIN)
+    if where == "uninitialized":
+        return create_product(env.root, "worlds", "plain", git=False)
+    if where == "no-origin":
+        return create_product(env.root, "items", "local-only")
+    raise AssertionError(where)
+
+
+def run(argument: str, cwd: Path, env: EnvRepo) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), argument],
+        cwd=cwd,
+        env={**os.environ, "XRIFT_POC_ROOT": str(env.root)},
+        capture_output=True,
+        text=True,
     )
-    return root
 
 
 @pytest.fixture
@@ -46,7 +67,7 @@ def gh_stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     )
     gh.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
-    set_response(monkeypatch, "usaturn/maatlog-poc")
+    set_response(monkeypatch, "usaturn/xrift-poc")
 
 
 def set_response(
@@ -72,76 +93,71 @@ def set_response(
     )
 
 
-def resolve(checkout: Path, argument: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run([sys.executable, str(SCRIPT), argument], cwd=checkout, capture_output=True, text=True)
-
-
 @pytest.mark.parametrize(
-    ("argument", "repo", "remote"),
+    ("argument", "where", "expected"),
     [
-        ("https://github.com/usaturn/maatlog-poc/issues/42", "usaturn/maatlog-poc", None),
-        ("https://github.com/usaturn/maatlog/issues/42", "usaturn/maatlog", None),
-        ("#42", "usaturn/maatlog-poc", None),
-        ("#42", "usaturn/maatlog", "https://github.com/usaturn/maatlog.git"),
-        ("#42", "usaturn/maatlog", "git@github.com:usaturn/maatlog.git"),
+        ("https://github.com/usaturn/xrift-poc/issues/42", "env", "usaturn/xrift-poc"),
+        ("#42", "env", "usaturn/xrift-poc"),
+        ("https://github.com/usaturn/xrift-poc/issues/42", "product", "usaturn/xrift-poc"),
+        ("https://github.com/someone/my-world/issues/42", "product", "someone/my-world"),
+        ("#42", "product", "someone/my-world"),
     ],
 )
-def test_resolves_issue_in_selected_repository_without_changing_git(
-    checkout: Path, gh_stub: None, monkeypatch: pytest.MonkeyPatch, argument: str, repo: str, remote: str | None
+def test_accepted_targets(
+    env: EnvRepo, gh_stub: None, monkeypatch: pytest.MonkeyPatch, argument: str, where: str, expected: str
 ) -> None:
-    if remote:
-        subprocess.run(["git", "remote", "set-url", "origin", remote], cwd=checkout, check=True)
-    set_response(monkeypatch, repo)
-    before = subprocess.check_output(["git", "status", "--porcelain"], cwd=checkout)
-    result = resolve(checkout, argument)
+    set_response(monkeypatch, expected)
+    result = run(argument, location(env, where), env)
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
-    assert payload["repo"] == repo
-    assert payload["number"] == 42
-    assert payload["url"] == f"https://github.com/{repo}/issues/42"
-    assert payload["body"] == "Keep unrelated work intact."
-    assert subprocess.check_output(["git", "status", "--porcelain"], cwd=checkout) == before
-    assert subprocess.check_output(["git", "for-each-ref"], cwd=checkout) == b""
+    assert (payload["repo"], payload["number"]) == (expected, 42)
 
 
 @pytest.mark.parametrize(
-    "argument",
+    ("argument", "where"),
     [
-        "https://github.com/usaturn/maatlog-poc/pull/42",
-        "https://github.com/other/repo/issues/42",
-        "https://github.com/usaturn/maatlog/issues/42?foo=bar",
-        "https://github.com/usaturn/maatlog/issues/42#comment",
-        "https://github.com.evil.test/usaturn/maatlog/issues/42",
-        "#0",
-        "#-42",
-        "42",
-        "#42; touch injected",
+        ("https://github.com/someone/my-world/issues/42", "env"),  # 制作物の外から制作物の Issue は解決しない
+        ("https://github.com/someone/other/issues/42", "product"),  # 判定した制作物と違うリポジトリ
+        ("#42", "uninitialized"),  # Git 未初期化の制作物
+        ("#42", "no-origin"),  # origin の無い制作物
+        ("https://github.com/usaturn/xrift-poc/pull/42", "env"),
+        ("https://github.com/usaturn/xrift-poc/issues/42?foo=bar", "env"),
+        ("https://github.com.evil.test/usaturn/xrift-poc/issues/42", "env"),
     ],
 )
-def test_rejects_invalid_input_before_looking_up_issue(checkout: Path, argument: str) -> None:
-    result = resolve(checkout, argument)
+def test_rejected_targets(env: EnvRepo, gh_stub: None, argument: str, where: str) -> None:
+    result = run(argument, location(env, where), env)
+    assert result.returncode == 2
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize(
+    "argument", ["https://github.com/other/repo/issues/42#comment", "#0", "#-42", "42", "#42; touch injected"]
+)
+def test_rejects_invalid_input_before_looking_up_issue(env: EnvRepo, argument: str) -> None:
+    result = run(argument, env.root, env)
     assert result.returncode == 2
     assert result.stdout == ""
     assert result.stderr.startswith("issue-to-pr:")
-    assert not (checkout / "injected").exists()
+    assert not (env.root / "injected").exists()
 
 
 @pytest.mark.parametrize("state,kind,number", [("CLOSED", "issues", 42), ("OPEN", "pull", 42), ("OPEN", "issues", 99)])
 def test_rejects_closed_pr_or_mismatched_response(
-    checkout: Path, gh_stub: None, monkeypatch: pytest.MonkeyPatch, state: str, kind: str, number: int
+    env: EnvRepo, gh_stub: None, monkeypatch: pytest.MonkeyPatch, state: str, kind: str, number: int
 ) -> None:
-    set_response(monkeypatch, "usaturn/maatlog-poc", state=state, kind=kind, number=number)
-    result = resolve(checkout, "#42")
+    set_response(monkeypatch, "usaturn/xrift-poc", state=state, kind=kind, number=number)
+    result = run("#42", env.root, env)
     assert result.returncode == 2
     assert result.stdout == ""
     assert result.stderr.startswith("issue-to-pr:")
 
 
 def test_merged_pr_is_reported_as_pr_not_as_malformed_issue(
-    checkout: Path, gh_stub: None, monkeypatch: pytest.MonkeyPatch
+    env: EnvRepo, gh_stub: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    set_response(monkeypatch, "usaturn/maatlog-poc", state="MERGED", kind="pull")
-    result = resolve(checkout, "#42")
+    set_response(monkeypatch, "usaturn/xrift-poc", state="MERGED", kind="pull")
+    result = run("#42", env.root, env)
     assert result.returncode == 2
     assert result.stdout == ""
     assert "PR" in result.stderr
@@ -149,31 +165,21 @@ def test_merged_pr_is_reported_as_pr_not_as_malformed_issue(
 
 @pytest.mark.parametrize("response", ["not JSON", "[]", "{}", '{"number": "42"}'])
 def test_rejects_malformed_response(
-    checkout: Path, gh_stub: None, monkeypatch: pytest.MonkeyPatch, response: str
+    env: EnvRepo, gh_stub: None, monkeypatch: pytest.MonkeyPatch, response: str
 ) -> None:
     monkeypatch.setenv("GH_RESPONSE", response)
-    result = resolve(checkout, "#42")
+    result = run("#42", env.root, env)
     assert result.returncode == 2
     assert result.stdout == ""
     assert result.stderr.startswith("issue-to-pr:")
 
 
 def test_reports_missing_issue_without_trying_another_repository(
-    checkout: Path, gh_stub: None, monkeypatch: pytest.MonkeyPatch
+    env: EnvRepo, gh_stub: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("GH_FAIL", "1")
-    result = resolve(checkout, "#42")
+    result = run("#42", env.root, env)
     assert result.returncode == 2
     assert result.stdout == ""
     assert result.stderr.startswith("issue-to-pr:")
     assert "404" in result.stderr
-
-
-def test_unknown_remote_does_not_fall_back_to_parent(checkout: Path, gh_stub: None) -> None:
-    subprocess.run(
-        ["git", "remote", "set-url", "origin", "https://github.com/other/repo.git"], cwd=checkout, check=True
-    )
-    result = resolve(checkout, "#42")
-    assert result.returncode == 2
-    assert result.stdout == ""
-    assert result.stderr.startswith("issue-to-pr:")

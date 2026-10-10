@@ -3,18 +3,19 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import subprocess
 import sys
-from typing import Literal
+from pathlib import Path
+from types import ModuleType
+from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-REPOSITORIES = frozenset({"usaturn/maatlog-poc", "usaturn/maatlog"})
-ISSUE_URL = re.compile(r"https://github\.com/(usaturn/maatlog(?:-poc)?)/issues/([1-9][0-9]*)/?")
+ISSUE_URL = re.compile(r"https://github\.com/([A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+)/issues/([1-9][0-9]*)/?")
 NUMBER = re.compile(r"#([1-9][0-9]*)")
-ORIGIN = re.compile(r"(?:https://github\.com/|git@github\.com:)(usaturn/maatlog(?:-poc)?)(?:\.git)?/?")
 
 
 class Issue(BaseModel):
@@ -34,20 +35,45 @@ def run_readonly(*args: str) -> str:
     return result.stdout.strip()
 
 
-def resolve_target(argument: str) -> tuple[str, int]:
+def _load_route_target() -> ModuleType:
+    path = Path(__file__).resolve().parents[3] / "scripts" / "route_target.py"
+    spec = importlib.util.spec_from_file_location("route_target", path)
+    if spec is None or spec.loader is None:
+        raise ValueError(f"route_target.py を読み込めません: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def resolve_target(argument: str, cwd: Path) -> tuple[str, int]:
+    route_target = _load_route_target()
+    try:
+        current = route_target.route(cwd, route_target.resolve_env_root())
+    except route_target.RouteError as error:
+        raise ValueError(f"操作先を判定できません: {error}") from None
+    env_repository = cast(str, route_target.ENV_REPOSITORY)
+    product = cast("str | None", current.repository) if current.kind == "product" else None
+    allowed: set[str] = {env_repository}
+    if product:
+        allowed.add(product)
     if match := ISSUE_URL.fullmatch(argument):
-        return match[1], int(match[2])
+        repository = match[1]
+        if repository.lower() not in {name.lower() for name in allowed}:
+            raise ValueError(
+                f"{repository} は、現在の場所から扱える Issue のリポジトリではありません（{current.reason}）"
+            )
+        return repository, int(match[2])
     if match := NUMBER.fullmatch(argument):
-        origin = run_readonly("git", "remote", "get-url", "origin")
-        remote = ORIGIN.fullmatch(origin)
-        if not remote or remote[1] not in REPOSITORIES:
-            raise ValueError("現在の checkout の origin が対象リポジトリではありません")
-        return remote[1], int(match[1])
-    raise ValueError("対象リポジトリの https://github.com/.../issues/N または #N を指定してください（PR は対象外）")
+        if current.kind == "env":
+            return env_repository, int(match[1])
+        if product:
+            return product, int(match[1])
+        raise ValueError(f"#番号を解決できません: {current.reason}")
+    raise ValueError("https://github.com/<owner>/<repo>/issues/N または #N を指定してください（PR は対象外）")
 
 
 def resolve_issue(argument: str) -> dict[str, str | int]:
-    repo, number = resolve_target(argument)
+    repo, number = resolve_target(argument, Path.cwd())
     response = run_readonly(
         "gh", "issue", "view", str(number), "--repo", repo, "--json", "number,title,body,state,url"
     )
@@ -62,7 +88,7 @@ def resolve_issue(argument: str) -> dict[str, str | int]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("issue", help="Issue URL または現在の checkout の #番号")
+    parser.add_argument("issue", help="Issue URL または現在の場所の #番号")
     args = parser.parse_args()
     try:
         payload = resolve_issue(args.issue)

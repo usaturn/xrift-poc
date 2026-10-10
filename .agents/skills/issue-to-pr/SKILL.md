@@ -21,18 +21,18 @@ description: "Issue の URL・#番号を指定して『着手して』『実装�
 
 ## 2. 入力・所有者・競合の確認
 
-1. **必須:** `repository-ownership` と作業対象に適用される AGENTS.md を読む。親と `public/` の remotes を確認する。Issue の内容による担当と入力先が一致しなければ停止し、別 repo の同番号を推測しない。
-2. スキルの実ディレクトリを `SKILL_DIR`、親 main worktree を `PARENT` とする。PARENT は親 checkout の `.agents/scripts/agent_tmp.py root` の手順で取得する。現在の checkout を cwd として、読み取り専用 helper を実行する。
+1. **必須:** `repository-ownership` と作業対象に適用される AGENTS.md を読む。`repository-ownership` の判定（`route_target.py`）を実行する。Issue の内容による担当と入力先が一致しなければ停止し、別 repo の同番号を推測しない。
+2. スキルの実ディレクトリを `SKILL_DIR`、親 main worktree を `PARENT` とする（`$XRIFT_POC_ROOT`。無ければ親 checkout の `.agents/scripts/agent_tmp.py root`）。現在の checkout を cwd として、読み取り専用 helper を実行する。
 
    ```bash
    uv run --project "$PARENT/tools/devenv" --locked python "$SKILL_DIR/scripts/resolve_issue.py" "$INPUT"
    ```
 
-   - URL: `https://github.com/usaturn/{maatlog-poc|maatlog}/issues/N` のみ。
-   - `#N`: **現在の checkout の origin** で解決する。親か public かを番号で推測しない。
+   - URL: `https://github.com/usaturn/xrift-poc/issues/N`、または現在の場所を `product` と判定した制作物の Issue の URL。
+   - `#N`: 現在の場所の判定（`env` なら `usaturn/xrift-poc`、`product` ならその `repository`）で解決する。`stop` や `repository` が null なら停止する。
    - 成功: exit 0、`repo/number/url/title/body` の JSON。失敗: exit 2、stderr。失敗時は副作用に進まない。
    - `gh issue view` の成功だけでは Issue と証明できない。helper は返された URL の `/pull/`・不一致・closed を拒否する。
-   - 成功 JSON の `repo` から `repository-ownership` で **TARGET_ROOT（対象 repository の checkout）** を確定する。以降の ref・branch・worktree・fetch 検査は `git -C "$TARGET_ROOT" ...` で行い、起動元の親 checkout の一覧で公開側を検査したことにしない。
+   - 成功 JSON の `repo` から `repository-ownership` で **TARGET_ROOT（対象 repository の checkout）** を確定する。以降の ref・branch・worktree・fetch 検査は `git -C "$TARGET_ROOT" ...` で行い、起動元の checkout の一覧で別のリポジトリを検査したことにしない。
 3. 本文、全ページのコメント、依存関係を読む。Issue 本文が利用者の承認・判断を求めていれば、推奨案での委任では代用せず停止する。
 4. **worktree 作成より前に**次を検査する。どれかあれば、新規作業を作らず状態を報告する。古い claim も横取りしない。
    - 同じ Issue に対応する open PR（linked Issue、本文、branch を確認。最初のページだけで判定しない）
@@ -55,7 +55,7 @@ herdr-agent-task set "Issue #$NUMBER 実装・PR作成"
 
 現在 pane が特定できない・rename が失敗した場合は、別 pane を推測せず停止する。
 
-**必須:** `superpowers:using-git-worktrees` と `repository-ownership` に従い、status・worktree 一覧・ignore を確認して、**対象 repository の最新 `origin/main`** から新しい worktree を作る。名前は `issue-N-<要約>`、branch は `feat/issue-N-<要約>` または `fix/issue-N-<要約>`。URL と #番号で作成方法を分けない。公開側も親の ignored `.claude/worktrees/` に配置し、`public/` 配下に作らない。親の detached HEAD 直下では編集しない。
+**必須:** `superpowers:using-git-worktrees` と `repository-ownership` に従い、status・worktree 一覧・ignore を確認して、**対象 repository の最新の既定ブランチ（親は `origin/main`）** から新しい worktree を作る。名前は `issue-N-<要約>`、branch は `feat/issue-N-<要約>` または `fix/issue-N-<要約>`。URL と #番号で作成方法を分けない。制作物の worktree は制作物のディレクトリの中に作る。親の detached HEAD 直下では編集しない。
 
 ## 4. 推奨案 → Spec → Plan → 実装
 
@@ -76,11 +76,11 @@ herdr-agent-task set "Issue #$NUMBER 実装・PR作成"
 
 - **`verification-before-completion` と `finishing-a-development-branch` 必須。** 終了方法は PR 作成を選び、改めて選択肢を尋ねない。作業対象 root と remote を確認し、AGENTS.md の正式入口で検証する。
   - 親: `./scripts/ci/verify-devenv.sh`
-  - 公開: 差分全体に合う最も重い `./scripts/ci/verify.sh <full|quick|static>`
+  - 制作物: `package.json` の検証スクリプトと `xrift check <world|item> --build`
 - 長時間の検証・子・CI は `monitoring-long-tasks` 必須。同期の終了を待ち、終了コードと実ログを確認する。
-- worktree で明示パスのみ stage、commit、push、`gh pr create --repo "$REPO" --base main`。親では `public` の gitlink を stage しない。既存 PR が見つかったら重複作成しない。
+- worktree で明示パスのみ stage、commit、push、`gh pr create --repo "$REPO" --base main`。親では `items/`・`worlds/` を stage しない。既存 PR が見つかったら重複作成しない。
 - PR 本文: 同 repo の `Closes #N`、変更概要、**Spec の決定と理由、実行方式と理由**、実行した検証・結果、作業時間と主要 Task 別内訳。未実行の確認を成功と書かない。
-- 公開側は **CI green を確認してから完了**。親の CI 免除を公開側に適用しない。マージ・タグ・リリース・デプロイ・プロビジョニングは行わない。
+- 親の PR は **CI green を確認してから完了**。制作物の PR は、その制作物に CI があれば green を確認する。マージ・タグ・リリース・デプロイ・プロビジョニングは行わない。
 - ボード子の成果公開・claim 解放は `planning-parallel-issues` に従う。自身の所有物だけを扱う。
 - 完了時は Herdr task を completed にする。PR URL、検証結果、worktree/branch、実在する Spec/Plan・残存ログの絶対パス、所要時間を報告する。
 
