@@ -17,35 +17,35 @@ fake に差し替えた一時 HOME で実際にスクリプトを走らせて検
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import re
 import shutil
 import subprocess
-from collections.abc import Callable
 from pathlib import Path
-from types import ModuleType
 
 import pytest
 
 DEVCONTAINER_DIR = Path(__file__).resolve().parents[3] / ".devcontainer"
+REPO_ROOT = DEVCONTAINER_DIR.parent
 INSTALL_SCRIPT = DEVCONTAINER_DIR / "install_beforehand.bash"
 
 
-def _load_application_checkout() -> ModuleType:
-    # pytest の importlib mode はこの tests ディレクトリを sys.path に載せないため、
-    # 兄弟モジュールはファイルパスから読み込む。
-    path = Path(__file__).with_name("test_application_checkout.py")
-    spec = importlib.util.spec_from_file_location("test_application_checkout_fixture", path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"cannot load {path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def _make_root(tmp_path: Path) -> Path:
+    """インストーラを実行する、実 checkout の必要な部分だけを写した Git リポジトリ。
 
-
-make_submodule_fixture: Callable[[Path], tuple[Path, Path]] = _load_application_checkout().make_submodule_fixture
+    実 checkout で実行すると、`items/`・`worlds/` の作成や XRift スキルの導入が
+    作業中の checkout を書き換えるため、複製で実行する。
+    """
+    root = tmp_path / "root"
+    root.mkdir()
+    shutil.copytree(DEVCONTAINER_DIR, root / ".devcontainer", symlinks=True)
+    shutil.copytree(REPO_ROOT / "scripts", root / "scripts", symlinks=True)
+    shutil.copy2(REPO_ROOT / ".gitignore", root / ".gitignore")
+    (root / "tools" / "devenv").mkdir(parents=True)
+    shutil.copy2(REPO_ROOT / "tools" / "devenv" / "pyproject.toml", root / "tools" / "devenv" / "pyproject.toml")
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    return root
 
 
 def _install_text() -> str:
@@ -163,7 +163,7 @@ exit 0
 """
 )
 
-# Playwright 導入は public/ の locked 環境で行う仕様のため、uv の呼び出し cwd と引数を記録する。
+# Playwright 導入は tools/devenv の locked 環境で行う仕様のため、uv の呼び出し cwd と引数を記録する。
 UV = (
     "#!/bin/bash\n"
     + FAIL_HOOK
@@ -261,12 +261,17 @@ def _stub(tool: str) -> str:
 def _run_installer(
     tmp_path: Path,
     *,
-    install_script: Path = INSTALL_SCRIPT,
+    root: Path | None = None,
+    install_script: Path | None = None,
     cwd: Path | None = None,
     fail_on: str | None = None,
     sudo_fix_chown: bool = False,
     merge_output: bool = False,
-) -> subprocess.CompletedProcess[str]:
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    if root is None:
+        root = _make_root(tmp_path)
+    if install_script is None:
+        install_script = root / ".devcontainer" / "install_beforehand.bash"
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     stub_dir = tmp_path / "stubs"
@@ -328,14 +333,15 @@ def _run_installer(
     if sudo_fix_chown:
         env["FAKE_SUDO_FIX_CHOWN"] = "1"
     # merge_output では stderr を stdout へ合流させ、手順の開始行と失敗の出力の前後関係を残す。
-    return subprocess.run(
+    result = subprocess.run(
         ["bash", str(install_script)],
-        cwd=str(cwd) if cwd is not None else install_script.parent.parent,
+        cwd=str(cwd) if cwd is not None else str(root),
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT if merge_output else subprocess.PIPE,
         text=True,
     )
+    return result, root
 
 
 def _announced_steps(stdout: str) -> list[tuple[int, int, str]]:
@@ -343,33 +349,16 @@ def _announced_steps(stdout: str) -> list[tuple[int, int, str]]:
     return [(int(index), int(total), label) for index, total, label in re.findall(pattern, stdout)]
 
 
-def test_run_from_other_cwd_uses_public_locked_environment(tmp_path: Path) -> None:
+def test_run_from_other_cwd_installs_playwright_from_the_devenv_project(tmp_path: Path) -> None:
+    # 制作物も public/ も無いルートで完走し、Playwright は tools/devenv の locked 環境から入れる。
+    root = _make_root(tmp_path)
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    result = _run_installer(tmp_path, cwd=elsewhere)
+    result, _ = _run_installer(tmp_path, root=root, cwd=elsewhere)
     assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert not (root / "public").exists()
     calls = (tmp_path / "calls.log").read_text()
-    assert (
-        f"uv cwd={DEVCONTAINER_DIR.parent / 'public'} args=run --locked playwright install --with-deps chromium"
-    ) in calls
-
-
-def test_root_without_app_project_completes(tmp_path: Path) -> None:
-    # 親 root にアプリ用 project が無くても、複製した .devcontainer・scripts と local
-    # submodule で初期化が完走し、Playwright は public/ の locked 環境で
-    # 呼ばれることを見る。
-    root, _ = make_submodule_fixture(tmp_path)
-    shutil.copytree(DEVCONTAINER_DIR, root / ".devcontainer")
-    shutil.copytree(DEVCONTAINER_DIR.parent / "scripts", root / "scripts")
-    assert not any((root / name).exists() for name in ("pyproject.toml", "uv.lock", "package.json"))
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-    result = _run_installer(run_dir, install_script=root / ".devcontainer" / "install_beforehand.bash")
-    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    assert (
-        f"uv cwd={root / 'public'} args=run --locked playwright install --with-deps chromium"
-        in (run_dir / "calls.log").read_text()
-    )
+    assert (f"uv cwd={root} args=run --project tools/devenv --locked playwright install --with-deps chromium") in calls
 
 
 def test_run_announces_every_step_and_completes(tmp_path: Path) -> None:
@@ -379,7 +368,7 @@ def test_run_announces_every_step_and_completes(tmp_path: Path) -> None:
     for launcher in _launchers():
         (local_bin / launcher.name).write_text("# stale launcher\n")
 
-    result = _run_installer(tmp_path)
+    result, root = _run_installer(tmp_path)
 
     assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     labels = _declared_step_labels()
@@ -395,7 +384,7 @@ def test_run_announces_every_step_and_completes(tmp_path: Path) -> None:
     # 掃除は checkout のスクリプトへの symlink から、指定した root に対して実行される。
     cleanup = tmp_path / "home/bin/cleanup-workspace.bash"
     assert cleanup.is_symlink()
-    assert cleanup.resolve() == (DEVCONTAINER_DIR / "cleanup-workspace.bash").resolve()
+    assert cleanup.resolve() == (root / ".devcontainer" / "cleanup-workspace.bash").resolve()
     assert f"(root={tmp_path / 'cleanup'})" in result.stdout
 
 
@@ -417,7 +406,7 @@ def test_run_isolates_pi_agent_dir_from_the_caller_environment(
     isolated_settings = isolated_agent_dir / "settings.json"
     isolated_settings.write_text('{"extensions":["-builtin:mcp"]}\n')
 
-    result = _run_installer(tmp_path)
+    result, _ = _run_installer(tmp_path)
 
     assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     assert caller_settings.read_text() == original
@@ -453,7 +442,7 @@ FAIL_LOUD_INJECTIONS = (
 @pytest.mark.parametrize("fail_on", FAIL_LOUD_INJECTIONS)
 def test_run_stops_at_the_step_whose_command_fails(tmp_path: Path, fail_on: str) -> None:
     # 失敗を成功扱いにせず、ERROR 行を残して打ち切り、後続の手順を始めない。
-    result = _run_installer(tmp_path, fail_on=fail_on, merge_output=True)
+    result, _ = _run_installer(tmp_path, fail_on=fail_on, merge_output=True)
     lines = result.stdout.splitlines()
     injected = next((index for index, line in enumerate(lines) if line.startswith("injected failure: ")), None)
     assert injected is not None, f"no call matched {fail_on!r}:\n{result.stdout}"
@@ -472,7 +461,7 @@ def test_run_stops_when_local_share_is_not_writable(tmp_path: Path) -> None:
     share.mkdir(parents=True)
     share.chmod(0o555)
     try:
-        result = _run_installer(tmp_path)
+        result, _ = _run_installer(tmp_path)
         assert result.returncode != 0
         announced = _announced_steps(result.stdout)
         assert [index for index, _, _ in announced] == [1]
@@ -492,7 +481,7 @@ def test_run_recovers_a_non_writable_local_share(tmp_path: Path) -> None:
     share.mkdir(parents=True)
     share.chmod(0o555)
     try:
-        result = _run_installer(tmp_path, sudo_fix_chown=True)
+        result, _ = _run_installer(tmp_path, sudo_fix_chown=True)
         assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         announced = _announced_steps(result.stdout)
         total = len(_declared_step_labels())
@@ -523,7 +512,7 @@ def test_run_recovers_non_writable_mount_targets(tmp_path: Path) -> None:
         target.mkdir(parents=True)
         target.chmod(0o555)
     try:
-        result = _run_installer(tmp_path, sudo_fix_chown=True)
+        result, _ = _run_installer(tmp_path, sudo_fix_chown=True)
         assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         announced = _announced_steps(result.stdout)
         total = len(_declared_step_labels())

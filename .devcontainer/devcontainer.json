@@ -60,7 +60,7 @@
 	// Use 'forwardPorts' to make a list of ports inside the container available locally.
 	// "forwardPorts": [],
 	// #282: 3080 は dsh web の既定ポート。
-	"forwardPorts": [8000, 3080],
+	"forwardPorts": [3080],
 
 	// Use 'postCreateCommand' to run commands after the container is created.
 	// "postCreateCommand": "uname -a",

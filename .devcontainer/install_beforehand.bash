@@ -18,7 +18,7 @@ readonly DSH_MANAGED_BLOCK_END="# END maatlog managed provider config"
 # 打ち切る（2026-09-13 のリビルド中断インシデント）。継続してよい処理
 # （workspace cleanup）だけを明示的に続行させるため、スクリプト全体には set -e を
 # 付けない。
-readonly STEP_TOTAL=30
+readonly STEP_TOTAL=29
 STEP_NUMBER=0
 
 step() {
@@ -33,45 +33,6 @@ fail() {
 
 warn() {
     printf '[install_beforehand] WARN: %s\n' "$@" >&2
-}
-
-# アプリの依存は親ではなく public/（公開リポジトリ）の checkout と lock から解決する。
-# ここでは既存の checkout を上書きしないことだけを保証し、各失敗は ERROR 行で打ち切る。
-prepare_public_checkout() {
-    local app_dir="${WORKSPACE_ROOT}/public"
-    local top parent status expected actual
-    if [ ! -e "${app_dir}/.git" ]; then
-        if [ -d "$app_dir" ] && [ -n "$(find "$app_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
-            fail "public is not initialized and contains files; leaving it unchanged."
-        fi
-        if ! git -C "$WORKSPACE_ROOT" submodule update --init public; then
-            fail "Failed to initialize public submodule."
-        fi
-    fi
-    if [ -L "$app_dir" ] || [ ! -e "${app_dir}/.git" ]; then
-        fail "public is not an initialized submodule."
-    fi
-    if ! top="$(git -C "$app_dir" rev-parse --show-toplevel)" ||
-        ! parent="$(git -C "$app_dir" rev-parse --show-superproject-working-tree)"; then
-        fail "public Git checkout is invalid."
-    fi
-    if [ "$top" != "$app_dir" ] || [ "$parent" != "$WORKSPACE_ROOT" ]; then
-        fail "public is not this workspace's submodule."
-    fi
-    if ! status="$(git -C "$app_dir" status --porcelain --untracked-files=all)"; then
-        fail "Cannot inspect public checkout status."
-    fi
-    if [ -n "$status" ]; then
-        fail "public checkout has uncommitted changes; leaving it unchanged."
-    fi
-    if [ ! -f "$app_dir/pyproject.toml" ] || [ ! -f "$app_dir/uv.lock" ]; then
-        fail "public pyproject.toml or uv.lock is missing."
-    fi
-    expected="$(git -C "$WORKSPACE_ROOT" rev-parse HEAD:public)" || fail "Cannot read public gitlink."
-    actual="$(git -C "$app_dir" rev-parse HEAD)" || fail "Cannot read public HEAD."
-    if [ "$expected" != "$actual" ]; then
-        warn "public HEAD differs from the pinned gitlink; using the existing clean checkout."
-    fi
 }
 
 # bind mount の target はホスト側に無いと Docker が root 所有で中間ディレクトリごと
@@ -197,7 +158,7 @@ install_pinned_gitleaks() {
 }
 
 # スクリプトはどの cwd から呼ばれても親 workspace root を正とする。
-# `.devcontainer/...` への相対参照と public/ submodule の検査を同一 root で行う。
+# `.devcontainer/...` への相対参照を同一 root で行う。
 WORKSPACE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)" || fail "Cannot resolve workspace root."
 readonly WORKSPACE_ROOT
 cd -- "$WORKSPACE_ROOT" || fail "Cannot enter workspace root."
@@ -246,11 +207,6 @@ done
 if ! place_agent_runner_config; then
     fail "Failed to place the agent-runner config."
 fi
-
-step "Preparing the public application checkout"
-# 親にはアプリ用 project を置かないため、Playwright の導入に使う public/ の
-# checkout をここで検査・初期化する。dirty な checkout は上書きせず失敗にする。
-prepare_public_checkout
 
 step "Rewriting the apt sources to HTTPS and updating the package index"
 if ! sudo perl -pi -e 's@http://archive\.ubuntu\.com@https://archive.ubuntu.com@g; s@http://security\.ubuntu\.com@https://security.ubuntu.com@g' /etc/apt/sources.list.d/ubuntu.sources; then
@@ -943,8 +899,7 @@ step "Installing the Playwright browsers"
 # Playwright のブラウザ／OS 依存は取得サイズが大きくネットワーク失敗しやすい。
 # 失敗しても gitleaks 等の必須処理が飛ばないよう、スクリプト末尾で fail-loud にする。
 echo "Installing Playwright browsers..."
-# Playwright は public/ の locked 依存に対して実行する。親にアプリ用
-# pyproject.toml / uv.lock がなくても、アプリ側の lock をそのまま使える。
-if ! (cd -- "$WORKSPACE_ROOT/public" && uv run --locked playwright install --with-deps chromium); then
+# 制作物が無くても入れられるよう、開発環境の tools/devenv の locked 依存から導入する。
+if ! (cd -- "$WORKSPACE_ROOT" && uv run --project tools/devenv --locked playwright install --with-deps chromium); then
     fail "Playwright chromium install failed."
 fi

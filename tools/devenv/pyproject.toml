@@ -1,5 +1,5 @@
 [project]
-name = "maatlog-devenv"
+name = "xrift-poc-devenv"
 version = "0.0.0"
 requires-python = ">=3.14"
 dependencies = ["pydantic>=2.12,<3"]
@@ -8,7 +8,7 @@ dependencies = ["pydantic>=2.12,<3"]
 package = false
 
 [dependency-groups]
-dev = ["pytest", "ruff", "pyright", "pyyaml", "types-pyyaml"]
+dev = ["pytest", "ruff", "pyright", "pyyaml", "types-pyyaml", "playwright"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "../devenv_migration/tests", "../../.agents", "../review_triage/tests", "../agent_runner/tests", "../test_support/tests"]
