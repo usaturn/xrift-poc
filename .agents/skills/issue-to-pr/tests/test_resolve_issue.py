@@ -28,6 +28,11 @@ def location(env: EnvRepo, where: str) -> Path:
         return env.root
     if where == "product":
         return create_product(env.root, "worlds", "my-world", origin_url=WORLD_ORIGIN)
+    if where == "product-userinfo":
+        # Issue #7 の症状: user@ 付きの origin の制作物で #番号が解決できなかった
+        return create_product(
+            env.root, "worlds", "my-world", origin_url="https://user@github.com/someone/my-world.git"
+        )
     if where == "uninitialized":
         return create_product(env.root, "worlds", "plain", git=False)
     if where == "no-origin":
@@ -108,6 +113,8 @@ def set_response(
         ("https://github.com/usaturn/xrift-poc/issues/42", "product", "usaturn/xrift-poc"),
         ("https://github.com/someone/my-world/issues/42", "product", "someone/my-world"),
         ("#42", "product", "someone/my-world"),
+        ("#42", "product-userinfo", "someone/my-world"),
+        ("https://github.com/someone/my-world/issues/42", "product-userinfo", "someone/my-world"),
     ],
 )
 def test_accepted_targets(

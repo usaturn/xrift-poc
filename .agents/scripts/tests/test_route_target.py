@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -73,7 +74,17 @@ def test_uninitialized_product_stops_instead_of_using_the_ancestor_git(env: EnvR
 
 @pytest.mark.parametrize(
     "origin",
-    [WORLD_ORIGIN, "git@github.com:someone/my-world.git", "ssh://git@github.com/someone/my-world"],
+    [
+        WORLD_ORIGIN,
+        "git@github.com:someone/my-world.git",
+        "ssh://git@github.com/someone/my-world",
+        # GitHub を指すことが明らかな書き方も owner/repo に直す（usaturn/xrift-poc#7）
+        "https://user@github.com/someone/my-world.git",
+        "https://user:token@github.com/someone/my-world.git",
+        "https://GitHub.com/someone/my-world",
+        "http://github.com/someone/my-world/",
+        "git@GitHub.com:someone/my-world.git",
+    ],
 )
 def test_product_with_a_github_origin(env: EnvRepo, origin: str) -> None:
     project = create_product(env.root, "worlds", "my-world", origin_url=origin)
@@ -83,6 +94,15 @@ def test_product_with_a_github_origin(env: EnvRepo, origin: str) -> None:
         result = route_target.route(path, env.root)
         assert (result.kind, result.code, result.repository) == ("product", "product", "someone/my-world")
         assert (result.git_root, result.project_root) == (str(project.resolve()), str(project.resolve()))
+
+
+def test_product_origin_credentials_are_not_reported(env: EnvRepo) -> None:
+    project = create_product(
+        env.root, "worlds", "my-world", origin_url="https://user:s3cret@github.com/someone/my-world"
+    )
+    result = route_target.route(project, env.root)
+    assert result.repository == "someone/my-world"
+    assert "s3cret" not in json.dumps(asdict(result))
 
 
 @pytest.mark.parametrize("origin", [None, "/srv/git/my-item.git", "https://gitlab.com/someone/my-item.git"])

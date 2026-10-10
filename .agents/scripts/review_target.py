@@ -59,9 +59,17 @@ _SHA = re.compile(r"[0-9a-f]{40}")
 _NUMBER = r"(?P<number>[1-9][0-9]*)"
 _BARE = re.compile(rf"#?{_NUMBER}")
 _PULL_URL = re.compile(rf"https://github\.com/(?P<owner>[^/?#\s]+)/(?P<repo>[^/?#\s]+)/pull/{_NUMBER}(?:[/?#]\S*)?")
+_GITHUB_REPOSITORY_PATH = r"(?P<owner>[^/\s]+)/(?P<repo>[^/\s]+?)(?:\.git)?/?"
+# git clone に渡してよい GitHub の URL（resolve が書く clone_url はこの形）
+_CANONICAL_URLS = (
+    re.compile(rf"https://github\.com/{_GITHUB_REPOSITORY_PATH}"),
+    re.compile(rf"(?:ssh://)?git@github\.com[:/]{_GITHUB_REPOSITORY_PATH}"),
+)
+# remote の設定値として読む書き方。正規形に加えて http・ユーザ情報付き・大文字のホスト名（usaturn/xrift-poc#7）。
+# ホスト名が github.com と読み取れるものに限り、SSH のホスト別名は読まない
 _REMOTE_URLS = (
-    re.compile(r"https://github\.com/(?P<owner>[^/\s]+)/(?P<repo>[^/\s]+?)(?:\.git)?/?"),
-    re.compile(r"(?:ssh://)?git@github\.com[:/](?P<owner>[^/\s]+)/(?P<repo>[^/\s]+?)(?:\.git)?/?"),
+    re.compile(rf"https?://(?:[^@/\s]+@)?(?i:github\.com)/{_GITHUB_REPOSITORY_PATH}"),
+    re.compile(rf"(?:ssh://)?git@(?i:github\.com)[:/]{_GITHUB_REPOSITORY_PATH}"),
 )
 _STATUS_LINE = re.compile(r"HTTP/[0-9.]+ (?P<status>[0-9]{3})\b")
 _REVIEW_DIR_NAME = re.compile(rf"#{_NUMBER}-.+")
@@ -174,9 +182,8 @@ def default_parent_root() -> Path:
     return require_parent_root(root)
 
 
-def github_repository(url: str) -> str | None:
-    """GitHub の remote URL（https・ssh）から ``owner/repo`` を読む。それ以外は None。"""
-    for pattern in _REMOTE_URLS:
+def _match_repository(url: str, patterns: tuple[re.Pattern[str], ...]) -> str | None:
+    for pattern in patterns:
         match = pattern.fullmatch(url.strip())
         if match is None:
             continue
@@ -185,6 +192,22 @@ def github_repository(url: str) -> str | None:
         except TargetError:
             return None
     return None
+
+
+def github_repository(url: str) -> str | None:
+    """GitHub の remote URL から ``owner/repo`` を読む。それ以外は None。
+
+    https・http・ユーザ情報付き・大文字のホスト名・ssh を読む。SSH のホスト別名は行き先を決められないので読まない。
+    """
+    return _match_repository(url, _REMOTE_URLS)
+
+
+def canonical_github_repository(url: str) -> str | None:
+    """``https://github.com/...``・``git@github.com:...`` の形のときだけ ``owner/repo`` を返す。
+
+    ``git clone`` に渡す URL の検査に使う。平文の http・認証情報付きの URL は受け付けない。
+    """
+    return _match_repository(url, _CANONICAL_URLS)
 
 
 def origin_repository(checkout: Path) -> str | None:
@@ -603,7 +626,7 @@ class CloneTarget(NamedTuple):
         ):
             raise TargetError(EXIT_USAGE, "--target に repository・number・head_ref・head_sha・clone_url がありません")
         validate_repository(repository)
-        if not same_repository(github_repository(clone_url), repository):
+        if not same_repository(canonical_github_repository(clone_url), repository):
             raise TargetError(EXIT_USAGE, f"clone_url {clone_url} は {repository} の GitHub の URL ではありません")
         return cls(repository, number, head_ref, head_sha, head_repository, clone_url)
 
