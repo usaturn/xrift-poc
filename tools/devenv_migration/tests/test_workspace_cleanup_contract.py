@@ -1051,6 +1051,150 @@ def test_releases_registered_review_fix_planning_worktree(isolated_root: Path, t
     assert _registered_worktrees(main_repo) == [str(main_repo)]
 
 
+def _init_parent_like_repo(path: Path) -> None:
+    """親と同じく /items/・/worlds/・/.venv/ を無視するリポジトリを作る。"""
+    _init_repo(path)
+    (path / ".gitignore").write_text("/items/\n/worlds/\n/.venv/\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".gitignore"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "ignore products"], cwd=path, check=True)
+
+
+def _rfp_worktree(isolated_root: Path, tmp_path: Path, name: str) -> tuple[Path, Path, Path]:
+    """review-fix-planning.<name>/worktree に親のような登録済み worktree を作る。
+
+    中身を置いたあとで、呼び出し側が _make_old(review_dir) で日数条件を満たす。
+    """
+    main_repo = tmp_path / f"main-repo-{name}"
+    _init_parent_like_repo(main_repo)
+    review_dir = isolated_root / f"review-fix-planning.{name}"
+    review_dir.mkdir()
+    worktree = review_dir / "worktree"
+    _add_worktree(main_repo, worktree)
+    return main_repo, review_dir, worktree
+
+
+def test_keeps_review_fix_planning_worktree_with_item_files(isolated_root: Path, tmp_path: Path) -> None:
+    """一時 worktree の items/<name>/ にファイルがあれば、日数条件を満たしても worktree ごと残す（Issue #5）。"""
+    main_repo, review_dir, worktree = _rfp_worktree(isolated_root, tmp_path, "Items1")
+    model = worktree / "items" / "my-item" / "model.glb"
+    model.parent.mkdir(parents=True)
+    model.write_bytes(b"glTF")
+    _make_old(review_dir)
+
+    result = _run_cleanup(_env_for(isolated_root, tmp_path / "no-yarn-cache"))
+
+    assert result.returncode == 0, result.stderr
+    assert model.read_bytes() == b"glTF"
+    assert str(worktree) in _registered_worktrees(main_repo)
+    assert f"product data in items/ or worlds/): {worktree.resolve()}" in result.stderr
+    assert str(review_dir) in result.stdout
+    assert "review-fix-planning cleanup: removed=0 skipped=1" in result.stdout
+
+
+def test_keeps_review_fix_planning_worktree_with_uncommitted_world_repository(
+    isolated_root: Path, tmp_path: Path
+) -> None:
+    """worlds/<name>/ に git init した制作物の未コミットの作業があれば残す。"""
+    main_repo, review_dir, worktree = _rfp_worktree(isolated_root, tmp_path, "World1")
+    world = worktree / "worlds" / "my-world"
+    world.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(world)], check=True)
+    draft = world / "下書き.txt"
+    draft.write_text("未コミットの作業\n", encoding="utf-8")
+    _make_old(review_dir)
+
+    result = _run_cleanup(_env_for(isolated_root, tmp_path / "no-yarn-cache"))
+
+    assert result.returncode == 0, result.stderr
+    assert draft.read_text(encoding="utf-8") == "未コミットの作業\n"
+    assert str(worktree) in _registered_worktrees(main_repo)
+    assert "product data in items/ or worlds/" in result.stderr
+
+
+def test_dry_run_keeps_review_fix_planning_worktree_with_product_data(isolated_root: Path, tmp_path: Path) -> None:
+    """dry-run でも、制作物のデータがある worktree を消す予定として報告しない。"""
+    main_repo, review_dir, worktree = _rfp_worktree(isolated_root, tmp_path, "DryPrd")
+    scene = worktree / "worlds" / "my-world" / "scene.glb"
+    scene.parent.mkdir(parents=True)
+    scene.write_bytes(b"glTF")
+    _make_old(review_dir)
+
+    env = _env_for(isolated_root, tmp_path / "no-yarn-cache")
+    env["XRIFT_POC_CLEANUP_DRY_RUN"] = "1"
+    result = _run_cleanup(env)
+
+    assert result.returncode == 0, result.stderr
+    assert "would run: git worktree remove" not in result.stdout
+    assert "would remove review-fix-planning debris" not in result.stdout
+    assert scene.read_bytes() == b"glTF"
+    assert str(worktree) in _registered_worktrees(main_repo)
+
+
+def test_releases_review_fix_planning_worktree_with_empty_product_directories(
+    isolated_root: Path, tmp_path: Path
+) -> None:
+    """items/・worlds/ が空（空のサブディレクトリだけ）なら、これまでどおり撤去する。"""
+    main_repo, review_dir, worktree = _rfp_worktree(isolated_root, tmp_path, "Empty1")
+    (worktree / "items").mkdir()
+    (worktree / "worlds" / "my-world" / "public").mkdir(parents=True)
+    _make_old(review_dir)
+
+    result = _run_cleanup(_env_for(isolated_root, tmp_path / "no-yarn-cache"))
+
+    assert result.returncode == 0, result.stderr
+    assert not review_dir.exists()
+    assert _registered_worktrees(main_repo) == [str(main_repo)]
+
+
+def test_releases_review_fix_planning_worktree_with_only_other_ignored_files(
+    isolated_root: Path, tmp_path: Path
+) -> None:
+    """items/・worlds/ 以外の無視されたファイル（.venv/ など）だけなら、これまでどおり撤去する。"""
+    main_repo, review_dir, worktree = _rfp_worktree(isolated_root, tmp_path, "Venv01")
+    venv_cfg = worktree / ".venv" / "pyvenv.cfg"
+    venv_cfg.parent.mkdir()
+    venv_cfg.write_text("home = /usr/bin\n", encoding="utf-8")
+    _make_old(review_dir)
+
+    result = _run_cleanup(_env_for(isolated_root, tmp_path / "no-yarn-cache"))
+
+    assert result.returncode == 0, result.stderr
+    assert not review_dir.exists()
+    assert _registered_worktrees(main_repo) == [str(main_repo)]
+
+
+def test_keeps_item_files_when_untracked_files_are_hidden_by_config(isolated_root: Path, tmp_path: Path) -> None:
+    """status.showUntrackedFiles=no の設定でも、items/ のデータを見落とさない。"""
+    main_repo, review_dir, worktree = _rfp_worktree(isolated_root, tmp_path, "NoUnt1")
+    subprocess.run(["git", "config", "status.showUntrackedFiles", "no"], cwd=main_repo, check=True)
+    model = worktree / "items" / "my-item" / "model.glb"
+    model.parent.mkdir(parents=True)
+    model.write_bytes(b"glTF")
+    _make_old(review_dir)
+
+    result = _run_cleanup(_env_for(isolated_root, tmp_path / "no-yarn-cache"))
+
+    assert result.returncode == 0, result.stderr
+    assert model.read_bytes() == b"glTF"
+    assert str(worktree) in _registered_worktrees(main_repo)
+
+
+def test_keeps_untracked_file_when_untracked_files_are_hidden_by_config(isolated_root: Path, tmp_path: Path) -> None:
+    """status.showUntrackedFiles=no の設定でも、未追跡ファイルを --force で消さない。"""
+    main_repo, review_dir, worktree = _rfp_worktree(isolated_root, tmp_path, "NoUnt2")
+    subprocess.run(["git", "config", "status.showUntrackedFiles", "no"], cwd=main_repo, check=True)
+    secret = worktree / "untracked.txt"
+    secret.write_text("dirty\n", encoding="utf-8")
+    _make_old(review_dir)
+
+    result = _run_cleanup(_env_for(isolated_root, tmp_path / "no-yarn-cache"))
+
+    assert result.returncode == 0, result.stderr
+    assert secret.read_text(encoding="utf-8") == "dirty\n"
+    assert str(worktree) in _registered_worktrees(main_repo)
+    assert "block (uncommitted changes)" in result.stderr
+
+
 def test_dry_run_does_not_remove_review_fix_planning_directory(isolated_root: Path, tmp_path: Path) -> None:
     debris = isolated_root / "review-fix-planning.DryRun"
     debris.mkdir()
