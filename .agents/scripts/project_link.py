@@ -8,14 +8,17 @@ Claude Code・pi・Codex は、独立した Git リポジトリの中から起�
 - ``link [dir]``: ``<dir>/.agents/skills/<name>`` と ``<dir>/.claude/skills/<name>`` に、
   ``<root>/.agents/skills/<name>`` への絶対パスのリンクを置き、置いたリンクを ``info/exclude`` の
   管理ブロックに登録する。同じ名前のもの（壊れたリンクを含む）が既にあれば変えない
-- ``unlink [dir]``: 管理ブロックに登録され、ルートのスキルを指すリンクだけを消す
+- ``unlink [dir]``: 管理ブロックに登録され、ルートのスキルを指すリンクだけを消す。途中のシンボリックリンクを
+  たどった先が同じリポジトリの別の worktree の中なら、そのリンクは消さずに残す。どの worktree の中でもない
+  （共有ディレクトリなど）リンクを消すことになる場合は、何も変えずに止まる（usaturn/xrift-poc#4）
 - 管理ブロックの行は ``info/exclude`` が制作物のすべての worktree で共有されるため、link・unlink のたびに
   「いずれかの worktree に実在する、ルートのスキルへのリンク」から作り直す。空になったときだけブロックを外す
 
 ``dir`` は ``<root>/items/<name>``・``<root>/worlds/<name>`` の配下にある Git の作業ツリーのルート
 （制作物のリポジトリか、その中に作った worktree）に限る。
 
-終了コード: 0 成功（何もしなかった場合を含む）、1 前提が壊れている、2 対象外のパス・引数の誤り。
+終了コード: 0 成功（何もしなかった場合を含む）、1 前提が壊れている（unlink がどの worktree の中でもない
+リンクを消すことになる場合を含む）、2 対象外のパス・引数の誤り。
 標準ライブラリだけで書く。
 """
 
@@ -25,6 +28,7 @@ import argparse
 import importlib.util
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -147,6 +151,51 @@ def _blocked_component(target: Path, link_dir: Path) -> Path | None:
     return None
 
 
+def _managed_relative(entry: str) -> Path | None:
+    """管理ブロックの行が指す、``LINK_DIRS`` の直下のパス。想定していない行なら None。"""
+    relative = Path(entry.removeprefix("/"))
+    if relative.parent not in LINK_DIRS or relative.name in ("", ".", ".."):
+        return None
+    return relative
+
+
+def _links_elsewhere(target: Path, entries: list[str], source: Path) -> dict[str, tuple[Path, Path | None]]:
+    """途中のシンボリックリンクをたどると ``target`` 自身の外にある、``source`` 配下のスキルへのリンク。
+
+    管理ブロックの行ごとに、解決したパスと、それを含む同じリポジトリの worktree（最も深いもの。どの
+    worktree にも含まれなければ None）を返す。
+    """
+    worktrees = _worktrees(target)
+    found: dict[str, tuple[Path, Path | None]] = {}
+    for entry in entries:
+        relative = _managed_relative(entry)
+        if relative is None:
+            continue
+        path = target / relative
+        if not (path.is_symlink() and Path(os.readlink(path)) == source / relative.name):
+            continue
+        parent = path.parent.resolve()
+        owners = [worktree for worktree in worktrees if parent.is_relative_to(worktree)]
+        owner = max(owners, key=lambda worktree: len(worktree.parts), default=None)
+        if owner != target:
+            found[entry] = (parent / relative.name, owner)
+    return found
+
+
+def _outside_message(found: list[tuple[str, Path]], exclude: Path) -> str:
+    paths = " ".join(shlex.quote(str(path)) for path in dict.fromkeys(resolved for _, resolved in found))
+    return "\n".join(
+        [
+            "制作物のどの worktree にも含まれない場所のリンクを消すことになるため、何も変えずに止めた"
+            "（途中のシンボリックリンクが外へ解決される）",
+            *(f"  {entry} -> {resolved}" for entry, resolved in found),
+            "次のどちらかを行ってから、もう一度 unlink を実行する",
+            f"  外のリンクも消す（共有している他のプロジェクトからも消える）: rm -- {paths}",
+            f"  外のリンクを残す: {exclude} の管理ブロックから、上の行を消す",
+        ]
+    )
+
+
 def _worktrees(target: Path) -> list[Path]:
     """``target`` と同じリポジトリのすべての worktree（``info/exclude`` を共有する）。"""
     result = subprocess.run(
@@ -235,10 +284,18 @@ def unlink(directory: Path, env_root: Path) -> Report:
     text = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
     before, entries, after = _split_block(text, exclude)
     source = env_root.resolve() / ".agents" / "skills"
+    elsewhere = _links_elsewhere(target, entries, source)
+    outside = [(entry, resolved) for entry, (resolved, owner) in elsewhere.items() if owner is None]
+    if outside:
+        raise LinkError(EXIT_ERROR, _outside_message(outside, exclude))
     for entry in entries:
-        relative = Path(entry.removeprefix("/"))
-        if relative.parent not in LINK_DIRS or relative.name in ("", ".", ".."):
+        relative = _managed_relative(entry)
+        if relative is None:
             report.kept.append(f"{entry}: 管理ブロックの行として想定していない")
+            continue
+        if entry in elsewhere:
+            owner = elsewhere[entry][1]
+            report.kept.append(f"{relative.as_posix()}: 別の worktree（{owner}）のリンク。外すならそこで unlink する")
             continue
         path = target / relative
         if path.is_symlink() and Path(os.readlink(path)) == source / relative.name:
