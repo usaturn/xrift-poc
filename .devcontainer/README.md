@@ -18,7 +18,7 @@ Herdr の復元手順は `.devcontainer/docs/herdr-session-cwd-restore.md` を�
 `~/.codex`・`~/.claude`・`~/.claude.json`・`~/.grok`・`~/.pi`・`~/.dsh`・`~/.local/share/devin`・`~/.config/devin`・`~/.local/share/cursor-agent`・`~/.config/gh`・`~/.cursor`・`~/.config/cursor`・`~/.config/gcloud`・`~/.xrift`
 
 - これらは maatlog-poc など、同じホームを mount する他のコンテナと共有になる。セットアップ（`install_beforehand.bash`）は共有のディレクトリに対して、次の 3 種類の操作をする
-  - 無いときだけ置く: `~/.pi/agent/models.json`、`~/.config/agent-runner/config.toml`、`~/.config/herdr/config.toml`、`~/.pi/agent/extensions/subagent.d/<launcher>/config.json`（`setup_pi_superagents.zsh --if-absent`）。`~/.dsh/cordis.patch.yml` は無ければ雛形を置き、あれば管理ブロックが無いときだけ追記する。既存の利用者の編集は書き換えない
+  - 無いときだけ置く: `~/.pi/agent/models.json`、`~/.pi/agent/extensions/subagent.d/<launcher>/config.json`（`setup_pi_superagents.zsh --if-absent`）。`~/.dsh/cordis.patch.yml` は無ければ雛形を置き、あれば管理ブロックが無いときだけ追記する。既存の利用者の編集は書き換えない
   - 導入・更新する（再実行のたびに実行し、共有のディレクトリを書き換える）:
     - Claude Code のマーケットプレイス `dashed/claude-marketplace` の追加と、プラグイン 3 種（`example-skills`・`web-quality-skills`・`ripgrep`）の導入（`~/.claude`）
     - `npx skills add ... -g` による `herdr`・`find-skills` のグローバルスキルの導入（`~/.claude`・`~/.pi`・`~/.grok`）。XRift スキルは `-g` を付けず、親のリポジトリ内（`.agents/skills`・`.claude/skills`）に導入するので、共有のディレクトリは書き換えない
@@ -27,6 +27,9 @@ Herdr の復元手順は `.devcontainer/docs/herdr-session-cwd-restore.md` を�
     - DSH のプラグインの追加（`web` プロファイルと pi-tui プロファイルに `@mars-sea/dsh-commandcode-provider`、pi-tui プロファイルに `@xmoon76/dsh-pi-tui`。`~/.dsh`）
     - Claude Code・Grok Build・Cursor CLI・Devin CLI・Codex CLI のインストーラの実行（各ツールの本体や設定が、mount 先に書かれることがある）
   - 所有権を直す: bind mount 先が root 所有で作られていたとき、そのディレクトリ自身だけを現在のユーザーに `chown` する（再帰しない）
+- `~/.config` そのものは bind mount していない（mount するのは上記の `~/.config/devin`・`~/.config/gh`・`~/.config/cursor`・`~/.config/gcloud` だけ）。次の設定はコンテナの中にだけあり、他のコンテナとは共有しない。リビルドすると消え、`postCreateCommand` の `install_beforehand.bash` がもう一度置く
+  - 無いときだけ置く: `~/.config/agent-runner/config.toml`（`XDG_CONFIG_HOME` が絶対パスならその下）、`~/.config/herdr/config.toml`。同じコンテナで再実行しても、既存の編集は書き換えない
+  - 毎回上書きする: `~/.config/starship.toml`。設定の元は `.devcontainer/starship.toml` で、コンテナの中で編集しても、セットアップの再実行やリビルドで雛形の内容に戻る。変更を残すときは `.devcontainer/starship.toml` を編集する
 - `~/.dsh/cordis.patch.yml` の目印 `# BEGIN maatlog managed provider config` は、maatlog-poc と同じ文字列のまま使う。変えると、同じ provider のブロックが共有のファイルに 2 回追記される
 - `~/.xrift` は XRift CLI の認証情報（`config.json`）の保存先。`initialize.bash` が新しく作るときは権限を 700 にする。既にあるディレクトリの権限と中身は変えない。ディレクトリ以外のもの（シンボリックリンクを含む）がある場合は、理由を表示して止まる
 - `containerEnv` の `XRIFT_POC_ROOT` に、親の main checkout のパス（`${containerWorkspaceFolder}`）を設定する。`route_target.py`・`project_link.py`・`xrift-link` が使う
