@@ -1,0 +1,25 @@
+# 制作物の作業場所。各ワールド・アイテムは、その中の独立した Git リポジトリで管理する
+/items/
+/worlds/
+
+# worktree の作業場所
+/.worktrees/
+/.claude/worktrees/
+
+# ローカルの作業用ファイル
+/tmp/
+/reviews/
+/docs_draft/
+
+# 認証情報
+.env
+.env.*
+.secrets/
+
+# 依存パッケージ・キャッシュ
+node_modules/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
