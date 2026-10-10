@@ -1,36 +1,26 @@
-"""`tools.test_support.plugin` の pytest fixture が利用できることを固定する。"""
+"""pytest fixture が factory への薄い wrapper として動くこと。"""
 
 from __future__ import annotations
 
-import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
-from tools.test_support.repos import ParentRepo, SubmoduleState
+from tools.test_support.repos import EnvRepo
 
 pytest_plugins = ("tools.test_support.plugin",)
 
 
-def _status_marker(root: Path) -> str:
-    stdout = subprocess.run(
-        ["git", "-C", str(root), "submodule", "status"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    return next(line for line in stdout.splitlines() if " public" in line)[0]
+def test_env_repo_fixture(env_repo: EnvRepo) -> None:
+    assert (env_repo.root / ".git").is_dir()
+    assert (env_repo.root / "items").is_dir()
 
 
-def test_parent_repo_fixture_is_diverged_by_default(parent_repo: ParentRepo) -> None:
-    assert _status_marker(parent_repo.root) == "+"
+def test_env_repo_factory_builds_independent_repositories(env_repo_factory: Callable[[], EnvRepo]) -> None:
+    first = env_repo_factory()
+    second = env_repo_factory()
+    assert first.root != second.root
 
 
-def test_parent_repo_factory_overrides_state(
-    parent_repo_factory: Callable[..., ParentRepo],
-) -> None:
-    parent = parent_repo_factory(submodule_state=SubmoduleState.UNINITIALIZED)
-    assert parent.submodule_head is None
-
-
-def test_owned_worktree_fixture_has_no_venv(owned_worktree: Path) -> None:
+def test_owned_worktree_fixture(owned_worktree: Path, env_repo: EnvRepo) -> None:
+    assert owned_worktree.is_dir()
     assert not (owned_worktree / ".venv").exists()

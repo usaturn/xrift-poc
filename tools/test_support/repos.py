@@ -1,19 +1,20 @@
-"""実環境の形をした親 repository と owned worktree の factory。
+"""実環境の形をした xrift-poc の checkout と制作物の factory。
 
-親 repository はローカルの bare remote 経由の clone として作り、`public`
-submodule の gitlink（mode 160000）を持つ。HEAD は実 checkout と同じく
-`origin/main` の detached HEAD で、ローカルの `main` ブランチは無い。
-submodule の状態は `git submodule status` の先頭記号（`+` / ` ` / `-`）で
-選べる。いずれもネットワークを使わない。
+環境リポジトリは ``git init`` した main checkout で、origin に GitHub の URL を設定し、
+``refs/remotes/origin/main`` を指す detached HEAD にする（ローカルの ``main`` は無い）。
+``items/``・``worlds/`` は ``.gitignore`` でルートから無視し、ディレクトリを作っておく。
+制作物は ``items/<name>``・``worlds/<name>`` に作り、Git を初期化するかどうかと origin を選べる。
+いずれもネットワークを使わない。
 """
 
 from __future__ import annotations
 
 import shutil
 import subprocess
+from collections.abc import Sequence
 from dataclasses import dataclass
-from enum import Enum, auto
 from pathlib import Path
+from typing import Final, Literal
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2]
 
@@ -26,10 +27,17 @@ _GIT_FLAGS = (
     "user.email=test@example.invalid",
     "-c",
     "commit.gpgsign=false",
-    # global の clone.defaultRemoteName に左右されず、親と submodule の clone の remote 名を
-    # 実 checkout と同じ origin にする。コマンドラインの -c は submodule update が起動する clone にも伝わる。
+    # global の clone.defaultRemoteName に左右されず、clone の remote 名を origin にする。
     "-c",
     "clone.defaultRemoteName=origin",
+)
+
+ENV_ORIGIN: Final[str] = "https://github.com/usaturn/xrift-poc.git"
+_ENV_GITIGNORE: Final[str] = "/items/\n/worlds/\n/tmp/\n/reviews/\n/.worktrees/\n/.claude/worktrees/\n"
+_GIT_CONFIG: Final[tuple[tuple[str, str], ...]] = (
+    ("user.name", "Test"),
+    ("user.email", "test@example.invalid"),
+    ("commit.gpgsign", "false"),
 )
 
 
@@ -40,31 +48,12 @@ class TestSupportError(Exception):
     __test__ = False
 
 
-class SubmoduleState(Enum):
-    """`git submodule status` の先頭記号に対応する submodule の状態。"""
-
-    DIVERGED = auto()  # 初期化済み・HEAD が gitlink と異なる（'+'）
-    PINNED = auto()  # 初期化済み・HEAD が gitlink と一致（' '）
-    UNINITIALIZED = auto()  # 未初期化（'-'）
-
-    @property
-    def marker(self) -> str:
-        return {
-            SubmoduleState.DIVERGED: "+",
-            SubmoduleState.PINNED: " ",
-            SubmoduleState.UNINITIALIZED: "-",
-        }[self]
-
-
 @dataclass(frozen=True, slots=True)
-class ParentRepo:
-    """`create_parent_repo` が作る親 repository の checkout とその remote。"""
+class EnvRepo:
+    """`create_env_repo` が作る環境リポジトリの main checkout。"""
 
     root: Path
-    origin: Path
-    public_origin: Path
-    gitlink_sha: str
-    submodule_head: str | None
+    head: str
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -78,98 +67,73 @@ def _git(cwd: Path, *args: str) -> str:
     return result.stdout.rstrip("\n")
 
 
-def _gitlink_sha(root: Path) -> str:
-    return _git(root, "ls-files", "-s", "public").split()[1]
+def _configure(repo: Path) -> None:
+    for key, value in _GIT_CONFIG:
+        _git(repo, "config", key, value)
 
 
-def _submodule_head(root: Path) -> str | None:
-    # 未初期化の public/ には .git が無く、`rev-parse` は親 repo の HEAD を返してしまう。
-    if not (root / "public" / ".git").exists():
-        return None
-    return _git(root / "public", "rev-parse", "--verify", "HEAD")
+def create_env_repo(
+    base_dir: Path,
+    *,
+    origin_url: str = ENV_ORIGIN,
+    copy_paths: Sequence[str] = ("tools/devenv/pyproject.toml", "tools/devenv/uv.lock"),
+) -> EnvRepo:
+    """`base_dir/xrift-poc` に環境リポジトリの main checkout を作る。
 
-
-def _assert_public_state(root: Path, state: SubmoduleState) -> None:
-    status_lines = _git(root, "submodule", "status").splitlines()
-    public_line = next((line for line in status_lines if " public" in line), None)
-    if public_line is None:
-        raise TestSupportError(f"no public submodule in {root}")
-    if public_line[0] != state.marker:
-        raise TestSupportError(f"public submodule marker {public_line[0]!r} != {state.marker!r} in {root}")
-    if _git(root, "ls-files", "-s", "public").split()[0] != "160000":
-        raise TestSupportError(f"public is not a gitlink (mode 160000) in {root}")
-
-
-def create_parent_repo(base_dir: Path, *, submodule_state: SubmoduleState) -> ParentRepo:
-    """ローカルの bare remote を持つ親 repository の clone を `base_dir` に作る。
-
-    親は `public` gitlink と実物をコピーした `tools/devenv/pyproject.toml`・
-    `tools/devenv/uv.lock` を tracked に持ち、clone の repo config には
-    `user.name`/`user.email`/`protocol.file.allow=always`/`commit.gpgsign=false`
-    を設定済みとする。clone は実 checkout と同じく `origin/main` の detached
-    HEAD で、ローカルの `main` ブランチを持たない（`origin/HEAD` は
-    `origin/main` を指す）。ブランチが必要な利用者は自分で作る。
+    `copy_paths` は実 checkout（`SOURCE_ROOT`）から写して commit するパス（ファイルかディレクトリ）。
     """
     if base_dir.exists() and any(base_dir.iterdir()):
         raise TestSupportError(f"base_dir is not empty: {base_dir}")
-    base_dir.mkdir(parents=True, exist_ok=True)
-
-    public_src = base_dir / "public-src"
-    public_origin = base_dir / "public-origin.git"
-    parent_src = base_dir / "parent-src"
-    parent_origin = base_dir / "parent-origin.git"
-    root = base_dir / "parent"
-
-    _git(base_dir, "init", "-q", "-b", "main", str(public_src))
-    (public_src / "README.md").write_text("# fixture public repository\n", encoding="utf-8")
-    _git(public_src, "add", "README.md")
-    _git(public_src, "commit", "-qm", "public commit A")
-    sha_a = _git(public_src, "rev-parse", "HEAD")
-    (public_src / "README.md").write_text("# fixture public repository\n\nsecond commit\n", encoding="utf-8")
-    _git(public_src, "commit", "-qam", "public commit B")
-    sha_b = _git(public_src, "rev-parse", "HEAD")
-    _git(base_dir, "clone", "-q", "--bare", str(public_src), str(public_origin))
-
-    _git(base_dir, "init", "-q", "-b", "main", str(parent_src))
-    (parent_src / "tools" / "devenv").mkdir(parents=True)
-    for name in ("pyproject.toml", "uv.lock"):
-        shutil.copy2(SOURCE_ROOT / "tools" / "devenv" / name, parent_src / "tools" / "devenv" / name)
-    (parent_src / "README.md").write_text("# fixture parent repository\n", encoding="utf-8")
-    _git(parent_src, "add", "README.md", "tools/devenv/pyproject.toml", "tools/devenv/uv.lock")
-    _git(parent_src, "submodule", "add", "-q", str(public_origin), "public")
-    # gitlink は commit A を指すように記録し、B との差分で '+' 状態を作れるようにする。
-    _git(parent_src / "public", "checkout", "-q", sha_a)
-    _git(parent_src, "add", "public")
-    _git(parent_src, "commit", "-qm", "parent with public submodule at A")
-    gitlink = _gitlink_sha(parent_src)
-
-    _git(base_dir, "clone", "-q", "--bare", str(parent_src), str(parent_origin))
-    _git(base_dir, "clone", "-q", str(parent_origin), str(root))
-    for key, value in (
-        ("user.name", "Test"),
-        ("user.email", "test@example.invalid"),
-        ("protocol.file.allow", "always"),
-        ("commit.gpgsign", "false"),
-    ):
-        _git(root, "config", key, value)
-    # 実 checkout と同じく origin/main の detached HEAD にし、ローカルの main（と branch.main.* の設定）を消す。
-    # global の submodule.recurse=true でも submodule に触れないよう --no-recurse-submodules を付ける。
-    _git(root, "checkout", "-q", "--no-recurse-submodules", "--detach", "origin/main")
+    root = base_dir / "xrift-poc"
+    root.mkdir(parents=True)
+    _git(base_dir, "init", "-q", "-b", "main", str(root))
+    _configure(root)
+    (root / ".gitignore").write_text(_ENV_GITIGNORE, encoding="utf-8")
+    (root / "README.md").write_text("# fixture xrift-poc\n", encoding="utf-8")
+    for relative in copy_paths:
+        source = SOURCE_ROOT / relative
+        destination = root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_dir():
+            shutil.copytree(source, destination, symlinks=True)
+        else:
+            shutil.copy2(source, destination)
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "fixture env commit")
+    head = _git(root, "rev-parse", "HEAD")
+    _git(root, "remote", "add", "origin", origin_url)
+    _git(root, "update-ref", "refs/remotes/origin/main", head)
+    _git(root, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+    _git(root, "checkout", "-q", "--detach", "origin/main")
     _git(root, "branch", "-q", "-D", "main")
+    for kind in ("items", "worlds"):
+        (root / kind).mkdir()
+    return EnvRepo(root=root, head=head)
 
-    if submodule_state is not SubmoduleState.UNINITIALIZED:
-        _git(root, "submodule", "update", "--init", "-q")
-        if submodule_state is SubmoduleState.DIVERGED:
-            _git(root / "public", "checkout", "-q", sha_b)
 
-    _assert_public_state(root, submodule_state)
-    return ParentRepo(
-        root=root,
-        origin=parent_origin,
-        public_origin=public_origin,
-        gitlink_sha=gitlink,
-        submodule_head=_submodule_head(root),
-    )
+def create_product(
+    env_root: Path,
+    kind: Literal["items", "worlds"],
+    name: str,
+    *,
+    git: bool = True,
+    origin_url: str | None = None,
+) -> Path:
+    """`<env_root>/<kind>/<name>` に制作物を作る。`git` が真なら commit を 1 つ持つ Git リポジトリにする。"""
+    project = env_root / kind / name
+    if project.exists():
+        raise TestSupportError(f"product already exists: {project}")
+    project.mkdir(parents=True)
+    (project / "README.md").write_text(f"# {name}\n", encoding="utf-8")
+    if not git:
+        return project
+    _git(project.parent, "init", "-q", "-b", "main", str(project))
+    _configure(project)
+    _git(project, "add", "README.md")
+    _git(project, "commit", "-qm", "fixture product commit")
+    if origin_url is not None:
+        _git(project, "remote", "add", "origin", origin_url)
+    return project
 
 
 def create_owned_worktree(repo_root: Path, dest_parent: Path, *, sha: str = "HEAD", name: str = "worktree") -> Path:

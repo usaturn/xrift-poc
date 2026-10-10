@@ -12,7 +12,7 @@ import os
 import sys
 from pathlib import Path
 
-from tools.test_support.repos import SubmoduleState, create_owned_worktree, create_parent_repo
+from tools.test_support.repos import create_env_repo, create_owned_worktree
 from tools.test_support.uv import offline_uv_env, run_uv_offline
 
 
@@ -38,8 +38,8 @@ def test_offline_uv_env_strips_the_running_venv_bin_from_path() -> None:
 
 
 def test_uv_no_sync_in_venvless_worktree_reproduces_cm1(tmp_path: Path) -> None:
-    parent = create_parent_repo(tmp_path / "repo", submodule_state=SubmoduleState.DIVERGED)
-    worktree = create_owned_worktree(parent.root, tmp_path / "wt")
+    env = create_env_repo(tmp_path / "repo")
+    worktree = create_owned_worktree(env.root, tmp_path / "wt")
     assert not (worktree / "tools" / "devenv" / ".venv").exists()
 
     result = run_uv_offline(
@@ -55,8 +55,8 @@ def test_uv_no_sync_in_venvless_worktree_reproduces_cm1(tmp_path: Path) -> None:
 
 def test_uv_run_without_no_sync_fails_on_download_offline(tmp_path: Path) -> None:
     """`--no-sync` 無し（plan-complete が要求する形）は lock の同期でオフラインに失敗する。"""
-    parent = create_parent_repo(tmp_path / "repo", submodule_state=SubmoduleState.PINNED)
-    worktree = create_owned_worktree(parent.root, tmp_path / "wt")
+    env = create_env_repo(tmp_path / "repo")
+    worktree = create_owned_worktree(env.root, tmp_path / "wt")
 
     result = run_uv_offline(
         ("run", "--project", "tools/devenv", "pytest", "--version"),

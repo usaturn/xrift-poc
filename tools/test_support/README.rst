@@ -9,9 +9,9 @@ test_support: 実環境の形をした共有 fixture
 概要
 ====
 
-``tools/test_support`` は、実親リポジトリの形をした入力を共有するテスト補助パッケージである。
-レビュー修正ループ（Issue #486）で「実装に都合のよい fixture」が見落とした条件── ``public`` gitlink が submodule HEAD とずれた ``+`` 状態、 ``.venv`` の無い新規 worktree、そこで失敗する ``uv run``、改行・タブ・CRLF・非 ASCII を含む複数行の自由記述──を、ローカルの bare remote とオフライン指定だけで再現する。
-ネットワーク・実 PR・実 herdr は使わない。
+``tools/test_support`` は、 xrift-poc の実環境の形をした入力を共有するテスト補助パッケージである。
+``items/`` ・ ``worlds/`` を無視する環境リポジトリの main checkout、 Git の有無と origin を選べる制作物、 ``.venv`` の無い新規 worktree、そこで失敗する ``uv run`` 、改行・タブ・CRLF・非 ASCII を含む複数行の自由記述を、ローカルの Git とオフライン指定だけで再現する。
+ネットワーク・実 PR は使わない。
 
 .. _test_support_provides:
 
@@ -19,10 +19,11 @@ test_support: 実環境の形をした共有 fixture
 ======
 
 ``tools.test_support.repos``
-    ``create_parent_repo`` は、 ``public`` submodule（ ``git ls-files -s public`` が mode ``160000`` の gitlink）を持つ親 repository をローカルの bare remote 経由の clone として作る。
-    親 checkout は実 checkout と同じく ``origin/main`` の detached HEAD で、ローカルの ``main`` ブランチを持たない（ ``refs/remotes/origin/HEAD`` は ``origin/main`` を指す）。
+    ``create_env_repo`` は、 ``git init`` した環境リポジトリの main checkout を ``<base_dir>/xrift-poc`` に作る。
+    origin は GitHub の URL（ ``ENV_ORIGIN`` ）で、 HEAD は ``refs/remotes/origin/main`` を指す detached HEAD、ローカルの ``main`` ブランチは持たない。
+    ``items/`` ・ ``worlds/`` は ``.gitignore`` でルートから無視し、ディレクトリを作っておく。
     ブランチが必要なテストは ``git -C <root> switch -c <branch> origin/main`` で自分で作る。
-    submodule の状態は ``SubmoduleState.DIVERGED`` （ ``git submodule status`` が ``+`` ）、 ``PINNED`` （空白）、 ``UNINITIALIZED`` （ ``-`` ）から選ぶ。
+    ``create_product`` は ``items/<name>`` ・ ``worlds/<name>`` に制作物を作る。 ``git=False`` なら Git を初期化せず、 ``origin_url`` で origin を選べる。
     ``create_owned_worktree`` は ``git worktree add --detach`` で ``.venv`` を持たない worktree を作る。
 
 ``tools.test_support.texts``
@@ -34,7 +35,7 @@ test_support: 実環境の形をした共有 fixture
     ``run_uv_offline`` はその環境で ``uv`` を起動し、 ``CompletedProcess`` を返す。
 
 ``tools.test_support.plugin``
-    pytest fixture ``parent_repo_factory`` ・ ``parent_repo`` （DIVERGED が既定）・ ``owned_worktree`` 。
+    pytest fixture ``env_repo_factory`` ・ ``env_repo`` ・ ``owned_worktree`` 。制作物は ``create_product`` を直接呼んで作る。
 
 .. _test_support_usage:
 
@@ -49,25 +50,25 @@ test module の先頭でプラグインを宣言する ::
     pytest_plugins = ("tools.test_support.plugin",)
 
 
-    def test_something(parent_repo: ParentRepo, owned_worktree: Path) -> None:
-        ...  # parent_repo は DIVERGED（実 checkout と同じ '+' 状態）
+    def test_something(env_repo: EnvRepo, owned_worktree: Path) -> None:
+        product = create_product(env_repo.root, "worlds", "空白 ワールド", git=False)
 
-状態の上書きや複数個の構築には ``parent_repo_factory`` を使う ::
+複数個の構築には ``env_repo_factory`` を使う ::
 
-    def test_uninitialized(parent_repo_factory: Callable[..., ParentRepo]) -> None:
-        parent = parent_repo_factory(submodule_state=SubmoduleState.UNINITIALIZED)
+    def test_two(env_repo_factory: Callable[[], EnvRepo]) -> None:
+        first, second = env_repo_factory(), env_repo_factory()
 
 直接呼び出し
 ------------
 
 ::
 
-    parent = create_parent_repo(tmp_path / "repo", submodule_state=SubmoduleState.DIVERGED)
-    worktree = create_owned_worktree(parent.root, tmp_path / "owned")
+    env = create_env_repo(tmp_path / "repo")
+    worktree = create_owned_worktree(env.root, tmp_path / "owned")
     result = run_uv_offline(
         ["run", "--project", "tools/devenv", "--no-sync", "pytest"],
         cwd=worktree,
         cache_dir=tmp_path / "uv-cache",
     )
 
-``create_parent_repo`` は ``tools/devenv/pyproject.toml`` と ``tools/devenv/uv.lock`` を実 checkout からコピーしてコミットするため、このパッケージは親リポジトリ（ ``usaturn/maatlog-poc`` ）の checkout 内でのみ動く。
+``create_env_repo`` は既定で ``tools/devenv/pyproject.toml`` と ``tools/devenv/uv.lock`` を実 checkout からコピーしてコミットする（ ``copy_paths`` で変えられる）。
