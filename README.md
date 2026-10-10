@@ -66,7 +66,7 @@ xrift check item --build
 
 - `xrift create` は、テンプレートの取得から依存の導入まで行います。`npm run build`（`tsc && vite build`）と `npm run typecheck`（`tsc --noEmit`）も使えます
 - プレビューはホストのブラウザで `http://localhost:5173` を開きます。2 つ目以降のプロジェクトは `npm run dev -- --host 0.0.0.0 --port 5174` のように 5174〜5179 を使います
-- コンテナ内でブラウザの描画を確かめるときは、Python Playwright を使います（`uv run --project tools/devenv python <script>`。ブラウザが無いときは `uv run --project tools/devenv playwright install chromium` で入れます）
+- コンテナ内でブラウザの描画を確かめるときは、Python Playwright を使います（`uv run --project "$XRIFT_POC_ROOT/tools/devenv" python <script>`。ブラウザが無いときは `uv run --project "$XRIFT_POC_ROOT/tools/devenv" playwright install chromium` で入れます）。制作物のディレクトリからも実行できるよう、`--project` は絶対パスで指定します
 - `xrift check` のセキュリティ検査を省略するオプション（`--ignore-warnings`・`--skip-check`）は、標準の手順に使いません
 
 制作物は `worlds/<name>/`・`items/<name>/` の中で、必要に応じて独立した Git リポジトリとして管理します。Git を初期化していないローカルのプロジェクトでも構いません。
@@ -84,7 +84,15 @@ xrift check item --build
 
 ## 公開
 
-`xrift upload world`・`xrift upload item` は、公開すると決めたときだけ手動で実行します。セットアップ・更新・通常の検証には含めません。
+`xrift upload world`・`xrift upload item` は、利用者が公開すると明示的に決めたときだけ手動で実行します。セットアップ・更新・通常の検証には含めません。エージェントは、利用者の指示が無い限り実行しません。
+
+1. `xrift whoami` で、ログイン済みであることを確かめます（上の「XRift へのログイン」）
+2. 制作物のディレクトリで `xrift check world --build`（アイテムは `xrift check item --build`）を実行し、ビルドとセキュリティ検査を通します
+3. 同じディレクトリで、ワールドは `xrift upload world`、アイテムは `xrift upload item` を実行します。アイテムは `xrift.json` の内容を読みます
+
+`xrift upload` はアップロードの前にセキュリティ検査を行います。検査を省略する `--skip-check` と、ワールドのバンドルの `<Item itemId>` が `xrift.json` の `world.items` に宣言されているかの確認を省略する `--skip-item-scan` は、標準の手順に使いません。
+
+この節は、XRift CLI 0.25.0 の `xrift upload --help`・`xrift upload world --help`・`xrift upload item --help` で確かめた範囲で書いています。アカウントが必要なため、アップロードはこの Dev Container では実行していません（[PORTING.md](PORTING.md) の「未実施」）。
 
 ## エージェントを制作物から起動する
 
@@ -101,6 +109,8 @@ xrift check item --build
 ### エージェント
 
 zsh の `update` を実行します。XRift CLI は固定した版なので、`update` では更新しません。
+
+CI（`.github/workflows/ci.yml`）は、pi（`@earendil-works/pi-coding-agent`）を確かめた版に固定して入れています。`update` で Dev Container の pi が新しくなったら、`pi --version` で版を確かめ、`ci.yml` の pi の版も同じ版に変えて、PR で検証を通します。
 
 ### XRift CLI の更新
 

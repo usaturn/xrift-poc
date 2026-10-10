@@ -108,7 +108,7 @@ xrift-poc は、XRift のワールドとアイテムを作るための開発環�
 - 親の変更は、最新の `origin/main` から feature branch の worktree を作り、PR で取り込む。`main` へ commit しない
 - 制作物の変更は、その制作物のリポジトリの既定ブランチから branch を作る。制作物は親の main checkout の下で扱う（親の feature worktree の中では扱わない）。worktree は制作物のディレクトリの中（例: `worlds/<name>/.worktrees/<branch>`）に作り、`.worktrees/` を制作物の `.git/info/exclude` に加える。制作物の外（親の外）に作った worktree は、共有の指示とスキルを読めない
 - ユーザの指示なしに commit しない。ただし `.claude/worktrees/`・`.worktrees/`・`/tmp/` 配下の worktree branch では commit と PR 作成を許可する
-- `superpowers:executing-plans` または `superpowers:subagent-driven-development` で更新するときは、worktree で commit し、PR まで作成する。ただし Git 未初期化の制作物には当てはめない（上記「編集前の確認」を参照）
+- `superpowers:executing-plans` または `superpowers:subagent-driven-development` で更新するときは、worktree で commit し、PR まで作成する。ただし Git 未初期化の制作物には当てはめない（下記「編集前の確認」を参照）
 - 親の PR は CI（`.github/workflows/ci.yml`）の green を確認してからマージする。review-fix-planning の finalize はどのリポジトリでも CI の結果を確認する。CI の無い制作物のリポジトリでは停止して報告する
 - デプロイとプロビジョニングは人間が行う。XRift への公開（`xrift upload world`・`xrift upload item`）は、利用者が明示的に指示したときだけ実行する。セキュリティチェックを省略するオプションを標準の手順にしない
 
@@ -186,7 +186,8 @@ xrift check item --build
 
 - `xrift create` は依存の導入まで行う。制作物の Git は利用者が必要に応じて初期化する（セットアップは制作物を作らない・clone しない）
 - プレビューはホストのブラウザで `http://localhost:5173` を開く。2 つ目以降のプロジェクトは `npm run dev -- --host 0.0.0.0 --port 5174` のように 5174〜5179 を使う
-- コンテナ内でのブラウザの確認は Python Playwright（`uv run --project tools/devenv python <script>`）で行う
+- コンテナ内でのブラウザの確認は Python Playwright（`uv run --project "$XRIFT_POC_ROOT/tools/devenv" python <script>`）で行う
+- 制作物は親の `.gitignore` で無視しているため、親のルートからパスを付けずに `rg` で検索すると、制作物の中は検索されない。親のルートからは `rg <pattern> worlds/<name>` のようにパスを明示するか、制作物のディレクトリの中から検索する
 - 認証: `xrift login` は利用者が手動で行う。エージェントはログインを求めて待たない。状態は `xrift whoami` で確かめる
 - XRift スキル: `xrift-world`（ワールド制作のガイド）、`xrift-sdk`（`@xrift/sdk` でのアップロード API のガイド。アイテムの描画実装のガイドではない）。セットアップが固定した版を取得する（`scripts/install_xrift_skills.bash`）
 - アイテム制作: 公式のアイテム開発ガイド（<https://docs.xrift.net/item/create-first-item>）と `xrift create item`・`xrift check item --build` を使う。公式の `xrift-item` スキルがあることを前提にしない

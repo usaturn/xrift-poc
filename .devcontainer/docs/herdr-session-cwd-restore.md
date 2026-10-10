@@ -11,10 +11,10 @@ Dev Container を Reopen したあと、ターミナルの作業ディレクト�
 herdr はセッション復元時、`~/.config/herdr/session.json` に保存済みの cwd を最優先し、
 クライアントが渡す startup cwd を**明示的に無視する**。
 
-サーバログ（`~/.config/herdr/herdr-server.log`）:
+サーバログ（`~/.config/herdr/herdr-server.log`）。移植元の maatlog-poc（ワークスペースは `/workspaces/maatlog`）で観測した行であり、パスは観測したときのまま載せる:
 
 ```
-herdr::server::headless: restored session already has workspaces; ignoring startup cwd cwd=/workspaces/xrift-poc
+herdr::server::headless: restored session already has workspaces; ignoring startup cwd cwd=/workspaces/maatlog
 ```
 
 `herdrstart` の `cd` が効くのは、herdr サーバが**新規**セッションを作る初回だけである
@@ -41,12 +41,13 @@ startup workspace が `/home/vscode` となり `session.json` を汚染する。
 ### config.toml の `new_cwd` を固定パスにする
 
 `[terminal] new_cwd` は `"follow"` `"home"` のほか固定パスを取れるが、**セッション復元時
-には適用されない**。分離セッション（`herdr --session <name>`）による実測結果:
+には適用されない**。分離セッション（`herdr --session <name>`）による実測結果（移植元の
+maatlog-poc で測った記録で、パスは測ったときのまま載せる）:
 
 | 保存されていた cwd | `new_cwd` | 復元後のペイン cwd |
 | --- | --- | --- |
-| `/home/vscode` | `/workspaces/xrift-poc` | `/home/vscode` |
-| `/workspaces/xrift-poc/.worktrees/xrift-mvp` | `/workspaces/xrift-poc` | `/workspaces/xrift-poc/.worktrees/xrift-mvp` |
+| `/home/vscode` | `/workspaces/maatlog` | `/home/vscode` |
+| `/workspaces/maatlog/.worktrees/maatlog-mvp` | `/workspaces/maatlog` | `/workspaces/maatlog/.worktrees/maatlog-mvp` |
 
 `new_cwd` が効くのは復元ではない新規ペイン・タブ・ワークスペース作成時のみで、目的を
 達成しない。

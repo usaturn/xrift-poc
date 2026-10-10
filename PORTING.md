@@ -152,6 +152,25 @@ Spec 2 章の決定（PR のマージには CI の green を必須にする）�
 - リンクの管理ブロックは制作物の `.git/info/exclude` に書かれ、`git status --porcelain` に出なかった。Git 未初期化の制作物への `link` は、何も変えずに「リンクは不要」と表示して終わった
 - ディレクトリ名に空白と日本語を含む制作物（`worlds/空白 ワールド`）も判定できた（次の節）
 
+### Git で無視した制作物の検索と編集
+
+`/items/`・`/worlds/` を無視した一時の Git リポジトリに、`worlds/空白 ワールド/src/scene.tsx` と `items/only/a.txt` を置いて確かめた（ripgrep 15.1.0）。
+
+- 親のルートからパスを付けずに `rg -n <文字列>` を実行すると、制作物の中は検索されず、終了コード 1（一致なし）になった。親に `items/`・`worlds/` のほかにファイルが無いときは、`rg: No files were searched` と表示して終了コード 2 になった
+- 親のルートから `rg -n <文字列> worlds` とパスを明示すると、`worlds/空白 ワールド/src/scene.tsx` の行が見つかった
+- 制作物のディレクトリ（`worlds/空白 ワールド`）の中から `rg -n <文字列>` を実行しても見つかった
+- 制作物のファイルに追記しても、親の `git status --porcelain` は空のままだった（`--ignored` を付けると `items/`・`worlds/` だけが `!!` で出る）
+
+この結果から、`AGENTS.md` に、親のルートからはパスを明示するか、制作物の中から検索することを書いた。
+
+### 秘密情報の検査（gitleaks）
+
+Gitleaks 8.30.1（`install_beforehand.bash` と同じ版）で、`6926b44`（最終レビューの修正の途中）の時点の worktree を検査した。
+
+- `gitleaks git . --no-banner`: 32 commit を検査し、検出なし（`no leaks found`）
+- `gitleaks dir . --no-banner`: 2 件を検出し、終了コード 1。どちらも `tools/review_triage/tests/__pycache__/test_state.cpython-314-pytest-9.1.1.pyc`（`aws-access-token`）で、検証の実行で作られた、追跡していない `.pyc` だった。元の `test_state.py` はテスト用の偽の値を `"AKIA" + "..."` のように分けて書いており、Python がコンパイル時に連結した値を `.pyc` に書いたものである。`.pyc` は `.gitignore` の `__pycache__/` で無視され、追跡している `.pyc` は無い（`git ls-files` に 0 件）
+- `gitleaks dir` を CI などで使う場合は、検証の前に実行するか、`__pycache__` を除いて実行する
+
 ### 操作先の判定（`route_target.py`）
 
 fixture の親を `XRIFT_POC_ROOT` にして実行した。最終レビューの修正（I-1・I-2）の後に、改訂した `route_target.py` で同じ fixture に対して再実行した結果である。
