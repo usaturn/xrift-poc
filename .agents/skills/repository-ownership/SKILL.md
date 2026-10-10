@@ -23,6 +23,8 @@ xrift-poc（以下「親」）は開発環境だけを管理する。制作物�
 uv run --no-project python "$XRIFT_POC_ROOT/.agents/scripts/route_target.py" "${ROUTE_PATH:-$PWD}"
 ```
 
+`ROUTE_PATH` には、これから変更するファイルかディレクトリを指定する。cwd ではない。親のルートで起動していても、`worlds/foo/` を編集するなら `ROUTE_PATH=worlds/foo` で判定する（`$PWD` のままだと `env` と判定され、親に commit・起票してしまう）。作業対象のパスが変わるたびに判定し直す。
+
 出力は JSON で、`kind`・`code`・`repository`・`git_root`・`project_root`・`reason` を持つ。終了コードは `env`・`product` で 0、`stop` で 3、判定の前提が壊れているとき（親のルートが main checkout でない、origin が `usaturn/xrift-poc` でない、パスが無い）は 1。1 のときは停止し、代わりのルートを推測しない。
 
 `git rev-parse --show-toplevel` の成功だけで判定しない。Git 未初期化の `worlds/<name>/` では、祖先の親が見つかる。
@@ -42,6 +44,7 @@ uv run --no-project python "$XRIFT_POC_ROOT/.agents/scripts/route_target.py" "${
 
 ## 制作物（product）
 
+- **作業場所:** 制作物の作業は、main checkout（`$XRIFT_POC_ROOT`）の `items/`・`worlds/` 側で行う。env の feature worktree 自身の `items/`・`worlds/` は制作物の置き場所ではない
 - **Git の操作:** `git_root` で行う。制作物の既定ブランチから branch を作る
 - **worktree:** 制作物のディレクトリの中（例: `worlds/<name>/.worktrees/<branch>`）に作り、`.worktrees/` を制作物の `.git/info/exclude` に加える。親の外に作ると、共通の指示とスキルを読めない。worktree でも `xrift-link` でスキルへのリンクを置く
 - **Issue と PR:** `gh --repo <repository> ...`。`repository` が null なら GitHub の操作をせず、`git remote add origin <URL>` が必要なことを説明する
@@ -54,7 +57,7 @@ uv run --no-project python "$XRIFT_POC_ROOT/.agents/scripts/route_target.py" "${
 
 | `code` | 説明すること |
 |---|---|
-| `product_uninitialized` | 制作物で `git init` し、必要なら `git remote add origin <URL>` する。それまで commit・起票しない |
+| `product_uninitialized` | main checkout の制作物なら、`git init` し、必要なら `git remote add origin <URL>` する。それまで commit・起票しない。env の feature worktree の `items/`・`worlds/` 配下でも出るが、そこは制作物の置き場所ではない。`git init` せず、`$XRIFT_POC_ROOT/{items,worlds}/<name>` の main checkout 側で扱う。worktree では作業しない |
 | `product_base` | `items/<name>` か `worlds/<name>` のディレクトリで作業する |
 | `product_origin_is_env` | 制作物の origin が親を指している。制作物自身のリポジトリを origin に設定する |
 | `not_git`・`unknown`・`env_origin_mismatch` | 作業する場所を確かめる。親か制作物の checkout に移る |

@@ -7,5 +7,5 @@ alwaysApply: true
 
 - 開発環境（`.devcontainer/`・`.agents/`・`.claude/`・`tools/`・`scripts/` 等）の Issue・worktree・検証・PR は `usaturn/xrift-poc` が操作先。worktree は `origin/main` から作る
 - `items/<name>/`・`worlds/<name>/` の制作物は、それぞれの Git リポジトリが操作先。Git 未初期化や origin が無い制作物では GitHub の操作をせず、代わりに `xrift-poc` へ commit・起票しない
-- 操作の前に `uv run --no-project python "$XRIFT_POC_ROOT/.agents/scripts/route_target.py" <path>` で判定する。`git rev-parse --show-toplevel` の成功だけで制作物の Git と判定しない
+- 操作の前に `uv run --no-project python "$XRIFT_POC_ROOT/.agents/scripts/route_target.py" <path>` で判定する。`<path>` は cwd ではなく、これから変更するファイルかディレクトリで、作業対象が変わるたびに判定し直す。制作物は main checkout の `items/`・`worlds/` 側で扱い、feature worktree 内では作業しない。`git rev-parse --show-toplevel` の成功だけで制作物の Git と判定しない
 - 手順は `.agents/skills/repository-ownership/SKILL.md` に定義する
