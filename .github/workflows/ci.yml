@@ -17,9 +17,10 @@ jobs:
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           python-version: "3.14"
-      # 定期掃除のテストは .devcontainer/zshrc.txt の関数を zsh で実行する。runner の image には zsh が無い。
+      # 定期掃除のテストは .devcontainer/zshrc.txt の関数を zsh で実行する。
+      # .devcontainer/test-*.bash は bubblewrap と ripgrep を使う。runner の image にはどれも無い。
       - run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends zsh
+          sudo apt-get install --yes --no-install-recommends zsh bubblewrap ripgrep
           zsh --version
       - run: ./scripts/ci/verify-devenv.sh
