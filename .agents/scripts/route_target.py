@@ -5,18 +5,23 @@ xrift-poc は開発環境だけを管理し、制作物は ``items/<name>/``・`
 それぞれの Git リポジトリで管理する。Git 未初期化の制作物では ``git rev-parse --show-toplevel``
 が祖先の xrift-poc を返すので、その成功だけで制作物の Git と判定しない。
 
-使い方: ``route_target.py [path]``（既定は cwd）。判定結果を JSON で出力する。
+使い方: ``route_target.py [path]``（既定は cwd）。判定結果を JSON で出力する。``path`` がまだ無いとき
+（これから作るファイル）は、実在する最も近い祖先のディレクトリで判定する。
 
 - ``kind``: ``env``（開発環境）・``product``（制作物）・``stop``（操作しない）
 - ``code``: 判定の理由の識別子
 - ``repository``: GitHub の ``owner/repo``。GitHub の操作をしてはいけないときは null
 - ``git_root``・``project_root``・``reason``
 
-終了コード: 0 ``env``・``product``、3 ``stop``、1 環境のルートを決められない・パスが無い、2 引数の誤り。
+終了コード: 0 ``env``・``product``、3 ``stop``、1 環境のルートを決められない、2 引数の誤り。
 
 環境のルートは、環境変数 ``XRIFT_POC_ROOT``（Dev Container が設定する）か、無ければこのスクリプトの
 置き場所の main worktree とする。どちらの場合も、main worktree であることと、origin が
-``usaturn/xrift-poc`` であることを確かめる。
+``usaturn/xrift-poc`` を指すことを確かめる。
+
+origin が親を指すかどうかは、origin の URL の設定値の末尾（``[:/]usaturn/xrift-poc(.git)?/?``）を
+大文字小文字を区別せずに照合して決める。``https://user@github.com/...``・SSH のホスト別名・
+``GitHub.com``・``http`` の書き方も親とみなす（制作物の origin が親を指していれば止める）。
 
 標準ライブラリだけで書く（``uv run --no-project python`` で実行するため）。
 """
@@ -25,6 +30,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
@@ -38,14 +44,20 @@ PRODUCT_KINDS = ("items", "worlds")
 EXIT_ERROR = 1
 EXIT_STOP = 3
 
+# origin の URL の末尾が親のリポジトリのパスであること（ホストの書き方・認証情報・SSH のホスト別名は問わない）。
+_ENV_ORIGIN_PATH = re.compile(r"[:/]usaturn/xrift-poc(?:\.git)?/?$", re.IGNORECASE)
+
 _BASE_REASON = "items/ か worlds/ そのものは制作物ではない。items/<name> か worlds/<name> を指定する"
 _UNINITIALIZED_REASON = "制作物の Git が初期化されていない。祖先の xrift-poc の Git を制作物の Git と取り違えない"
+_ENV_WORKTREE_REASON = (
+    "親の worktree の items/・worlds/ は制作物の置き場所ではない。$XRIFT_POC_ROOT の main checkout 側で扱う"
+)
 
 Kind = Literal["env", "product", "stop"]
 
 
 class RouteError(Exception):
-    """判定の前提（環境のルート・対象のパス）が壊れているときに送出する。"""
+    """判定の前提（環境のルート）が壊れているときに送出する。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,8 +103,10 @@ def origin_repository(git_root: Path) -> str | None:
     return cast(str | None, _review_target.origin_repository(git_root))
 
 
-def _is_env_repository(repository: str | None) -> bool:
-    return repository is not None and repository.lower() == ENV_REPOSITORY
+def origin_points_to_env(git_root: Path) -> bool:
+    """origin の URL の設定値が親（``usaturn/xrift-poc``）を指すか。"""
+    url = _git(git_root, "config", "--get", "remote.origin.url")
+    return url is not None and _ENV_ORIGIN_PATH.search(url) is not None
 
 
 def resolve_env_root(environ: Mapping[str, str] | None = None, anchor: Path | None = None) -> Path:
@@ -112,7 +126,7 @@ def resolve_env_root(environ: Mapping[str, str] | None = None, anchor: Path | No
     root = root.resolve()
     if _common_dir(root) != root / ".git" or _toplevel(root) != root:
         raise RouteError(f"not the main worktree of a Git repository: {root}")
-    if not _is_env_repository(origin_repository(root)):
+    if not origin_points_to_env(root):
         raise RouteError(f"origin of {root} is not {ENV_REPOSITORY}")
     return root
 
@@ -140,9 +154,31 @@ def _product_project(path: Path, env_root: Path) -> Path | None:
     return None
 
 
+def _env_worktree_base(path: Path, env_root: Path) -> tuple[Path, Path] | None:
+    """``path`` を含む、親の linked worktree の ``items/``・``worlds/``（worktree のルートとの組）。
+
+    worktree の ``items/``・``worlds/`` の中に独立した Git があっても、その外側で判定する。
+    """
+    for base in (path, *path.parents):
+        worktree = base.parent
+        if base.name not in PRODUCT_KINDS or worktree == env_root:
+            continue
+        if _toplevel(worktree) == worktree and _common_dir(worktree) == env_root / ".git":
+            return worktree, base
+    return None
+
+
+def _nearest_directory(path: Path) -> Path:
+    """``path`` が実在するディレクトリならそれ、そうでなければ実在する最も近い祖先のディレクトリ。"""
+    target = path
+    while not target.exists():
+        target = target.parent
+    return target if target.is_dir() else target.parent
+
+
 def _product_route(git_root: Path, project_root: Path) -> Route:
     repository = origin_repository(git_root)
-    if _is_env_repository(repository):
+    if origin_points_to_env(git_root):
         return _stop(
             "product_origin_is_env",
             f"制作物の origin が {ENV_REPOSITORY} を指している。制作物自身のリポジトリを origin に設定する",
@@ -162,15 +198,19 @@ def _product_route(git_root: Path, project_root: Path) -> Route:
 
 
 def route(path: Path, env_root: Path) -> Route:
-    """``path`` の操作先を判定する。``env_root`` は ``resolve_env_root`` が返した環境のルート。"""
-    if not path.exists():
-        raise RouteError(f"path does not exist: {path}")
-    target = path.resolve()
-    if not target.is_dir():
-        target = target.parent
+    """``path`` の操作先を判定する。``env_root`` は ``resolve_env_root`` が返した環境のルート。
+
+    ``path`` が無いとき（これから作るファイル）は、実在する最も近い祖先のディレクトリで判定する。
+    ただし ``items/``・``worlds/`` の下のパスは、それらのディレクトリが無くても親（env）と判定しない。
+    """
+    full = path.resolve()
+    target = _nearest_directory(full)
     env_root = env_root.resolve()
-    if target in _product_bases(env_root):
-        return _stop("product_base", _BASE_REASON)
+    for base in _product_bases(env_root):
+        in_existing_project = target != base and target.is_relative_to(base)
+        if full.is_relative_to(base) and not in_existing_project:
+            # items/・worlds/ そのもの、その直下の無い名前・ファイル、または items/・worlds/ が無い。
+            return _stop("product_base", _BASE_REASON)
     git_root = _toplevel(target)
     project = _product_project(target, env_root)
     if project is not None:
@@ -182,19 +222,23 @@ def route(path: Path, env_root: Path) -> Route:
                 project_root=project,
             )
         return _product_route(git_root, project)
+    # 親の feature worktree の items/・worlds/ は制作物の置き場所ではない（worktree を消すと中身も消える）。
+    in_worktree = _env_worktree_base(full, env_root)
+    if in_worktree is not None:
+        worktree, base = in_worktree
+        if full == base:
+            return _stop("product_base", _BASE_REASON, git_root=worktree)
+        return _stop(
+            "product_in_env_worktree",
+            _ENV_WORKTREE_REASON,
+            git_root=git_root,
+            project_root=base / full.relative_to(base).parts[0],
+        )
     common = _common_dir(target)
     if git_root is None or common is None:
         return _stop("not_git", "Git の作業ツリーではない")
     if common == env_root / ".git":
-        # env の feature worktree でも items/・worlds/ は制作物の置き場所（.gitignore の /worlds/ が効く）。
-        if target in _product_bases(git_root):
-            return _stop("product_base", _BASE_REASON, git_root=git_root)
-        worktree_project = _product_project(target, git_root)
-        if worktree_project is not None:
-            return _stop(
-                "product_uninitialized", _UNINITIALIZED_REASON, git_root=git_root, project_root=worktree_project
-            )
-        if not _is_env_repository(origin_repository(git_root)):
+        if not origin_points_to_env(git_root):
             return _stop("env_origin_mismatch", f"origin が {ENV_REPOSITORY} ではない", git_root=git_root)
         return Route("env", "env", ENV_REPOSITORY, str(git_root), None, "開発環境のリポジトリ")
     owner = _product_project(common, env_root)

@@ -58,8 +58,9 @@
 
 ### 設計の後で決めたこと（Spec からの変更）
 
-- 制作物は親の main checkout の下で扱う。親の worktree の `items/`・`worlds/` は `stop`（`product_base`・`product_uninitialized`）と判定する
-- `route_target` の判定の対象は、cwd ではなく、これから変更するパスにする
+- 制作物は親の main checkout の下で扱う。親の worktree の `items/`・`worlds/` は `stop`（そのものは `product_base`、配下は `product_in_env_worktree`）と判定する。main checkout の Git 未初期化の制作物（`product_uninitialized`。その場で編集する）とは code を分けた（最終レビューの指摘 I-1）
+- `route_target` の判定の対象は、cwd ではなく、これから変更するパスにする。まだ無いパスは、実在する最も近い祖先のディレクトリで判定する。`items/`・`worlds/` の下のパスは、それらのディレクトリが無くても `env` にしない（最終レビューの指摘 I-2）
+- origin が親を指すかどうかは、origin の URL の設定値の末尾（`usaturn/xrift-poc`）を大文字小文字を区別せずに照合する。`https://user@github.com/...`・SSH のホスト別名・`GitHub.com`・`http` の書き方も親とみなす（最終レビューの指摘 M-1）
 - `project_link` の管理ブロック（制作物の `.git/info/exclude`）は、制作物のすべての worktree にある、実在するリンクから作り直す
 - `issue-to-pr` は、`gh` の応答と、大文字小文字を区別せずに照合する
 - `review_triage` は親のリポジトリだけを対象にする
@@ -142,7 +143,7 @@
 
 ### 操作先の判定（`route_target.py`）
 
-fixture の親を `XRIFT_POC_ROOT` にして実行した。
+fixture の親を `XRIFT_POC_ROOT` にして実行した。最終レビューの修正（I-1・I-2）の後に、改訂した `route_target.py` で同じ fixture に対して再実行した結果である。
 
 | 判定するパス | kind | code | 終了コード | repository |
 |---|---|---|---|---|
@@ -155,8 +156,13 @@ fixture の親を `XRIFT_POC_ROOT` にして実行した。
 | 親の外（`/tmp` 相当）に作った制作物の worktree | `product` | `product` | 0 | `someone/git-world` |
 | `worlds/plain-world`（Git 未初期化）と、その中のディレクトリ | `stop` | `product_uninitialized` | 3 | null |
 | `worlds`（`items/`・`worlds/` そのもの） | `stop` | `product_base` | 3 | null |
-| 親の worktree の `worlds`・その下の `in-wt-world` | `stop` | `product_base`・`product_uninitialized` | 3 | null |
-| 存在しないパス | （JSON なし） | （エラー表示） | 1 | （なし） |
+| 親の worktree の `worlds` | `stop` | `product_base` | 3 | null |
+| 親の worktree の `worlds/in-wt-world`（Git 未初期化）、まだ無い `worlds/new-world/src/a.tsx` | `stop` | `product_in_env_worktree` | 3 | null |
+| まだ無いパス: 親の `tools/new.py` | `env` | `env` | 0 | `usaturn/xrift-poc` |
+| まだ無いパス: `worlds/new-world/src/a.tsx` | `stop` | `product_base` | 3 | null |
+| まだ無いパス: `worlds/plain-world/src/new.tsx` | `stop` | `product_uninitialized` | 3 | null |
+| まだ無いパス: `worlds/git-world/src/new.tsx` | `product` | `product` | 0 | `someone/git-world` |
+| `XRIFT_POC_ROOT` が親の worktree、または制作物 | （JSON なし） | （エラー表示） | 1 | （なし） |
 
 - 親の worktree 内のスクリプトを `XRIFT_POC_ROOT` なしで実行しても、制作物 `git-world` を `product` と判定できた
 - 判定は、cwd ではなく、渡したパスで決まる（cwd が親の中でも、`worlds/git-world` は `product`）

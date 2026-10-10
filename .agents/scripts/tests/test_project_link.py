@@ -131,10 +131,27 @@ def test_link_rejects_paths_that_are_not_a_product_git_root(env: EnvRepo, tmp_pa
     (project / "src").mkdir()
     outside = create_owned_worktree(project, tmp_path / "elsewhere")
     inside_env = create_owned_worktree(project, env.root / "tmp", name="wt")
-    for wrong in (env.root, env.root / "worlds", project / "src", outside, inside_env):
-        with pytest.raises(project_link.LinkError) as caught:
-            project_link.link(wrong, env.root)
-        assert caught.value.code == 2
+    plain = create_product(env.root, "items", "plain", git=False)
+    # 親の worktree の items/・worlds/ は、Git 未初期化の制作物（リンク不要）として扱わない。
+    env_worktree = create_owned_worktree(env.root, tmp_path / "env-wt", name="feature")
+    (env_worktree / "worlds" / "w").mkdir(parents=True)
+    wrongs = (
+        env.root,
+        env.root / "worlds",
+        project / "src",
+        outside,
+        inside_env,
+        env_worktree / "worlds" / "w",
+        project / "missing",
+        plain / "missing",
+        env.root / "worlds" / "missing",
+    )
+    for wrong in wrongs:
+        for action in (project_link.link, project_link.unlink):
+            with pytest.raises(project_link.LinkError) as caught:
+                action(wrong, env.root)
+            assert caught.value.code == 2, wrong
+    assert not (env_worktree / "worlds" / "w" / ".agents").exists()
 
 
 def test_link_works_in_a_product_worktree_inside_the_project(env: EnvRepo) -> None:

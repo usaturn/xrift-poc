@@ -77,10 +77,10 @@ def skill_names(env_root: Path) -> list[str]:
 
 def _target(directory: Path, env_root: Path) -> Path | None:
     """リンクを置く Git の作業ツリーのルート。Git 未初期化の制作物なら None。"""
-    try:
-        result = _route_target.route(directory, env_root)
-    except _route_target.RouteError as error:
-        raise LinkError(EXIT_USAGE, str(error)) from None
+    # route() は無いパスを祖先で判定するので、無いディレクトリを Git 未初期化の制作物と取り違えないよう先に止める。
+    if not directory.is_dir():
+        raise LinkError(EXIT_USAGE, f"ディレクトリが無い: {directory}")
+    result = _route_target.route(directory, env_root)
     target = directory.resolve()
     if result.kind == "stop" and result.code == "product_uninitialized":
         return None

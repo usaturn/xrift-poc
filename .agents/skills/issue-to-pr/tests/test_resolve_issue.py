@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.test_support.repos import EnvRepo, create_env_repo, create_product
+from tools.test_support.repos import EnvRepo, create_env_repo, create_owned_worktree, create_product
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "resolve_issue.py"
 
@@ -32,6 +32,11 @@ def location(env: EnvRepo, where: str) -> Path:
         return create_product(env.root, "worlds", "plain", git=False)
     if where == "no-origin":
         return create_product(env.root, "items", "local-only")
+    if where == "env-worktree-product":
+        worktree = create_owned_worktree(env.root, env.root / ".worktrees", name="feature")
+        project = worktree / "worlds" / "w"
+        project.mkdir(parents=True)
+        return project
     raise AssertionError(where)
 
 
@@ -122,6 +127,7 @@ def test_accepted_targets(
         ("https://github.com/someone/other/issues/42", "product"),  # 判定した制作物と違うリポジトリ
         ("#42", "uninitialized"),  # Git 未初期化の制作物
         ("#42", "no-origin"),  # origin の無い制作物
+        ("#42", "env-worktree-product"),  # 親の worktree の worlds/ の下（制作物の置き場所ではない）
         ("https://github.com/usaturn/xrift-poc/pull/42", "env"),
         ("https://github.com/usaturn/xrift-poc/issues/42?foo=bar", "env"),
         ("https://github.com.evil.test/usaturn/xrift-poc/issues/42", "env"),

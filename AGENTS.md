@@ -15,8 +15,8 @@ xrift-poc は、XRift のワールドとアイテムを作るための開発環�
 | Git 未初期化、または操作先を確認できない制作物 | GitHub の操作を止め、必要な設定（`git init`・`git remote add origin <URL>`）を利用者に説明する。代わりに親へ commit・起票しない |
 
 - 操作の前に `uv run --no-project python "$XRIFT_POC_ROOT/.agents/scripts/route_target.py" <path>` で判定する。`kind` が `env` なら親、`product` なら制作物、`stop` なら操作しない。`product` でも `repository` が null なら Issue・PR を作らない。手順は `.agents/skills/repository-ownership/SKILL.md`（Claude は `.claude/skills/repository-ownership`）に定義する
-- 判定に渡す `<path>` は、これから変更するファイルまたはディレクトリであり、cwd ではない。変更の対象のパスが変わるたびに判定し直す
-- 制作物（`items/<name>`・`worlds/<name>`）は親の main checkout（`$XRIFT_POC_ROOT`）の下で扱う。親の feature worktree 自身の `items/`・`worlds/` は `route_target.py` が `stop`（`product_base`・`product_uninitialized`）と判定する。ここで制作物を編集・commit しない
+- 判定に渡す `<path>` は、これから変更するファイルまたはディレクトリであり、cwd ではない。これから作るファイルのように、まだ無いパスも渡せる（実在する最も近い祖先のディレクトリで判定する）。変更の対象のパスが変わるたびに判定し直す
+- 制作物（`items/<name>`・`worlds/<name>`）は親の main checkout（`$XRIFT_POC_ROOT`）の下で扱う。親の feature worktree 自身の `items/`・`worlds/` は `route_target.py` が `stop`（そのものは `product_base`、配下は `product_in_env_worktree`）と判定する。ここで制作物を編集・commit しない（worktree を片付けると中身も消える）
 - Git 未初期化の `worlds/<name>/` で `git rev-parse --show-toplevel` を実行すると、祖先の親が見つかる。コマンドが成功しただけで「制作物が Git 管理されている」と判定しない
 - `items/`・`worlds/` は `.gitignore` でルートから無視している。配下を `git add -f` しない。サブモジュール・subtree・gitlink として登録しない
 - 制作物の中の `public/` は XRift のアセットディレクトリである。削除・無視の対象にしない
@@ -143,7 +143,7 @@ rm / rmdir の削除対象にシェル変数を使う場合は、各変数に ${
 - 親の追跡ファイル（開発環境）は、main checkout（`$XRIFT_POC_ROOT`）では編集しない。親の変更は worktree で行う。制作物（`items/<name>`・`worlds/<name>`）は main checkout の下で扱う
 - 親の修正は、最新の `origin/main` から superpowers:using-git-worktrees で worktree を作り、PR まで行う（ユーザの指示なしに commit しないの **例外** である）
 - Git 管理された制作物（`route_target.py` が `product`）の修正は、その制作物の最新の既定ブランチから、制作物のディレクトリの中（例: `worlds/<name>/.worktrees/<branch>`）に worktree を作り、その制作物のリポジトリの PR まで行う
-- Git 未初期化の制作物（`stop`・`product_uninitialized`）はその場で編集し、commit・worktree・PR を作らない。Git の設定（`git init`・`git remote add origin <URL>`）を利用者に説明する
+- 親の main checkout の Git 未初期化の制作物（`stop`・`product_uninitialized`）はその場で編集し、commit・worktree・PR を作らない。Git の設定（`git init`・`git remote add origin <URL>`）を利用者に説明する。親の feature worktree の `items/`・`worlds/` の配下（`stop`・`product_in_env_worktree`）では編集しない
 
 ## エージェント運用
 

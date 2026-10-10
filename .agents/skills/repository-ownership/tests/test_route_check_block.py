@@ -34,14 +34,12 @@ def test_route_check_block_routes_env_product_and_uninitialized(tmp_path: Path) 
     script = tmp_path / "route-check.bash"
     script.write_text(route_check_block() + "\n", encoding="utf-8")
 
-    def run(cwd: Path) -> tuple[int, dict[str, object]]:
-        result = subprocess.run(
-            ["bash", str(script)],
-            cwd=cwd,
-            env={**os.environ, "XRIFT_POC_ROOT": str(env.root)},
-            capture_output=True,
-            text=True,
-        )
+    def run(cwd: Path, route_path: str | None = None) -> tuple[int, dict[str, object]]:
+        environ = {key: value for key, value in os.environ.items() if key != "ROUTE_PATH"}
+        environ["XRIFT_POC_ROOT"] = str(env.root)
+        if route_path is not None:
+            environ["ROUTE_PATH"] = route_path
+        result = subprocess.run(["bash", str(script)], cwd=cwd, env=environ, capture_output=True, text=True)
         return result.returncode, json.loads(result.stdout.strip().splitlines()[-1])
 
     assert run(env.root)[1]["kind"] == "env"
@@ -49,3 +47,8 @@ def test_route_check_block_routes_env_product_and_uninitialized(tmp_path: Path) 
     assert (status, route["kind"], route["repository"]) == (0, "product", "someone/my-world")
     status, route = run(plain)
     assert (status, route["kind"], route["code"]) == (3, "stop", "product_uninitialized")
+    # ROUTE_PATH には、これから作るファイルも指定できる（親のルートから起動していても、制作物で判定する）。
+    status, route = run(env.root, "items/my-item/src/new.tsx")
+    assert (status, route["kind"], route["code"]) == (3, "stop", "product_uninitialized")
+    status, route = run(env.root, "worlds/my-world/src/new.tsx")
+    assert (status, route["kind"], route["repository"]) == (0, "product", "someone/my-world")
