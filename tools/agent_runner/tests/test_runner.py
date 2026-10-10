@@ -586,7 +586,7 @@ def test_default_artifact_directory_is_unique(repository: Path) -> None:
     assert one.artifact_dir != two.artifact_dir
     # Tripwire: disposable artifacts go to a unique, identifiable directory under
     # /tmp (AGENTS.md placement rule). Update this together with the runner prefix.
-    assert str(one.artifact_dir).startswith("/tmp/maatlog-agent-runner-")
+    assert str(one.artifact_dir).startswith("/tmp/xrift-poc-agent-runner-")
     assert one.artifact_dir.is_dir() and two.artifact_dir.is_dir()
 
 

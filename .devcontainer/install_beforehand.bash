@@ -753,7 +753,7 @@ install_deepseek_harness
 # （#577）。ランチャーの patch から絶対パスで読み込むため、~/.local/share へ置く。
 install_dsh_launchers() {
     local asset generated
-    local dsh_model_env_dir="${HOME}/.local/share/maatlog"
+    local dsh_model_env_dir="${HOME}/.local/share/xrift-poc"
     local dsh_model_env_plugin="${dsh_model_env_dir}/dsh-model-env.mjs"
     if ! mkdir -p "${HOME}/.local/bin" "${dsh_model_env_dir}"; then
         echo "Failed to create the DSH launcher directories." >&2

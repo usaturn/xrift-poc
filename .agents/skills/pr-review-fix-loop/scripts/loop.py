@@ -56,7 +56,7 @@ OUTCOMES = ("fixes_pushed", "no_fix_needed", "stopped")
 STOP_REASON = re.compile(r"(?:permission|environment|external): \S.*", re.DOTALL)
 MAX_CYCLES_LIMIT = 10
 # 使い捨ての runner の出力を置く /tmp のディレクトリ名（AGENTS.md の「PR 修正ループの所有 worktree」と同じ接頭辞）
-TMP_PREFIX = "maatlog-pr-loop-"
+TMP_PREFIX = "xrift-poc-pr-loop-"
 _HISTORY_ROW = re.compile(
     r"^\|[^|\n]*\|\s*`?(?P<head>[0-9a-f]{12})`?\s*\|\s*(?:Initial|Update)\s*\|\s*$", re.MULTILINE
 )

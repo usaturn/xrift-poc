@@ -21,7 +21,7 @@ SKILL_ROOTS = (ROOT / ".agents/skills", ROOT / ".claude/skills", ROOT / ".devin/
 TMP_PATH = re.compile(r"(?<![A-Za-z0-9_.)}\]-])(?:\$\{TMPDIR:-/tmp\}|/?/tmp)(?P<rest>/[^\s`\"')]*)?")
 # AGENTS.md「コミットしないファイルの置き場所」が `/tmp` に置くことを認める使い捨ての場所。
 # 表の `/tmp` の行を変えるときは、この一覧も合わせて更新する。
-ALLOWED_TMP_PREFIXES = ("/pr-review-", "/review-fix-planning.", "/maatlog-release-", "/maatlog-pr-loop-")
+ALLOWED_TMP_PREFIXES = ("/pr-review-", "/review-fix-planning.", "/xrift-poc-pr-loop-")
 
 
 def instruction_files() -> list[Path]:
@@ -51,13 +51,12 @@ def disallowed_tmp_paths(text: str) -> list[str]:
         'mktemp -d "${TMPDIR:-/tmp}/review-fix-planning.XXXXXX"',
         "`/tmp/pr-review-<PR_NUMBER>-<ランダム値>/worktree`",
         "Edit(//tmp/pr-review-*/review-backup/**)",
-        "git -C public worktree add /tmp/maatlog-release-<version> -b release/<version> origin/main",
         "`TMPDIR` が `/tmp` 以外",
         "`${TMPDIR:-/tmp}` 直下へ",
         'ls -t "$(uv run --no-project python .agents/scripts/agent_tmp.py root)/tmp/docs_draft/claude_handoffs/"',
         '"$ROOT/tmp/agents/x"',
         "Edit(tmp/agents/pr-review-scratch-*/**)",
-        "Edit(//tmp/maatlog-pr-loop-*/worktree/**)",
+        "Edit(//tmp/xrift-poc-pr-loop-*/worktree/**)",
     ],
 )
 def test_scan_accepts_approved_tmp_usage(text: str) -> None:
@@ -69,8 +68,8 @@ def test_scan_accepts_approved_tmp_usage(text: str) -> None:
     [
         ("> /tmp/gate-a.out 2> /tmp/gate-a.err", ["/tmp/gate-a.out", "/tmp/gate-a.err"]),
         (
-            'mktemp -d "${TMPDIR:-/tmp}/maatlog-pr-review-scratch-1-XXXXXXXX"',
-            ["${TMPDIR:-/tmp}/maatlog-pr-review-scratch-1-XXXXXXXX"],
+            'mktemp -d "${TMPDIR:-/tmp}/xrift-poc-pr-review-scratch-1-XXXXXXXX"',
+            ["${TMPDIR:-/tmp}/xrift-poc-pr-review-scratch-1-XXXXXXXX"],
         ),
         ("Edit(//tmp/notes/**)", ["//tmp/notes/**"]),
         ("ログは/tmp/foo.log に置く", ["/tmp/foo.log"]),

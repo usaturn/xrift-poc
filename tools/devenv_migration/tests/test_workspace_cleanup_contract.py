@@ -50,13 +50,13 @@ def _periodic_cleanup_function() -> str:
     captured: list[str] = []
     depth = 0
     for line in lines:
-        if not captured and not line.startswith("function maatlog_periodic_cleanup"):
+        if not captured and not line.startswith("function xrift_poc_periodic_cleanup"):
             continue
         captured.append(line)
         depth += line.count("{") - line.count("}")
         if captured and depth == 0:
             break
-    assert captured, "maatlog_periodic_cleanup not found in zshrc.txt"
+    assert captured, "xrift_poc_periodic_cleanup not found in zshrc.txt"
     return "".join(captured)
 
 
@@ -64,9 +64,9 @@ def _run_periodic_cleanup(state_dir: Path, bin_dir: Path) -> subprocess.Complete
     script = "\n".join(
         [
             f"export PATH={shlex.quote(str(bin_dir))}:$PATH",
-            f"export MAATLOG_CLEANUP_STATE_DIR={shlex.quote(str(state_dir))}",
+            f"export XRIFT_POC_CLEANUP_STATE_DIR={shlex.quote(str(state_dir))}",
             _periodic_cleanup_function(),
-            "maatlog_periodic_cleanup",
+            "xrift_poc_periodic_cleanup",
             "sleep 0.3",
         ]
     )
@@ -82,7 +82,7 @@ def test_periodic_cleanup_skips_while_the_stamp_is_fresh(tmp_path: Path) -> None
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     dummy = bin_dir / "cleanup-workspace.bash"
-    dummy.write_text('#!/bin/bash\necho invoked > "${MAATLOG_CLEANUP_STATE_DIR}/invoked"\n')
+    dummy.write_text('#!/bin/bash\necho invoked > "${XRIFT_POC_CLEANUP_STATE_DIR}/invoked"\n')
     dummy.chmod(0o755)
 
     result = _run_periodic_cleanup(state_dir, bin_dir)
@@ -103,7 +103,7 @@ def test_periodic_cleanup_recovers_stale_lock_and_runs(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     dummy = bin_dir / "cleanup-workspace.bash"
-    dummy.write_text('#!/bin/bash\necho invoked > "${MAATLOG_CLEANUP_STATE_DIR}/invoked"\n')
+    dummy.write_text('#!/bin/bash\necho invoked > "${XRIFT_POC_CLEANUP_STATE_DIR}/invoked"\n')
     dummy.chmod(0o755)
 
     result = _run_periodic_cleanup(state_dir, bin_dir)
@@ -125,18 +125,18 @@ def test_periodic_cleanup_runs_once_when_two_shells_pass_the_age_gate(tmp_path: 
     dummy = bin_dir / "cleanup-workspace.bash"
     dummy.write_text(
         "#!/bin/bash\n"
-        'echo START >> "${MAATLOG_CLEANUP_STATE_DIR}/invocations"\n'
+        'echo START >> "${XRIFT_POC_CLEANUP_STATE_DIR}/invocations"\n'
         "sleep 1.5\n"
-        'echo END >> "${MAATLOG_CLEANUP_STATE_DIR}/invocations"\n'
+        'echo END >> "${XRIFT_POC_CLEANUP_STATE_DIR}/invocations"\n'
     )
     dummy.chmod(0o755)
 
     script = "\n".join(
         [
             f"export PATH={shlex.quote(str(bin_dir))}:$PATH",
-            f"export MAATLOG_CLEANUP_STATE_DIR={shlex.quote(str(state_dir))}",
+            f"export XRIFT_POC_CLEANUP_STATE_DIR={shlex.quote(str(state_dir))}",
             _periodic_cleanup_function(),
-            "maatlog_periodic_cleanup",
+            "xrift_poc_periodic_cleanup",
             "sleep 2.2",
         ]
     )
@@ -170,9 +170,9 @@ def isolated_root(tmp_path: Path) -> Path:
 
 def _env_for(root: Path, yarn_cache: Path, min_age_days: int = 1) -> dict[str, str]:
     return {
-        "MAATLOG_CLEANUP_TMP_ROOT": str(root),
-        "MAATLOG_CLEANUP_YARN_CACHE_DIR": str(yarn_cache),
-        "MAATLOG_CLEANUP_MIN_AGE_DAYS": str(min_age_days),
+        "XRIFT_POC_CLEANUP_TMP_ROOT": str(root),
+        "XRIFT_POC_CLEANUP_YARN_CACHE_DIR": str(yarn_cache),
+        "XRIFT_POC_CLEANUP_MIN_AGE_DAYS": str(min_age_days),
     }
 
 
@@ -317,7 +317,7 @@ def test_installed_cleanup_launcher_reaps_saved_session_and_protects_unknown_fil
     env["HOME"] = str(home)
     dry = subprocess.run(
         [str(launcher)],
-        env={**env, "MAATLOG_CLEANUP_DRY_RUN": "1"},
+        env={**env, "XRIFT_POC_CLEANUP_DRY_RUN": "1"},
         check=False,
         text=True,
         capture_output=True,
@@ -436,7 +436,7 @@ def test_dry_run_preserves_saved_session_then_live_cleanup_reaps_it(isolated_roo
     repo, session_dir, _, _ = _create_helper_session(isolated_root, tmp_path)
     worktree = session_dir / "worktree"
     env = _env_for(isolated_root, tmp_path / "no-yarn-cache")
-    dry_env = {**env, "MAATLOG_CLEANUP_DRY_RUN": "1"}
+    dry_env = {**env, "XRIFT_POC_CLEANUP_DRY_RUN": "1"}
 
     dry = _run_cleanup(dry_env)
     assert dry.returncode == 0, dry.stderr
@@ -533,7 +533,7 @@ def test_keeps_matching_pr_loose_file_when_saved_helper_session_is_reaped(isolat
     loose_file.write_text("unique matching-PR patch content\n", encoding="utf-8")
     _make_old(loose_file)
     env = _env_for(isolated_root, tmp_path / "no-yarn-cache")
-    dry_env = {**env, "MAATLOG_CLEANUP_DRY_RUN": "1"}
+    dry_env = {**env, "XRIFT_POC_CLEANUP_DRY_RUN": "1"}
 
     dry = _run_cleanup(dry_env)
 
@@ -714,7 +714,7 @@ def test_dry_run_reports_protected_loose_files_without_deleting(isolated_root: P
     _make_old(patch_file)
 
     env = _env_for(isolated_root, tmp_path / "no-yarn-cache")
-    env["MAATLOG_CLEANUP_DRY_RUN"] = "1"
+    env["XRIFT_POC_CLEANUP_DRY_RUN"] = "1"
     result = _run_cleanup(env)
 
     assert result.returncode == 0, result.stderr
@@ -732,7 +732,7 @@ def test_dry_run_and_live_keep_unverified_directory_and_loose_file(isolated_root
     _make_old(patch_file)
 
     dry_env = _env_for(isolated_root, tmp_path / "no-yarn-cache")
-    dry_env["MAATLOG_CLEANUP_DRY_RUN"] = "1"
+    dry_env["XRIFT_POC_CLEANUP_DRY_RUN"] = "1"
     dry = _run_cleanup(dry_env)
     live = _run_cleanup(_env_for(isolated_root, tmp_path / "no-yarn-cache"))
 
@@ -754,7 +754,7 @@ def test_dry_run_and_live_retain_legacy_worktree_and_loose_file(isolated_root: P
     _make_old(patch_file)
 
     dry_env = _env_for(isolated_root, tmp_path / "no-yarn-cache")
-    dry_env["MAATLOG_CLEANUP_DRY_RUN"] = "1"
+    dry_env["XRIFT_POC_CLEANUP_DRY_RUN"] = "1"
     dry = _run_cleanup(dry_env)
     live = _run_cleanup(_env_for(isolated_root, tmp_path / "no-yarn-cache"))
 
@@ -805,7 +805,7 @@ def test_dry_run_keeps_unverified_registered_worktree(isolated_root: Path, tmp_p
     _make_old(worktree)
 
     env = _env_for(isolated_root, tmp_path / "no-yarn-cache")
-    env["MAATLOG_CLEANUP_DRY_RUN"] = "1"
+    env["XRIFT_POC_CLEANUP_DRY_RUN"] = "1"
     result = _run_cleanup(env)
 
     assert result.returncode == 0, result.stderr
@@ -835,7 +835,7 @@ def test_keeps_registered_old_submodule_worktree_without_helper_state(isolated_r
 def test_dry_run_and_live_preserve_unverified_submodule_worktree(isolated_root: Path, tmp_path: Path) -> None:
     main_repo, review_dir, worktree = _old_registered_submodule_worktree(isolated_root, tmp_path, "subdry01")
     env = _env_for(isolated_root, tmp_path / "no-yarn-cache")
-    dry_env = {**env, "MAATLOG_CLEANUP_DRY_RUN": "1"}
+    dry_env = {**env, "XRIFT_POC_CLEANUP_DRY_RUN": "1"}
 
     dry = _run_cleanup(dry_env)
     assert dry.returncode == 0, dry.stderr
@@ -981,7 +981,7 @@ def test_dry_run_reports_without_deleting(isolated_root: Path, tmp_path: Path) -
     (yarn_cache / "pkg.tgz").write_bytes(b"x")
 
     env = _env_for(isolated_root, yarn_cache)
-    env["MAATLOG_CLEANUP_DRY_RUN"] = "1"
+    env["XRIFT_POC_CLEANUP_DRY_RUN"] = "1"
     result = _run_cleanup(env)
 
     assert result.returncode == 0, result.stderr
@@ -1056,7 +1056,7 @@ def test_dry_run_does_not_remove_review_fix_planning_directory(isolated_root: Pa
     _make_old(debris)
 
     env = _env_for(isolated_root, tmp_path / "no-yarn-cache")
-    env["MAATLOG_CLEANUP_DRY_RUN"] = "1"
+    env["XRIFT_POC_CLEANUP_DRY_RUN"] = "1"
     result = _run_cleanup(env)
 
     assert result.returncode == 0, result.stderr
@@ -1109,3 +1109,35 @@ def test_review_fix_planning_removal_does_not_break_pr_review_survivor(isolated_
     assert still_active.exists()
     assert patch_file.exists()
     assert "removed orphaned session file" not in result.stdout
+
+
+def test_cleanup_leaves_work_directories_untouched(tmp_path: Path) -> None:
+    # クリーンアップは TMP_ROOT 配下の決まった種類だけを対象にし、ルートの items/・worlds/ と
+    # 子リポジトリの未コミットの変更には触らない。
+    root = tmp_path / "root"
+    world = root / "worlds" / "my-world"
+    world.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(world)], check=True)
+    (world / "draft.txt").write_text("未コミットの作業\n", encoding="utf-8")
+    item = root / "items" / "my-item"
+    item.mkdir(parents=True)
+    (item / "model.glb").write_bytes(b"glTF")
+    tmp_root = tmp_path / "tmp"
+    tmp_root.mkdir()
+    old = tmp_root / "review-fix-planning.abc123"
+    old.mkdir()
+    before = sorted(str(path.relative_to(root)) for path in root.rglob("*"))
+
+    result = _run_cleanup(
+        {
+            "XRIFT_POC_CLEANUP_TMP_ROOT": str(tmp_root),
+            "XRIFT_POC_CLEANUP_MIN_AGE_DAYS": "0",
+            "XRIFT_POC_CLEANUP_YARN_CACHE_DIR": str(tmp_path / "yarn"),
+        },
+        cwd=root,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert sorted(str(path.relative_to(root)) for path in root.rglob("*")) == before
+    assert (world / "draft.txt").read_text(encoding="utf-8") == "未コミットの作業\n"
+    assert not old.exists()

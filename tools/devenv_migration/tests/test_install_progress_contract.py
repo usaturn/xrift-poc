@@ -324,9 +324,9 @@ def _run_installer(
         "FAKE_DSH_VERSION": dsh_version.group(1),
         "FAKE_DSH_DUMP_CONFIG": str(dump_config),
         # workspace cleanup は dry-run に固定し、テストから実ファイルを消させない。
-        "MAATLOG_CLEANUP_TMP_ROOT": str(tmp_path / "cleanup"),
-        "MAATLOG_CLEANUP_MIN_AGE_DAYS": "0",
-        "MAATLOG_CLEANUP_DRY_RUN": "1",
+        "XRIFT_POC_CLEANUP_TMP_ROOT": str(tmp_path / "cleanup"),
+        "XRIFT_POC_CLEANUP_MIN_AGE_DAYS": "0",
+        "XRIFT_POC_CLEANUP_DRY_RUN": "1",
     }
     if fail_on is not None:
         env["FAKE_FAIL_ON"] = fail_on

@@ -335,7 +335,7 @@ PR レビューは agent-runner と `pr-review`、修正ループは `pr-review-
    rm -- ~/bin/herdr-pr-review ~/bin/herdr-pr-review-launch
    ```
 
-6. 旧ループの実行中の残り（`<親の main worktree>/.git/herdr-pr-review/locks/`、`tmp/agents/herdr-pr-review-*`、`/tmp/maatlog-pr-loop-*` のうち旧 run のもの）は自動では消えない。実行中の旧 run が無いことを確かめてから、中身を確認して手で片付ける。
+6. 旧ループの実行中の残り（`<親の main worktree>/.git/herdr-pr-review/locks/`、`tmp/agents/herdr-pr-review-*`、`/tmp/xrift-poc-pr-loop-*` のうち旧 run のもの）は自動では消えない。実行中の旧 run が無いことを確かめてから、中身を確認して手で片付ける。
 
 ## エージェント向けツールの導入
 
@@ -949,15 +949,15 @@ managed block を再利用する。`~/.dsh/cordis.patch.yml` や profile の保�
 ```bash
 (
   set -euo pipefail
-  mkdir -p "$HOME/.local/bin" "$HOME/.local/share/maatlog"
+  mkdir -p "$HOME/.local/bin" "$HOME/.local/share/xrift-poc"
   for asset in dshccd dshgo dsh-launcher.bash; do
     install -m 0755 ".devcontainer/$asset" "$HOME/.local/bin/$asset"
   done
   for asset in dshccd.patch.yml dshgo.patch.yml; do
     install -m 0644 ".devcontainer/$asset" "$HOME/.local/bin/$asset"
   done
-  install -m 0644 .devcontainer/dsh-model-env.mjs "$HOME/.local/share/maatlog/dsh-model-env.mjs"
-  sed "s|__PLUGIN_PATH__|$HOME/.local/share/maatlog/dsh-model-env.mjs|" \
+  install -m 0644 .devcontainer/dsh-model-env.mjs "$HOME/.local/share/xrift-poc/dsh-model-env.mjs"
+  sed "s|__PLUGIN_PATH__|$HOME/.local/share/xrift-poc/dsh-model-env.mjs|" \
     .devcontainer/dsh-model-env.patch.yml > "$HOME/.local/bin/dsh-model-env.patch.yml"
   chmod 0644 "$HOME/.local/bin/dsh-model-env.patch.yml"
 )
@@ -980,10 +980,10 @@ done
 ```
 
 モデル事実を渡すプラグインの行も同じ dump に出る。`name` が配置済みの
-`~/.local/share/maatlog/dsh-model-env.mjs` を指していることを確認する。
+`~/.local/share/xrift-poc/dsh-model-env.mjs` を指していることを確認する。
 
 ```bash
-dshccd --dump-config | grep -A2 '^- id: maatlog-dsh-model-env'
+dshccd --dump-config | grep -A2 '^- id: xrift-poc-dsh-model-env'
 ```
 
 ### API トークン
@@ -1056,7 +1056,7 @@ bash ツールと shell 環境レジストリ（`@deepseek-ai/dsh-shell-env`）�
 モデル・セッション・reasoning のメタデータを除去してから DSH を起動する。
 外側の pi の値を DSH の現在値として扱わず、DSH の事実が無いときもその値で代用しない。
 `dshccd` / `dshgo` は起動 patch で `dsh-model-env` プラグイン
-（`~/.local/share/maatlog/dsh-model-env.mjs`）を挿入し、モデル向けシェルへ次の事実を
+（`~/.local/share/xrift-poc/dsh-model-env.mjs`）を挿入し、モデル向けシェルへ次の事実を
 渡す。
 
 | 変数 | 意味 |

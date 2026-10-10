@@ -149,7 +149,7 @@ def run_workflow(
         raise RunnerError("workspace") from None
     try:
         if output_dir is None:
-            artifact_dir = Path(tempfile.mkdtemp(prefix="maatlog-agent-runner-", dir="/tmp"))
+            artifact_dir = Path(tempfile.mkdtemp(prefix="xrift-poc-agent-runner-", dir="/tmp"))
         else:
             artifact_dir = output_dir.absolute()
             # mkdir without exist_ok rejects existing directories AND dangling links.

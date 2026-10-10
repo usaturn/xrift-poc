@@ -11,10 +11,10 @@
 // 登録しない。pi-model-name 側はそのとき推測せず停止する。
 //
 // 依存パッケージを持たない単一ファイル。install_beforehand.bash が
-// ~/.local/share/maatlog/dsh-model-env.mjs へ配置し、dshccd / dshgo が
+// ~/.local/share/xrift-poc/dsh-model-env.mjs へ配置し、dshccd / dshgo が
 // dsh-model-env.patch.yml から絶対パスで読み込む。
 
-export const name = 'maatlog-dsh-model-env'
+export const name = 'xrift-poc-dsh-model-env'
 
 // dsh-base が host plane に置く shell 環境レジストリを injected service として要求する。
 export const inject = ['shellEnv']

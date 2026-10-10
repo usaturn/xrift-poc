@@ -33,7 +33,7 @@ PI_METADATA = (
 MODEL_SCRIPT = DEVCONTAINER.parent / ".agents/skills/pi-model-name/scripts/print-pi-model.sh"
 # 実行中 provider / model をシェルへ渡すプラグイン（#577）。patch は配置時に
 # プレースホルダを実際の配置先へ置換するため、資産そのものは byte 比較できない。
-MODEL_ENV_PLUGIN = ".local/share/maatlog/dsh-model-env.mjs"
+MODEL_ENV_PLUGIN = ".local/share/xrift-poc/dsh-model-env.mjs"
 MODEL_ENV_PATCH = "dsh-model-env.patch.yml"
 MODEL_ENV_PLACEHOLDER = "__PLUGIN_PATH__"
 
@@ -371,7 +371,7 @@ def test_real_dsh_dump_composes_the_overlay_without_changing_saved_defaults(tmp_
     for line in overlay:
         assert line in match.group(0).splitlines(), line
     # #577: モデル事実を渡すプラグインの行も、ランチャーの patch から合成される。
-    plugin_row = re.search(r"(?m)^- id: maatlog-dsh-model-env\n(?:(?!^- ).*\n)*", result.stdout)
+    plugin_row = re.search(r"(?m)^- id: xrift-poc-dsh-model-env\n(?:(?!^- ).*\n)*", result.stdout)
     assert plugin_row is not None
     assert (home / MODEL_ENV_PLUGIN).as_uri() in plugin_row.group(0)
     assert "apiKeyEnv: COMMANDCODE_API_KEY" in result.stdout

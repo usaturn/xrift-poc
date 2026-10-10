@@ -21,7 +21,7 @@ reviews/<owner>/<repo>/#<PR>-<ブランチ>/
 ```
 
 - レビューディレクトリの直下には `<model>.md` 以外のファイルを置かない（`.agents/review-findings.md` 2 章）。`loop/` はサブディレクトリである。
-- runner の worktree と出力は、`${TMPDIR:-/tmp}/maatlog-pr-loop-XXXXXX/cycle-<n>-review/` に一意に作る。停止を確認した後に helper が回収する（`run.json` の `resources`）。
+- runner の worktree と出力は、`${TMPDIR:-/tmp}/xrift-poc-pr-loop-XXXXXX/cycle-<n>-review/` に一意に作る。停止を確認した後に helper が回収する（`run.json` の `resources`）。
 
 ## 2. ロック（`lock.json`）
 

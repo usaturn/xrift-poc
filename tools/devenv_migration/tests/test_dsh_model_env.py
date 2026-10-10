@@ -43,7 +43,7 @@ export function apply(ctx) {
     }
   }
   const payload = {
-    listed: ctx.shellEnv.list().filter((entry) => entry.contributor === 'maatlog-dsh-model-env'),
+    listed: ctx.shellEnv.list().filter((entry) => entry.contributor === 'xrift-poc-dsh-model-env'),
     withAgent: facts({
       name: 'bash',
       agent: route({ config: { provider: 'opencode-go', model: 'deepseek-v4.1-flash', reasoningEffort: 'max' } }),
@@ -78,7 +78,7 @@ def run_probe(tmp_path: Path) -> dict[str, object]:
         "- insert:\n"
         "    - id: shell-env\n"
         "      name: '@deepseek-ai/dsh-shell-env'\n"
-        "    - id: maatlog-dsh-model-env\n"
+        "    - id: xrift-poc-dsh-model-env\n"
         f"      name: '{PLUGIN}'\n"
         "    - id: model-env-probe\n"
         f"      name: '{probe}'\n"
@@ -109,7 +109,7 @@ def test_plugin_declares_the_model_facts(probe: dict[str, object]) -> None:
     listed = cast(list[dict[str, str]], probe["listed"])
     assert {entry["key"] for entry in listed} == {"DSH_MODEL", "DSH_PROVIDER", "DSH_REASONING_EFFORT"}
     assert all(entry["description"] for entry in listed)
-    assert all(entry["contributor"] == "maatlog-dsh-model-env" for entry in listed)
+    assert all(entry["contributor"] == "xrift-poc-dsh-model-env" for entry in listed)
 
 
 def test_shell_call_reports_the_calling_agents_route(probe: dict[str, object]) -> None:

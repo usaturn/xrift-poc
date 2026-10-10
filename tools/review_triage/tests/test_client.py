@@ -669,7 +669,7 @@ def test_sends_the_exact_payload_to_the_fixed_endpoint(state: dict[str, str]) ->
         "Authorization": f"Bearer {KEY}",
         "Content-Type": "application/json",
         "Accept": "application/json",
-        "User-Agent": "maatlog-review-triage/1",
+        "User-Agent": "xrift-poc-review-triage/1",
     }
     assert sent.body == expected
     assert len(sent.body) == request.payload_bytes()
