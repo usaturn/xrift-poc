@@ -838,9 +838,9 @@ test_setup_commandcode_goat_completion_mentions_bwrap_and_subagent_d() {
 
 INSTALL_SCRIPT="${REPO_ROOT}/.devcontainer/install_beforehand.bash"
 
-# ---------------------------------------------------------------- pi 置換の fail-loud 化
+# ---------------------------------------------------------------- pi 拡張導入の fail-loud 化
 # install_beforehand.bash 全体は sudo apt 等を含みテストで実行できないため、
-# pi-subagents → pi-superagents の置換だけを関数 install_pi_extensions() として
+# pi-superagents の導入だけを関数 install_pi_extensions() として
 # 取り出し、fake pi を PATH に載せた独立スクリプトで実行して検証する。
 # fake pi は TEST_ROOT 配下の registry を一覧として返し、環境変数で各失敗を演出する。
 FAKE_PI="${TEST_ROOT}/bin/pi"
@@ -862,16 +862,6 @@ case "$cmd" in
             echo "fake pi: list failed" >&2
             exit 1
         fi
-        if [ "${FAKE_PI_KEEP_OLD:-0}" = 1 ]; then
-            printf 'npm:pi-subagents\nnpm:@teelicht/pi-superagents\n'
-            exit 0
-        fi
-        if [ "${FAKE_PI_KEEP_DISTILL:-0}" = 1 ]; then
-            # remove 後の再一覧にも npm:pi-distill が残り続ける状態を再現する。
-            [ -f "$state" ] && cat "$state" || true
-            printf 'npm:pi-distill\n'
-            exit 0
-        fi
         if [ "${FAKE_PI_MISSING_NEW:-0}" = 1 ]; then
             [ -f "$state" ] && grep -v '^npm:@teelicht/pi-superagents$' "$state" || true
             exit 0
@@ -880,10 +870,6 @@ case "$cmd" in
         ;;
     remove)
         printf 'remove: %s\n' "$*" >> "$log"
-        if [ "${FAKE_PI_FAIL_REMOVE:-0}" = 1 ]; then
-            echo "fake pi: remove failed" >&2
-            exit 1
-        fi
         registered=0
         if [ -f "$state" ] && [ -n "${1:-}" ]; then
             if grep -qx "${1}" "$state"; then
@@ -936,8 +922,8 @@ run_install_fragment() {
         bash "$src"
 }
 
-test_install_removes_old_and_installs_new() {
-    # 旧拡張が登録済み → 削除 → 新拡張導入 → 事後確認まで成功し exit 0 になる。
+test_install_installs_superagents_without_removing_anything() {
+    # 旧拡張が登録済みでも撤去はせず（警告は別の手順）、新拡張の導入と事後確認だけを行う。
     rm -f "$FAKE_STATE" "$FAKE_LOG"
     printf 'npm:pi-subagents\n' >> "$FAKE_STATE"
     local status out
@@ -945,25 +931,12 @@ test_install_removes_old_and_installs_new() {
     out="$(run_install_fragment 2>&1)"
     status=$?
     set -e
-    assert_eq "$status" "0" "successful replacement must exit 0"
-    grep -q '^remove: npm:pi-subagents$' "$FAKE_LOG" || fail "remove must be called"
+    assert_eq "$status" "0" "installing pi-superagents must exit 0"
+    if grep -q '^remove: ' "$FAKE_LOG"; then
+        fail "install_pi_extensions must not remove extensions"
+    fi
     grep -q '^install: --approve npm:@teelicht/pi-superagents$' "$FAKE_LOG" \
         || fail "install of pi-superagents must be called"
-    grep -q '^npm:@teelicht/pi-superagents$' "$FAKE_STATE" \
-        || fail "pi-superagents must appear in the registry"
-}
-
-test_install_removal_failure_is_fail_loud() {
-    # 旧拡張が登録済みなのに削除に失敗したら非 0 で、対象を stderr に示す。
-    rm -f "$FAKE_STATE" "$FAKE_LOG"
-    printf 'npm:pi-subagents\n' >> "$FAKE_STATE"
-    local status out
-    set +e
-    out="$(FAKE_PI_FAIL_REMOVE=1 run_install_fragment 2>&1)"
-    status=$?
-    set -e
-    assert_eq "$status" "1" "failed remove must exit 1"
-    assert_contains "$out" "npm:pi-subagents" "must name the extension whose removal failed"
 }
 
 test_install_new_failure_is_fail_loud() {
@@ -976,99 +949,6 @@ test_install_new_failure_is_fail_loud() {
     set -e
     assert_eq "$status" "1" "failed install must exit 1"
     assert_contains "$out" "npm:@teelicht/pi-superagents" "must name the failing extension"
-}
-
-test_install_skips_remove_when_old_absent() {
-    # 旧拡張が未登録なら削除を呼ばず、事後確認まで成功して exit 0 になる。
-    rm -f "$FAKE_STATE" "$FAKE_LOG"
-    local status out
-    set +e
-    out="$(run_install_fragment 2>&1)"
-    status=$?
-    set -e
-    assert_eq "$status" "0" "old-absent replacement must succeed"
-    if grep -q '^remove: ' "$FAKE_LOG"; then
-        fail "remove must not be called when the old extension is absent"
-    fi
-    grep -q '^install: --approve npm:@teelicht/pi-superagents$' "$FAKE_LOG" \
-        || fail "install of pi-superagents must still be called"
-}
-
-test_install_removes_stale_manifest_residue() {
-    # settings の一覧が綺麗でも、pi が管理する npm マニフェストに旧拡張が残っていれば
-    # 削除を呼ぶ。残っていると `pi update --extensions`（zsh の update()）で
-    # node_modules ごと復活し、subagent ツール名の衝突で pigo / pigod が起動できない（#289）。
-    rm -f "$FAKE_STATE" "$FAKE_LOG"
-    local npm_dir="${TEST_ROOT}/fake-home/.pi/agent/npm"
-    mkdir -p "$npm_dir"
-    printf '{\n  "dependencies": {\n    "pi-subagents": "^0.67.0"\n  }\n}\n' > "${npm_dir}/package.json"
-    printf '{\n  "packages": {\n    "node_modules/pi-subagents": {}\n  }\n}\n' > "${npm_dir}/package-lock.json"
-    local status out
-    set +e
-    out="$(run_install_fragment 2>&1)"
-    status=$?
-    set -e
-    assert_eq "$status" "0" "cleaning a manifest-only residue must exit 0"
-    grep -q '^remove: npm:pi-subagents$' "$FAKE_LOG" \
-        || fail "remove must be called when the managed manifest still lists pi-subagents"
-    if grep -q 'pi-subagents' "${npm_dir}/package.json" "${npm_dir}/package-lock.json"; then
-        fail "the managed manifests must not keep pi-subagents after the replacement"
-    fi
-    rm -rf "$npm_dir"
-}
-
-test_install_removes_stale_lockfile_residue() {
-    # package.json は綺麗で package-lock.json にだけ "node_modules/pi-subagents" が
-    # 残っているときも削除を呼ぶ。json 側パターン '"pi-subagents"' は lock のキー
-    # （直前が /）に一致しないため、lock 側パターンが無いとこの残骸は残る。
-    rm -f "$FAKE_STATE" "$FAKE_LOG"
-    local npm_dir="${TEST_ROOT}/fake-home/.pi/agent/npm"
-    mkdir -p "$npm_dir"
-    printf '{\n  "dependencies": {}\n}\n' > "${npm_dir}/package.json"
-    printf '{\n  "packages": {\n    "node_modules/pi-subagents": {}\n  }\n}\n' > "${npm_dir}/package-lock.json"
-    local status out
-    set +e
-    out="$(run_install_fragment 2>&1)"
-    status=$?
-    set -e
-    assert_eq "$status" "0" "cleaning a lockfile-only residue must exit 0"
-    grep -q '^remove: npm:pi-subagents$' "$FAKE_LOG" \
-        || fail "remove must be called when package-lock.json still lists node_modules/pi-subagents"
-    if grep -q 'pi-subagents' "${npm_dir}/package.json" "${npm_dir}/package-lock.json"; then
-        fail "the managed manifests must not keep pi-subagents after the replacement"
-    fi
-    rm -rf "$npm_dir"
-}
-
-test_install_fails_when_manifest_residue_remains() {
-    # 掃除後もマニフェストに残っていれば fail-loud。pi remove は未登録のとき exit 1 を
-    # 返すため、成否は終了コードではなく掃除後の実体で判定する。
-    rm -f "$FAKE_STATE" "$FAKE_LOG"
-    local npm_dir="${TEST_ROOT}/fake-home/.pi/agent/npm"
-    mkdir -p "$npm_dir"
-    printf '{\n  "dependencies": {\n    "pi-subagents": "^0.67.0"\n  }\n}\n' > "${npm_dir}/package.json"
-    local status out
-    set +e
-    out="$(FAKE_PI_FAIL_REMOVE=1 run_install_fragment 2>&1)"
-    status=$?
-    set -e
-    assert_eq "$status" "1" "a surviving manifest residue must exit 1"
-    assert_contains "$out" "pi-subagents" "must name the package that must be removed"
-    assert_contains "$out" "manifest" "must point at the managed npm manifest"
-    rm -rf "$npm_dir"
-}
-
-test_install_fails_when_old_remains_after() {
-    # 導入後の一覧に旧拡張が残っていたら非 0 で、残っている拡張を stderr に示す。
-    rm -f "$FAKE_STATE" "$FAKE_LOG"
-    printf 'npm:pi-subagents\n' >> "$FAKE_STATE"
-    local status out
-    set +e
-    out="$(FAKE_PI_KEEP_OLD=1 run_install_fragment 2>&1)"
-    status=$?
-    set -e
-    assert_eq "$status" "1" "old extension remaining after install must exit 1"
-    assert_contains "$out" "npm:pi-subagents" "must name which extension still remains"
 }
 
 test_install_fails_when_new_missing_after() {
@@ -1085,7 +965,7 @@ test_install_fails_when_new_missing_after() {
 }
 
 test_install_fails_when_list_fails() {
-    # 一覧取得自体に失敗したら非 0 で、理由を stderr に示す。
+    # 導入後の一覧の取得に失敗したら非 0 で、理由を stderr に示す。
     rm -f "$FAKE_STATE" "$FAKE_LOG"
     local status out
     set +e
@@ -1093,143 +973,7 @@ test_install_fails_when_list_fails() {
     status=$?
     set -e
     assert_eq "$status" "1" "failed pi list must exit 1"
-    assert_contains "$out" "pi list" "must mention the failing list command"
-}
-
-# ---------------------------------------------------------------- pi-distill 撤去
-# install_pi_extensions() と同じく、install_beforehand.bash の remove_pi_distill()
-# 関数だけを取り出して fake pi で検証する。
-run_remove_distill_fragment() {
-    local src="${TEST_ROOT}/fragment-remove-distill.bash"
-    awk '/^remove_pi_distill\(\) \{/{p=1} p{print} p && /^\}/{exit}' "$INSTALL_SCRIPT" > "$src"
-    printf 'remove_pi_distill\n' >> "$src"
-    env HOME="${TEST_ROOT}/fake-home" PATH="${TEST_ROOT}/bin:${PATH}" \
-        PI_CODING_AGENT_DIR="${TEST_ROOT}/fake-home/.pi/agent" \
-        PI_FAKE_STATE="$FAKE_STATE" PI_FAKE_LOG="$FAKE_LOG" \
-        PI_FAKE_NPM_DIR="${TEST_ROOT}/fake-home/.pi/agent/npm" \
-        bash "$src"
-}
-
-seed_distill_manifests() {
-    local npm_dir="${TEST_ROOT}/fake-home/.pi/agent/npm"
-    mkdir -p "$npm_dir"
-    printf '{\n  "dependencies": {\n    "pi-distill": "^1.9.2"\n  }\n}\n' > "${npm_dir}/package.json"
-    printf '{\n  "packages": {\n    "node_modules/pi-distill": {}\n  }\n}\n' > "${npm_dir}/package-lock.json"
-}
-
-clear_distill_manifests() {
-    rm -rf "${TEST_ROOT}/fake-home/.pi/agent/npm"
-}
-
-test_remove_distill_runs_when_registered() {
-    # 登録済みなら remove が呼ばれ、一覧から消えて exit 0 になる。
-    rm -f "$FAKE_STATE" "$FAKE_LOG"
-    printf 'npm:pi-distill\n' >> "$FAKE_STATE"
-    local status out
-    set +e
-    out="$(run_remove_distill_fragment 2>&1)"
-    status=$?
-    set -e
-    assert_eq "$status" "0" "successful removal must exit 0"
-    grep -q '^remove: npm:pi-distill$' "$FAKE_LOG" || fail "remove must be called"
-    if grep -q 'pi-distill' "$FAKE_STATE"; then
-        fail "pi-distill must disappear from the registry"
-    fi
-}
-
-test_remove_distill_removes_registered_helpers() {
-    # pi-distill の依存（tool-display / i18n）が単独登録されている環境も吸収する。
-    rm -f "$FAKE_STATE" "$FAKE_LOG"
-    printf 'npm:pi-distill\nnpm:pi-extensions-tool-display\nnpm:pi-extensions-i18n\n' >> "$FAKE_STATE"
-    local status out pkg
-    set +e
-    out="$(run_remove_distill_fragment 2>&1)"
-    status=$?
-    set -e
-    assert_eq "$status" "0" "helper removal must exit 0"
-    for pkg in npm:pi-distill npm:pi-extensions-tool-display npm:pi-extensions-i18n; do
-        grep -q "^remove: ${pkg}$" "$FAKE_LOG" || fail "remove must be called for ${pkg}"
-    done
-    if grep -q 'pi-distill\|pi-extensions' "$FAKE_STATE"; then
-        fail "the registry must not keep pi-distill or its helpers"
-    fi
-}
-
-test_remove_distill_skips_when_absent() {
-    # 未登録でマニフェストも綺麗なら remove を呼ばず exit 0。
-    rm -f "$FAKE_STATE" "$FAKE_LOG"
-    clear_distill_manifests
-    local status out
-    set +e
-    out="$(run_remove_distill_fragment 2>&1)"
-    status=$?
-    set -e
-    assert_eq "$status" "0" "absent removal must exit 0"
-    if [ -f "$FAKE_LOG" ] && grep -q '^remove: ' "$FAKE_LOG"; then
-        fail "remove must not be called when pi-distill is absent"
-    fi
-}
-
-test_remove_distill_removes_manifest_only_residue() {
-    # 一覧が綺麗でも npm マニフェストに pi-distill が残っていれば remove を呼ぶ。
-    # 残っていると `pi update --extensions` で node_modules ごと復活する（#289）。
-    rm -f "$FAKE_STATE" "$FAKE_LOG"
-    seed_distill_manifests
-    local status out
-    set +e
-    out="$(run_remove_distill_fragment 2>&1)"
-    status=$?
-    set -e
-    assert_eq "$status" "0" "manifest-only residue must still exit 0"
-    grep -q '^remove: npm:pi-distill$' "$FAKE_LOG" \
-        || fail "remove must be called when the managed manifest still lists pi-distill"
-    local npm_dir="${TEST_ROOT}/fake-home/.pi/agent/npm"
-    if grep -q 'pi-distill' "${npm_dir}/package.json" "${npm_dir}/package-lock.json"; then
-        fail "the managed manifests must not keep pi-distill after removal"
-    fi
-    clear_distill_manifests
-}
-
-test_remove_distill_fails_when_manifest_residue_remains() {
-    # remove に失敗してマニフェストに残るなら fail-loud。pi remove は未登録で
-    # exit 1 を返すため、成否は終了コードではなく掃除後の実体で判定する。
-    rm -f "$FAKE_STATE" "$FAKE_LOG"
-    seed_distill_manifests
-    local status out
-    set +e
-    out="$(FAKE_PI_FAIL_REMOVE=1 run_remove_distill_fragment 2>&1)"
-    status=$?
-    set -e
-    assert_eq "$status" "1" "a surviving manifest residue must exit 1"
-    assert_contains "$out" "pi-distill" "must name the package that must be removed"
-    assert_contains "$out" "manifest" "must point at the managed npm manifest"
-    clear_distill_manifests
-}
-
-test_remove_distill_fails_when_still_registered() {
-    # 除去後の再一覧に pi-distill が残っていたら非 0 で、残存を stderr に示す。
-    rm -f "$FAKE_STATE" "$FAKE_LOG"
-    printf 'npm:pi-distill\n' >> "$FAKE_STATE"
-    local status out
-    set +e
-    out="$(FAKE_PI_KEEP_DISTILL=1 run_remove_distill_fragment 2>&1)"
-    status=$?
-    set -e
-    assert_eq "$status" "1" "pi-distill remaining after removal must exit 1"
-    assert_contains "$out" "pi-distill" "must name which extension still remains"
-}
-
-test_remove_distill_fails_when_list_fails() {
-    # 一覧取得自体に失敗したら非 0 で、理由を stderr に示す。
-    rm -f "$FAKE_STATE" "$FAKE_LOG"
-    clear_distill_manifests
-    local status out
-    set +e
-    out="$(FAKE_PI_FAIL_LIST=1 run_remove_distill_fragment 2>&1)"
-    status=$?
-    set -e
-    assert_eq "$status" "1" "failed pi list must exit 1"
-    assert_contains "$out" "pi list" "must mention the failing list command"
+    assert_contains "$out" "Failed to list pi extensions" "must mention the failing list command"
 }
 
 # 実環境の Pi が、ランチャー（親 Pi）と tier が使う xai のモデルを提供しているかを確かめる。
@@ -1299,22 +1043,9 @@ test_setup_leaves_user_settings_untouched
 test_setup_opencode_go_completion_mentions_bwrap_and_subagent_d
 test_setup_commandcode_goat_completion_mentions_bwrap_and_subagent_d
 make_fake_pi
-test_install_removes_old_and_installs_new
-test_install_removal_failure_is_fail_loud
+test_install_installs_superagents_without_removing_anything
 test_install_new_failure_is_fail_loud
-test_install_skips_remove_when_old_absent
-test_install_removes_stale_manifest_residue
-test_install_removes_stale_lockfile_residue
-test_install_fails_when_manifest_residue_remains
-test_install_fails_when_old_remains_after
 test_install_fails_when_new_missing_after
 test_install_fails_when_list_fails
-test_remove_distill_runs_when_registered
-test_remove_distill_removes_registered_helpers
-test_remove_distill_skips_when_absent
-test_remove_distill_removes_manifest_only_residue
-test_remove_distill_fails_when_manifest_residue_remains
-test_remove_distill_fails_when_still_registered
-test_remove_distill_fails_when_list_fails
 test_pixg_live_model
 printf 'OK test-pi-superagents (task5)\n'

@@ -17,7 +17,6 @@ fake に差し替えた一時 HOME で実際にスクリプトを走らせて検
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import shutil
@@ -157,7 +156,7 @@ PI = (
     + """\
 printf 'pi %s\\n' "$*" >> "${FAKE_CALLS}"
 if [ "${1:-}" = "list" ]; then
-    printf 'npm:@teelicht/pi-superagents\\n'
+    printf '%s' "${FAKE_PI_LIST}"
 fi
 exit 0
 """
@@ -268,6 +267,9 @@ def _run_installer(
     fail_on: str | None = None,
     sudo_fix_chown: bool = False,
     merge_output: bool = False,
+    home: Path | None = None,
+    pi_list: str | None = None,
+    pi_agent_dir: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     if root is None:
         root = _make_root(tmp_path)
@@ -277,7 +279,8 @@ def _run_installer(
     bin_dir.mkdir()
     stub_dir = tmp_path / "stubs"
     stub_dir.mkdir()
-    home = tmp_path / "home"
+    if home is None:
+        home = tmp_path / "home"
     home.mkdir(exist_ok=True)
 
     for name, body in (
@@ -317,7 +320,9 @@ def _run_installer(
     env = {
         **os.environ,
         "HOME": str(home),
-        "PI_CODING_AGENT_DIR": str(home / ".pi" / "agent"),
+        "PI_CODING_AGENT_DIR": pi_agent_dir if pi_agent_dir is not None else str(home / ".pi" / "agent"),
+        # fake の `pi list` の出力。既定は pi-superagents だけが登録済みの状態。
+        "FAKE_PI_LIST": pi_list if pi_list is not None else "npm:@teelicht/pi-superagents\n",
         # agent-runner の雛形の配置先を一時 HOME に固定する（呼び出し元の XDG_CONFIG_HOME へ書かない）。
         "XDG_CONFIG_HOME": str(home / ".config"),
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
@@ -388,31 +393,7 @@ def test_run_announces_every_step_and_completes(tmp_path: Path) -> None:
     assert cleanup.is_symlink()
     assert cleanup.resolve() == (root / ".devcontainer" / "cleanup-workspace.bash").resolve()
     assert f"(root={tmp_path / 'cleanup'})" in result.stdout
-
-
-def test_run_isolates_pi_agent_dir_from_the_caller_environment(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # install 中に agent dir を書き換える処理（pi-mcp-adapter 撤去で settings.json の
-    # -builtin:mcp を取り除く掃除）は、テストが隔離した PI_CODING_AGENT_DIR 側へ
-    # 向かい、呼び出し元が指していた同名ファイルは無改変でなければならない。
-    caller_agent_dir = tmp_path / "caller-agent"
-    caller_settings = caller_agent_dir / "settings.json"
-    caller_agent_dir.mkdir(parents=True)
-    original = '{"extensions":["-builtin:mcp"],"keep":"caller"}\n'
-    caller_settings.write_text(original)
-    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(caller_agent_dir))
-
-    isolated_agent_dir = tmp_path / "home/.pi/agent"
-    isolated_agent_dir.mkdir(parents=True)
-    isolated_settings = isolated_agent_dir / "settings.json"
-    isolated_settings.write_text('{"extensions":["-builtin:mcp"]}\n')
-
-    result, _ = _run_installer(tmp_path)
-
-    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    assert caller_settings.read_text() == original
-    assert json.loads(isolated_settings.read_text()) == {"extensions": []}
+    assert (root / "items").is_dir() and (root / "worlds").is_dir()
 
 
 # 外部コマンドの呼び出しごとに 1 か所ずつ失敗を注入する。値は fake が受け取る「コマンド名 引数」の一部。
@@ -531,65 +512,68 @@ def test_run_recovers_non_writable_mount_targets(tmp_path: Path) -> None:
             target.chmod(0o755)
 
 
-# --- pi-distill 撤去（関数単体 + fake pi） -------------------------------------
+def test_installer_rerun_keeps_work_and_a_single_shell_block(tmp_path: Path) -> None:
+    root = _make_root(tmp_path)
+    world = root / "worlds" / "my-world"
+    world.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(world)], check=True)
+    (world / "draft.txt").write_text("未コミットの作業\n", encoding="utf-8")
+    zshrc = tmp_path / "home" / ".zshrc"
+    zshrc.parent.mkdir(parents=True)
+    zshrc.write_text("# 利用者の設定\n", encoding="utf-8")
 
-# settings に未登録（一覧は空）の状態を再現する。remove は実物と同じく、管理マニフェスト
-# から記載を取り除いたうえで「No matching package found」相当の exit 1 を返す。
-DISTILL_PI = """\
-#!/bin/bash
-printf 'pi %s\\n' "$*" >> "${FAKE_CALLS}"
-if [ "${1:-}" = "remove" ]; then
-    for manifest in "${FAKE_NPM_DIR}/package.json" "${FAKE_NPM_DIR}/package-lock.json"; do
-        [ -f "${manifest}" ] || continue
-        grep -v -- "${2#npm:}" "${manifest}" > "${manifest}.tmp" || true
-        mv "${manifest}.tmp" "${manifest}"
-    done
-    exit 1
-fi
-exit 0
-"""
+    for attempt in ("first", "second"):
+        run_dir = tmp_path / attempt
+        run_dir.mkdir()
+        result, _ = _run_installer(run_dir, root=root, home=tmp_path / "home")
+        assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+
+    assert (root / "items").is_dir()
+    assert (world / "draft.txt").read_text(encoding="utf-8") == "未コミットの作業\n"
+    text = zshrc.read_text(encoding="utf-8")
+    assert text.startswith("# 利用者の設定\n")
+    assert text.count("# >>> xrift-poc shell setup >>>") == 1
 
 
-def test_remove_pi_distill_expands_tilde_agent_dir(tmp_path: Path) -> None:
-    # pi は PI_CODING_AGENT_DIR の先頭の ~ をホームへ展開する。installer が展開せずに
-    # マニフェストを探すと、マニフェストにだけ残った pi-distill を見落として
-    # `pi update --extensions` での復活を許す。関数だけを取り出して検証する。
-    # test-pi-superagents.bash の awk と同じく、定義行から最初の行頭 } までを取り出す。
-    definition = re.search(r"(?ms)^remove_pi_distill\(\) \{$.*?^\}", _install_text())
-    assert definition is not None, "remove_pi_distill() must be defined in install_beforehand.bash"
-    fragment = tmp_path / "remove-pi-distill.bash"
-    fragment.write_text(f"{definition.group(0)}\nremove_pi_distill\n")
+@pytest.mark.parametrize("kind", ["file", "symlink"])
+def test_installer_stops_when_a_work_directory_is_not_a_directory(tmp_path: Path, kind: str) -> None:
+    root = _make_root(tmp_path)
+    if kind == "file":
+        (root / "items").write_text("x\n", encoding="utf-8")
+    else:
+        (tmp_path / "elsewhere").mkdir()
+        (root / "items").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+    result, _ = _run_installer(tmp_path, root=root)
+    assert result.returncode != 0
+    assert "[install_beforehand] ERROR: " in result.stderr
+    assert str(root / "items") in result.stderr
 
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    _write_executable(bin_dir / "pi", DISTILL_PI)
 
-    home = tmp_path / "home"
-    npm_dir = home / ".pi" / "agent" / "npm"
-    npm_dir.mkdir(parents=True)
-    package_json = npm_dir / "package.json"
-    package_lock = npm_dir / "package-lock.json"
-    package_json.write_text('{\n  "dependencies": {\n    "pi-distill": "^1.9.2"\n  }\n}\n')
-    package_lock.write_text('{\n  "packages": {\n    "node_modules/pi-distill": {}\n  }\n}\n')
-    calls = tmp_path / "calls.log"
+def test_retired_pi_extensions_are_reported_but_not_removed(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "home" / ".pi" / "agent"
+    (agent_dir / "npm").mkdir(parents=True)
+    manifest = agent_dir / "npm" / "package.json"
+    manifest.write_text('{"dependencies": {"pi-distill": "^1.9.2"}}\n', encoding="utf-8")
+    settings = agent_dir / "settings.json"
+    settings.write_text('{"extensions":["-builtin:mcp"]}\n', encoding="utf-8")
 
-    # cwd にはリテラルの ~ ディレクトリが無いので、展開しなければマニフェストは見つからない。
-    result = subprocess.run(
-        ["bash", str(fragment)],
-        cwd=tmp_path,
-        env={
-            **os.environ,
-            "HOME": str(home),
-            "PI_CODING_AGENT_DIR": "~/.pi/agent",
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "FAKE_CALLS": str(calls),
-            "FAKE_NPM_DIR": str(npm_dir),
-        },
-        capture_output=True,
-        text=True,
-    )
+    result, _ = _run_installer(tmp_path, pi_list="npm:pi-subagents\nnpm:@teelicht/pi-superagents\n")
 
     assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    assert "pi remove npm:pi-distill" in calls.read_text().splitlines()
-    assert "pi-distill" not in package_json.read_text()
-    assert "pi-distill" not in package_lock.read_text()
+    assert "pi remove npm:pi-subagents" in result.stderr
+    assert "pi remove npm:pi-distill" in result.stderr
+    assert "-builtin:mcp" in result.stderr
+    calls = (tmp_path / "calls.log").read_text(encoding="utf-8")
+    assert "pi remove" not in calls
+    assert manifest.read_text(encoding="utf-8") == '{"dependencies": {"pi-distill": "^1.9.2"}}\n'
+    assert settings.read_text(encoding="utf-8") == '{"extensions":["-builtin:mcp"]}\n'
+
+
+def test_retired_pi_check_expands_a_tilde_agent_dir(tmp_path: Path) -> None:
+    # pi は PI_CODING_AGENT_DIR の先頭の ~ をホームへ展開する。確認も同じ場所を見る。
+    npm_dir = tmp_path / "home" / ".pi" / "agent" / "npm"
+    npm_dir.mkdir(parents=True)
+    (npm_dir / "package-lock.json").write_text('{"packages": {"node_modules/pi-subagents": {}}}\n', encoding="utf-8")
+    result, _ = _run_installer(tmp_path, pi_agent_dir="~/.pi/agent")
+    assert result.returncode == 0, result.stderr
+    assert "pi remove npm:pi-subagents" in result.stderr
