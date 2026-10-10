@@ -1,0 +1,29 @@
+"""python -m notes_tool.cli add --store DIR --id ID --content-file FILE"""
+
+import argparse
+import sys
+from pathlib import Path
+
+from notes_tool.store import save_finding
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="notes_tool")
+    commands = parser.add_subparsers(dest="command", required=True)
+    add = commands.add_parser("add", help="指摘を 1 件保存する")
+    add.add_argument("--store", type=Path, required=True)
+    add.add_argument("--id", required=True)
+    add.add_argument("--content-file", type=Path, required=True)
+    args = parser.parse_args(argv)
+    content = args.content_file.read_text(encoding="utf-8")
+    try:
+        path = save_finding(args.store, args.id, content)
+    except ValueError as error:
+        print(f"rejected: {error}", file=sys.stderr)
+        return 2
+    print(path)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

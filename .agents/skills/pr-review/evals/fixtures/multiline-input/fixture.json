@@ -1,0 +1,24 @@
+{
+  "repository": "example/notes-tool",
+  "number": 3,
+  "title": "指摘の ID と本文を保存の前に検査する",
+  "body": "## 概要\n\n`save_finding` の前に、指摘の ID と本文を検査する `validate_finding` を足す。\n\n- ID は `H-1` のような形だけを受け付ける\n- 空の本文と、制御文字を含む本文を拒否する\n\n不正な入力は `ValueError` で拒否し、CLI は終了コード 2 で止まる。失敗時は何も保存せずに止まるので、安全側に倒れる。\n\n## テスト\n\n`tests/test_store.py` を足した（`pytest` で 3 件が通る）。\n",
+  "base_branch": "main",
+  "head_branch": "feat/validate-finding",
+  "steps": [
+    {
+      "label": "BASE",
+      "branch": "base",
+      "tree": "base",
+      "message": "notes_tool: 指摘の本文を JSON に保存する CLI"
+    },
+    {
+      "label": "HEAD",
+      "branch": "head",
+      "tree": "pr",
+      "message": "store: 保存の前に指摘の ID と本文を検査する"
+    }
+  ],
+  "previous_review": null,
+  "comments": []
+}

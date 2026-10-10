@@ -1,0 +1,18 @@
+from pathlib import Path
+
+import pytest
+
+from syncer.apply import apply_changes
+
+
+def test_apply_writes_inside_root(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    assert apply_changes(root, {"docs/a.md": "a"}) == [(root / "docs/a.md").resolve()]
+
+
+def test_apply_rejects_escape(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    with pytest.raises(ValueError):
+        apply_changes(root, {"../outside/x": "x"})

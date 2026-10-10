@@ -1,0 +1,222 @@
+{
+  "version": 1,
+  "repository": "usaturn/xrift-poc",
+  "review_dir": "reviews/#999-feature-example",
+  "reviewed_head": "fdfc294f57fb773d9024d041d834e7ede1c7cd78",
+  "model_id_requested": "jev-latest",
+  "model_id_responded": "jev-1.13.0",
+  "question_set_version": "1",
+  "thresholds": {
+    "version": 1,
+    "model_id": "jev-latest",
+    "choice_min_confidence": 0.9,
+    "score_min_confidence": 0.9,
+    "noul_yes_min": 0.95,
+    "noul_no_max": 0.05
+  },
+  "status": "advisory",
+  "reason": "advisory: 2 of 4 active finding(s) have an advisory proposal; unparsed blocks: 1 (not triaged; check the review files); input anomalies: 1",
+  "decisions": [
+    {
+      "finding_id": "alpha/active/H-1",
+      "proposal": "fix_now",
+      "duplicate_candidates": [
+        "beta/active/M-1"
+      ],
+      "severity_summary": {
+        "by_model": {
+          "alpha/active/H-1": "high",
+          "beta/active/M-1": "medium"
+        },
+        "highest": "high",
+        "lowest": "medium",
+        "agreement": false
+      },
+      "evidence_refs": [
+        "review:alpha.md#L10-L16",
+        "location:tools/example.py:10",
+        "reviewed_head:fdfc294f57fb",
+        "detected_head:fdfc294f57fb",
+        "request:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "request:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "response:req-a"
+      ],
+      "escalation_reasons": [],
+      "answers": {
+        "applies_d40ab58ac648": {
+          "type": "noul",
+          "noul": 1.0
+        },
+        "proposal_d40ab58ac648": {
+          "type": "choice",
+          "choice": "fix_now",
+          "probabilities": null,
+          "confidence": 0.95
+        },
+        "same_53e99ccc3161_d40ab58ac648": {
+          "type": "noul",
+          "noul": 0.97
+        }
+      },
+      "advisory": true
+    },
+    {
+      "finding_id": "beta/active/M-1",
+      "proposal": "human_review",
+      "duplicate_candidates": [
+        "alpha/active/H-1",
+        "gamma/active/L-1"
+      ],
+      "severity_summary": {
+        "by_model": {
+          "beta/active/M-1": "medium",
+          "alpha/active/H-1": "high",
+          "gamma/active/L-1": "low"
+        },
+        "highest": "high",
+        "lowest": "low",
+        "agreement": false
+      },
+      "evidence_refs": [
+        "review:beta.md#L10-L16",
+        "location:tools/example.py:10",
+        "reviewed_head:fdfc294f57fb",
+        "detected_head:fdfc294f57fb",
+        "request:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "request:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "request:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      ],
+      "escalation_reasons": [
+        "duplicate_uncertain: partner=gamma/active/L-1 noul=0.5"
+      ],
+      "answers": {
+        "applies_53e99ccc3161": {
+          "type": "noul",
+          "noul": 1.0
+        },
+        "proposal_53e99ccc3161": {
+          "type": "choice",
+          "choice": "fix_now",
+          "probabilities": null,
+          "confidence": 0.95
+        },
+        "same_3a520c9eac8e_53e99ccc3161": {
+          "type": "noul",
+          "noul": 0.5
+        },
+        "same_53e99ccc3161_d40ab58ac648": {
+          "type": "noul",
+          "noul": 0.97
+        }
+      },
+      "advisory": true
+    },
+    {
+      "finding_id": "gamma/active/L-1",
+      "proposal": "human_review",
+      "duplicate_candidates": [
+        "beta/active/M-1"
+      ],
+      "severity_summary": {
+        "by_model": {
+          "gamma/active/L-1": "low",
+          "beta/active/M-1": "medium"
+        },
+        "highest": "medium",
+        "lowest": "low",
+        "agreement": false
+      },
+      "evidence_refs": [
+        "review:gamma.md#L10-L16",
+        "location:tools/example.py:10",
+        "reviewed_head:fdfc294f57fb",
+        "detected_head:fdfc294f57fb",
+        "request:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "request:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      ],
+      "escalation_reasons": [
+        "proposal_low_confidence: proposal_3a520c9eac8e confidence=0.5 < 0.9",
+        "duplicate_uncertain: partner=beta/active/M-1 noul=0.5"
+      ],
+      "answers": {
+        "applies_3a520c9eac8e": {
+          "type": "noul",
+          "noul": 1.0
+        },
+        "proposal_3a520c9eac8e": {
+          "type": "choice",
+          "choice": "fix_now",
+          "probabilities": null,
+          "confidence": 0.5
+        },
+        "same_3a520c9eac8e_53e99ccc3161": {
+          "type": "noul",
+          "noul": 0.5
+        }
+      },
+      "advisory": true
+    },
+    {
+      "finding_id": "delta/active/I-1",
+      "proposal": "separate_issue",
+      "duplicate_candidates": [],
+      "severity_summary": {
+        "by_model": {
+          "delta/active/I-1": "info"
+        },
+        "highest": "info",
+        "lowest": "info",
+        "agreement": true
+      },
+      "evidence_refs": [
+        "review:delta.md#L10-L16",
+        "location:tools/example.py:10",
+        "reviewed_head:fdfc294f57fb",
+        "detected_head:fdfc294f57fb",
+        "request:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      ],
+      "escalation_reasons": [],
+      "answers": {
+        "applies_34f7243e5dba": {
+          "type": "noul",
+          "noul": 1.0
+        },
+        "proposal_34f7243e5dba": {
+          "type": "choice",
+          "choice": "separate_issue",
+          "probabilities": null,
+          "confidence": 0.93
+        }
+      },
+      "advisory": true
+    },
+    {
+      "finding_id": "alpha/resolved/L-2",
+      "proposal": "human_review",
+      "duplicate_candidates": [],
+      "severity_summary": {
+        "by_model": {
+          "alpha/resolved/L-2": "low"
+        },
+        "highest": "low",
+        "lowest": "low",
+        "agreement": true
+      },
+      "evidence_refs": [
+        "review:alpha.md#L40-L46",
+        "location:tools/example.py:10",
+        "reviewed_head:fdfc294f57fb",
+        "detected_head:fdfc294f57fb"
+      ],
+      "escalation_reasons": [
+        "status_resolved"
+      ],
+      "answers": {},
+      "advisory": true
+    }
+  ],
+  "unparsed_count": 1,
+  "decided_count": 0,
+  "unverified_count": 0,
+  "generated_at": "2026-09-26T00:00:00Z"
+}

@@ -1,0 +1,408 @@
+# 色設定
+autoload -U colors; colors
+
+local GREEN=$'%{\e[1;32m%}'
+local YELLOW=$'%{\e[1;33m%}'
+local BLUE=$'%{\e[1;34m%}'
+local DEFAULT=$'%{\e[1;m%}'
+
+# もしかして機能
+setopt correct
+
+# PCRE 互換の正規表現を使う
+setopt re_match_pcre
+
+autoload -U compinit && compinit -C
+
+# erase beep
+setopt no_beep
+
+# プロンプトが表示されるたびにプロンプト文字列を評価、置換する
+setopt prompt_subst
+
+# for Google Cloud
+function genv(){
+        GOOGLE_CLOUD_SDK_CONFIG=$(gcloud config configurations list  --format="value(name)" | fzf)
+        gcloud config configurations activate ${GOOGLE_CLOUD_SDK_CONFIG}
+}
+# プロンプト指定(コマンドの続き)
+PROMPT2='[%n]> '
+
+# もしかして時のプロンプト指定
+SPROMPT="%{$fg[red]%}%{$suggest%}(*'~'%)? < もしかして %B%r%b %{$fg[red]%}かな? [そう!(y), 違う!(n),a,e]:${reset_color} "
+
+if [ -d "$HOME/bin" ] ; then
+    PATH="$HOME/bin:$PATH"
+fi
+
+if [ -d "$HOME/.local/bin" ] ; then
+    PATH="$HOME/.local/bin:$PATH"
+fi
+
+export PATH
+
+alias gitm="git fetch -p && git checkout origin/main"
+alias gitc="git branch -a| fzf | xargs git checkout"
+alias gitd="git branch | fzf | xargs git branch -D"
+alias gits="git stash list | fzf | awk -F '{|}' '{print $2}' | git stash apply"
+alias ccd="claude --dangerously-skip-permissions"
+alias ccdo="claude --dangerously-skip-permissions --model opus"
+alias ccds="claude --dangerously-skip-permissions --model sonnet"
+alias cur="agent --model grok-4.7-xhigh --yolo"
+alias curo="agent --model claude-opus-5-5-xhigh --yolo"
+alias dev="devin --model swe-2-max --permission-mode dangerous"
+alias devs="devin --model gpt-6-1-sol-xhigh --permission-mode dangerous"
+alias devo="devin --model claude-opus-5-5-xhigh --permission-mode dangerous"
+
+# プロバイダ切替ランチャー（ccdd / ccddg）共通の env -u リスト。
+# 親シェルで export された主要な認証材料・プロバイダ切替・モデルピン留系の値が
+# 第三者プロバイダの子プロセスへ漏れるのを防ぐ。対象範囲の基準は
+# test-herdr-migration.bash の expected_unsets とする。関数側で代入する変数は
+# 代入が優先されるため、共有リストから外す必要はない。
+typeset -a cc_launcher_unsets=(
+    -u ANTHROPIC_AUTH_TOKEN
+    -u ANTHROPIC_API_KEY
+    -u DEEPINFRA_TOKEN
+    -u COMMANDCODE_API_KEY
+    -u OPENCODE_API_KEY
+    -u OPENCODE_GO_API_KEY
+    -u ANTHROPIC_AWS_API_KEY
+    -u ANTHROPIC_FOUNDRY_API_KEY
+    -u ANTHROPIC_FOUNDRY_AUTH_TOKEN
+    -u ANTHROPIC_IDENTITY_TOKEN
+    -u ANTHROPIC_IDENTITY_TOKEN_FILE
+    -u ANTHROPIC_CUSTOM_HEADERS
+    -u ANTHROPIC_MODEL
+    -u ANTHROPIC_DEFAULT_MODEL
+    -u ANTHROPIC_SMALL_FAST_MODEL
+    -u ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION
+    -u ANTHROPIC_CUSTOM_MODEL_OPTION
+    -u ANTHROPIC_CUSTOM_MODEL_OPTION_NAME
+    -u ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION
+    -u ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES
+    -u CLAUDE_CODE_OAUTH_TOKEN
+    -u CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR
+    -u CLAUDE_CODE_OAUTH_REFRESH_TOKEN
+    -u CLAUDE_CODE_SESSION_ACCESS_TOKEN
+    -u CLAUDE_CODE_HFI_BEARER_TOKEN
+    -u CLAUDE_CODE_CLIENT_KEY
+    -u CLAUDE_CODE_CLIENT_KEY_PASSPHRASE
+    -u CLAUDE_CODE_GATEWAY_TOKEN
+    -u CLAUDE_CODE_GATEWAY_TOKEN_FILE_DESCRIPTOR
+    -u CLAUDE_CODE_WEBSOCKET_AUTH_FILE_DESCRIPTOR
+    -u CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR
+    -u CLAUDE_CODE_USE_BEDROCK
+    -u CLAUDE_CODE_USE_FOUNDRY
+    -u CLAUDE_CODE_USE_GATEWAY
+    -u CLAUDE_CODE_USE_ANTHROPIC_AWS
+    -u CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD
+    -u CLAUDE_CODE_USE_MANTLE
+    -u CLAUDE_CODE_USE_VERTEX
+    -u CLAUDE_CODE_MAX_CONTEXT_TOKENS
+    -u CLAUDE_CODE_SUBAGENT_MODEL
+    -u CLAUDE_CODE_SUBAGENT_MODEL_FORCE
+    -u CLAUDE_CODE_AUTO_MODE_MODEL
+    -u CLAUDE_CODE_BG_CLASSIFIER_MODEL
+    -u ANTHROPIC_BETAS
+)
+
+function claude-deepinfra ccdd () {
+  local fable=zai-org/GLM-5.3
+  local opus=deepseek-ai/DeepSeek-V4.1-Flash
+  local sonnet=deepseek-ai/DeepSeek-V4-Flash-0731
+  local haiku=openai/gpt-oss-20b
+  local -a opts
+  [[ $funcstack[1] == ccdd ]] && opts=(--dangerously-skip-permissions)
+
+  env "${cc_launcher_unsets[@]}" \
+    ANTHROPIC_BASE_URL="https://api.deepinfra.com/anthropic" \
+    ANTHROPIC_AUTH_TOKEN="${DEEPINFRA_TOKEN:?DEEPINFRA_TOKEN is not set}" \
+    ANTHROPIC_DEFAULT_FABLE_MODEL=${fable} \
+    ANTHROPIC_DEFAULT_OPUS_MODEL=${opus} \
+    ANTHROPIC_DEFAULT_SONNET_MODEL=${sonnet} \
+    ANTHROPIC_DEFAULT_HAIKU_MODEL=${haiku} \
+    ENABLE_CLAUDEAI_MCP_SERVERS=false \
+    CLAUDE_CODE_EFFORT_LEVEL=max \
+    CLAUDE_CODE_MAX_OUTPUT_TOKENS=65536 \
+    claude --model opus "${opts[@]}" "$@"
+}
+
+function claude-deepinfra-glm ccddg () {
+  local fable=deepseek-ai/DeepSeek-V4.1-Flash
+  local opus=zai-org/GLM-5.3-Flash
+  local sonnet=deepseek-ai/DeepSeek-V4-Flash-0731
+  local haiku=openai/gpt-oss-20b
+  local -a opts
+  [[ $funcstack[1] == ccddg ]] && opts=(--dangerously-skip-permissions)
+
+  env "${cc_launcher_unsets[@]}" \
+    ANTHROPIC_BASE_URL="https://api.deepinfra.com/anthropic" \
+    ANTHROPIC_AUTH_TOKEN="${DEEPINFRA_TOKEN:?DEEPINFRA_TOKEN is not set}" \
+    ANTHROPIC_DEFAULT_FABLE_MODEL=${fable} \
+    ANTHROPIC_DEFAULT_OPUS_MODEL=${opus} \
+    ANTHROPIC_DEFAULT_SONNET_MODEL=${sonnet} \
+    ANTHROPIC_DEFAULT_HAIKU_MODEL=${haiku} \
+    ENABLE_CLAUDEAI_MCP_SERVERS=false \
+    CLAUDE_CODE_EFFORT_LEVEL=max \
+    CLAUDE_CODE_MAX_OUTPUT_TOKENS=65536 \
+    claude --model opus "${opts[@]}" "$@"
+}
+
+function cod(){
+    if [[ -z "$CONTEXT7_API_KEY" ]]; then
+        read -rs "CONTEXT7_API_KEY?Context7 API key: "
+        export CONTEXT7_API_KEY
+        echo
+    fi
+    # 独立した Git リポジトリの制作物（items/<name>・worlds/<name>）から起動しても、xrift-poc の
+    # AGENTS.md とスキルを読むよう、.devcontainer のあるディレクトリをプロジェクトのルートとして探させる。
+    # 共有の ~/.codex/config.toml には書かない（maatlog-poc のコンテナでも挙動が変わるため）。
+    codex -c 'project_root_markers=[".devcontainer"]' --dangerously-bypass-approvals-and-sandbox "$@"
+}
+
+# 制作物（items/<name>・worlds/<name> の Git リポジトリ）に xrift-poc のスキルへのリンクを置く・外す。
+# 使い方: xrift-link [link|unlink] [dir]（既定は link と現在のディレクトリ）
+function xrift-link(){
+    local root="${XRIFT_POC_ROOT:-}"
+    if [ -z "$root" ]; then
+        print -u2 "xrift-link: XRIFT_POC_ROOT is not set"
+        return 1
+    fi
+    local command="link"
+    case "${1:-}" in
+        link|unlink) command="$1"; shift ;;
+    esac
+    uv run --no-project python "${root}/.agents/scripts/project_link.py" "$command" "${1:-$PWD}"
+}
+
+# bun completions
+[ -s "/home/vscode/.bun/_bun" ] && source "/home/vscode/.bun/_bun"
+# bun
+export BUN_INSTALL="$HOME/.bun"
+export PATH="$BUN_INSTALL/bin:$PATH"
+function buni(){
+    ls -ld node_modules && rm -rf node_modules
+    bun install
+    bun run test
+}
+
+export EDITOR=code
+export LANG=ja_JP.utf8
+
+# 起動時に使うワークスペースディレクトリを選択して標準出力へ出す。
+# 1 件ならそのまま、0 件はルートを返す。複数件は fzf で選択する。
+function herdr_select_workspace(){
+    local root="${HERDR_WORKSPACE_ROOT:-/workspaces}"
+    local -a dirs
+    dirs=("$root"/*(N-/))
+    case ${#dirs} in
+        0)
+            print -r -- "$root"
+            ;;
+        1)
+            print -r -- "${dirs[1]}"
+            ;;
+        *)
+            if ! command -v fzf >/dev/null 2>&1; then
+                print -u2 "warning: fzf not found; using $root"
+                print -r -- "$root"
+                return 0
+            fi
+            local selected
+            selected="$(printf '%s\n' "${dirs[@]}" \
+                | fzf --height=40% --reverse --prompt='workspace> ')"
+            if [ -n "$selected" ]; then
+                print -r -- "$selected"
+            else
+                print -r -- "$root"
+            fi
+            ;;
+    esac
+}
+
+# herdr はセッション復元時、session.json に保存済みの cwd を最優先し、クライアントが
+# 渡す startup cwd を無視する（サーバログの "ignoring startup cwd"）。そのため一度
+# ワークスペース外の cwd が保存されると、以後の復元でそこに固定される。
+# $HERDR_WORKSPACE_ROOT 配下に実在しない cwd を $1 へ是正する。
+# worktree 配下は AI エージェントのセッションが cwd に紐づくため保持する。
+# サーバ稼働中は復元が起きず書き換えは競合するだけなので何もしない。
+function herdr_repair_session_cwd(){
+    local workspace_dir="$1"
+    local session_file="${HOME}/.config/herdr/session.json"
+    local root="${HERDR_WORKSPACE_ROOT:-/workspaces}"
+    [ -n "$workspace_dir" ] || return 0
+    # 修復先が実在し進入可能でなければ、壊れた cwd を別の壊れた cwd で置換することになるため何もしない
+    [ -d "$workspace_dir" ] && [ -x "$workspace_dir" ] || return 0
+    # fzf キャンセル等でルート自身が渡ると、焼き付いたあと inside(root,root) で自己修復不能になる
+    [ "${workspace_dir%/}" != "${root%/}" ] || return 0
+    [ -f "$session_file" ] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+    local server_status
+    server_status="$(herdr status server --json 2>/dev/null)" || return 0
+    python3 - "$session_file" "$root" "$workspace_dir" "$server_status" <<'PY' || true
+import json
+import os
+import sys
+
+session_path, root, workspace, server_status = sys.argv[1:]
+
+try:
+    status = json.loads(server_status)
+except (TypeError, ValueError):
+    sys.exit(0)
+if not isinstance(status, dict) or status.get("running") is not False:
+    sys.exit(0)
+
+
+def inside(candidate, base):
+    """candidate が base 配下に実在するディレクトリなら True。"""
+    if not isinstance(candidate, str) or not candidate:
+        return False
+    if not os.path.isdir(candidate):
+        return False
+    try:
+        real_candidate = os.path.realpath(candidate)
+        real_base = os.path.realpath(base)
+        return os.path.commonpath([real_candidate, real_base]) == real_base
+    except (ValueError, OSError):
+        return False
+
+
+try:
+    with open(session_path, encoding="utf-8") as handle:
+        data = json.load(handle)
+except (OSError, ValueError):
+    sys.exit(0)
+
+# スキーマは herdr の内部形式。未知の version は構造が同じでも意味が
+# 変わり得るため、無変更で何もしない
+if not isinstance(data, dict) or data.get("version") != 3:
+    sys.exit(0)
+
+workspaces = data.get("workspaces")
+if not isinstance(workspaces, list):
+    sys.exit(0)
+
+changed = False
+# 修復先を既に identity_cwd に持つ workspace がある場合、それ以外のエントリは
+# 書き換えない（pane を含むエントリ全体をスキップ）。複数エントリを同一
+# identity_cwd へ収束させ、herdr が同一ワークスペースとして扱う事態を防ぐ。
+target_taken = any(
+    isinstance(entry, dict) and entry.get("identity_cwd") == workspace
+    for entry in workspaces
+)
+for workspace_entry in workspaces:
+    if not isinstance(workspace_entry, dict):
+        continue
+    identity = workspace_entry.get("identity_cwd")
+    repair_identity = not inside(identity, root)
+    if repair_identity:
+        if target_taken:
+            # 修復先占有時は identity も pane も触らない
+            continue
+        workspace_entry["identity_cwd"] = workspace
+        identity = workspace
+        target_taken = True
+        changed = True
+    # pane 是正先: 健全 identity ならその値、いま identity 修復したなら workspace
+    pane_target = identity if inside(identity, root) else workspace
+    tabs = workspace_entry.get("tabs")
+    if not isinstance(tabs, list):
+        continue
+    for tab in tabs:
+        if not isinstance(tab, dict):
+            continue
+        panes = tab.get("panes")
+        if not isinstance(panes, dict):
+            continue
+        for pane in panes.values():
+            if not isinstance(pane, dict):
+                continue
+            if not inside(pane.get("cwd"), root):
+                pane["cwd"] = pane_target
+                changed = True
+
+if not changed:
+    sys.exit(0)
+
+tmp_path = session_path + ".tmp"
+try:
+    with open(tmp_path, "w", encoding="utf-8") as handle:
+        json.dump(data, handle, indent=2)
+    os.replace(tmp_path, session_path)
+except OSError:
+    try:
+        os.unlink(tmp_path)
+    except OSError:
+        pass
+PY
+}
+
+function herdrstart(){
+    if [ -n "${HERDR_SOCKET_PATH:-}" ] || [ "${HERDR_ENV:-}" = "1" ] \
+        || [ ! -t 0 ] || [ ! -t 1 ]; then
+        return 0
+    fi
+    local workspace_dir
+    workspace_dir="$(herdr_select_workspace)"
+    cd -- "$workspace_dir" 2>/dev/null \
+        || print -u2 "warning: cannot cd $workspace_dir; staying in $PWD"
+    export TZ="${TZ:-Asia/Tokyo}"
+    if ! command -v herdr >/dev/null 2>&1; then
+        print -u2 "warning: herdr not found; continuing without a multiplexer"
+        return 0
+    fi
+    if command -v herdr-status-updater >/dev/null 2>&1; then
+        herdr-status-updater --daemon || true
+    fi
+    herdr_repair_session_cwd "$workspace_dir"
+    herdr
+}
+
+function update(){
+    claude update
+    npm install -g @openai/codex@latest
+    grok update
+    pi update
+    pi update --extensions
+    agent update
+    devin update
+    devin plugins update superpowers
+}
+
+
+# ディスクを圧迫する使い捨て debris を間引いて掃除する（#146。詳細は
+# cleanup-workspace.bash を参照）。
+# 新しいシェルを開くたびに毎回実行すると重複起動になるため、
+# 24 時間 (86400 秒) に 1 回へ間引く。手動での定期実行を要求しない。
+function xrift_poc_periodic_cleanup(){
+    command -v cleanup-workspace.bash >/dev/null 2>&1 || return 0
+    local state_dir="${XRIFT_POC_CLEANUP_STATE_DIR:-$HOME/.cache/xrift-poc}"
+    local stamp="${state_dir}/cleanup-workspace.stamp"
+    mkdir -p "$state_dir" 2>/dev/null || return 0
+    if [ -f "$stamp" ]; then
+        local now epoch
+        now=$(date +%s)
+        epoch=$(date -r "$stamp" +%s 2>/dev/null) || return 0
+        (( now - epoch >= 86400 )) || return 0
+    fi
+    # 複数シェルの同時起動でも二重実行しないよう、flock を使う。
+    # mkdir ロックは overlayfs 上で排他にならず、空ディレクトリの rmdir 回収は
+    # 実行中ロックも奪う。ロックはバックグラウンド子が保持し、親シェルは持たない。
+    command -v flock >/dev/null 2>&1 || return 0
+    # 旧 mkdir ロックが残した空ディレクトリがあると 9> が失敗する。
+    if [ -d "${stamp}.lock" ]; then
+        rmdir "${stamp}.lock" 2>/dev/null || return 0
+    fi
+    (
+        flock -n 9 || exit 0
+        touch "$stamp"
+        cleanup-workspace.bash >"${state_dir}/cleanup-workspace.log" 2>&1
+    ) 9>"${stamp}.lock" &!
+}
+xrift_poc_periodic_cleanup
+
+# Starship プロンプト
+eval "$(starship init zsh)"
+
+herdrstart

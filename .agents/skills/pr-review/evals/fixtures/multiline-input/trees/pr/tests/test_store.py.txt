@@ -1,0 +1,20 @@
+from pathlib import Path
+
+import pytest
+
+from notes_tool.store import save_finding, validate_finding
+
+
+def test_save_finding_writes_json(tmp_path: Path) -> None:
+    path = save_finding(tmp_path, "H-1", "位置: a.py:1 で入力を検査していない")
+    assert path.read_text(encoding="utf-8").startswith('{"id": "H-1"')
+
+
+def test_validate_finding_rejects_bad_id() -> None:
+    with pytest.raises(ValueError):
+        validate_finding("h1", "本文")
+
+
+def test_validate_finding_rejects_nul() -> None:
+    with pytest.raises(ValueError):
+        validate_finding("H-1", "本文\x00")

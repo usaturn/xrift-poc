@@ -1,0 +1,142 @@
+# 汎用の非対話エージェント実行器。資格情報の値は書かない。
+schema_version = 1
+
+# codex / cursor / grok-build の agent は #566 が追加する。
+[agents.claude-opus]
+runtime = "claude-code"
+command = ["claude"]
+model = "opus"
+env = ["HOME", "PATH"]
+
+[agents.devin-swe]
+runtime = "devin"
+command = ["devin"]
+model = "swe-2-max"
+env = ["HOME", "PATH"]
+
+[agents.pi-deepseek]
+runtime = "pi"
+command = ["piccd"]
+model = "deepseek/deepseek-v4.1-flash"
+provider = "commandcode"
+effort = "max"
+env = ["HOME", "PATH", "COMMANDCODE_API_KEY"]
+
+[agents.pi-gpt]
+runtime = "pi"
+command = ["pigs"]
+model = "gpt-6.1-sol"
+provider = "openai-codex"
+effort = "xhigh"
+env = ["HOME", "PATH", "OPENCODE_GO_API_KEY"]
+
+[agents.pi-go-glmf]
+runtime = "pi"
+command = ["pi"]
+model = "glm-5.3-flash"
+provider = "opencode-go"
+effort = "max"
+env = ["HOME", "PATH", "OPENCODE_API_KEY"]
+
+[agents.pigod]
+runtime = "pi"
+command = ["pigod"]
+model = "deepseek-v4.1-flash"
+provider = "opencode-go"
+effort = "max"
+env = ["HOME", "PATH", "OPENCODE_GO_API_KEY"]
+
+[agents.pi-gemf]
+runtime = "pi"
+command = ["pigemf"]
+model = "gemini-3.8-flash"
+provider = "google-vertex"
+effort = "high"
+env = ["HOME", "PATH", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"]
+
+# codex exec --json。実測既定モデルは gpt-6.1-sol（openai）。
+[agents.codex]
+runtime = "codex"
+command = ["codex", "exec"]
+model = "gpt-6.1-sol"
+provider = "openai"
+approval = "noninteractive"
+skill_sources = [".agents/skills", ".codex/skills"]
+env = ["HOME", "PATH"]
+
+# Cursor Agent（agent/cursor-agent は同一バイナリへの symlink）。model は slug、auto は実測の既定。
+[agents.cursor]
+runtime = "cursor"
+command = ["agent"]
+model = "auto"
+approval = "noninteractive"
+skill_sources = [".cursor/skills", ".claude/skills", ".agents/skills", ".codex/skills"]
+env = ["HOME", "PATH"]
+
+# Grok-4.7 を Cursor CLI 側で明示する agent。grok-4.7-xhigh は --list-models の実在 slug。
+[agents.cursor-grok47]
+runtime = "cursor"
+command = ["agent"]
+model = "grok-4.7-xhigh"
+approval = "noninteractive"
+skill_sources = [".cursor/skills", ".claude/skills", ".agents/skills", ".codex/skills"]
+env = ["HOME", "PATH"]
+
+# Grok Build（grok コマンド）。実測既定モデルは grok-4.7。
+[agents.grok-build]
+runtime = "grok-build"
+command = ["grok"]
+model = "grok-4.7"
+approval = "noninteractive"
+skill_sources = [".grok/skills", ".claude/skills", ".agents/skills", ".cursor/skills"]
+env = ["HOME", "PATH"]
+
+# 役割の期限（#616）。pr-review の全体予算に合わせて 45 分とし、implement だけ 90 分にする。
+# fix-check は呼び出し側（review-verify の dispatch.py・review-fix-planning の run_roles.py）が 1800 秒に切り詰める。
+[roles.inspect]
+skills = []
+writes = false
+deadline_seconds = 2700
+result_shape = "json"
+
+[roles.implement]
+skills = []
+writes = true
+deadline_seconds = 5400
+result_shape = "json"
+
+[roles.self-review]
+skills = []
+writes = false
+deadline_seconds = 2700
+result_shape = "json"
+
+[roles.fix-check]
+skills = []
+writes = false
+deadline_seconds = 2700
+result_shape = "json"
+
+# PR レビューの後処理（#601）。各レビュアーの実行記録へ、ランナーが観測した Identity と試行の結果を書く。
+# 止めるときは個人設定に [workflows.review] after_run = [] と書く。
+[workflows.review]
+after_run = [[
+  "uv", "run", "--project", "tools/devenv", "--locked", "python",
+  ".agents/skills/pr-review/scripts/review_run.py", "attach-runner", "--result", "{result}",
+]]
+
+# workflow の割り当て既定値（#565）。
+# review の inspect（レビュアー）は固定しない。依頼ごとに --assign inspect=agent-a,agent-b で選ぶ。
+# いつも使う構成は、個人設定のこの節の agents を書き換える。
+# 下の 4 人は指定が無いときの既定値で、#616 で利用者が個人設定で使っている構成に合わせた。性能の順位ではない。
+[workflows.review.assignments.inspect]
+agents = ["pi-gemf", "devin-swe", "pi-deepseek", "pi-go-glmf"]
+
+[workflows.fix.assignments.implement]
+agents = ["claude-opus"]
+
+[workflows.fix.assignments.self-review]
+agents = ["self"]
+
+[workflows.fix.assignments.fix-check]
+agents = ["self"]

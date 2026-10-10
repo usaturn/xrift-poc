@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  devenv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.14"
+      # 定期掃除のテストは .devcontainer/zshrc.txt の関数を zsh で実行する。
+      # .devcontainer/test-*.bash は bubblewrap と ripgrep を使う。runner の image にはどれも無い。
+      - run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends zsh bubblewrap ripgrep
+          zsh --version
+      # pi の起動スクリプトのテストは実物の pi を使う。pi は node 上で動く（1.1.0 は node >=22.19.0）。Dev Container と同じ Node.js 24 を使う。
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      # CI は確かめた版に固定する。Dev Container の pi を更新したら合わせる。
+      # install_beforehand.bash と同じく --ignore-scripts で入れる。
+      - run: |
+          npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.1.0
+          pi --version
+      # bubblewrap は非特権 user namespace を使う。ubuntu-latest は AppArmor で制限しているため解除する。
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - run: ./scripts/ci/verify-devenv.sh

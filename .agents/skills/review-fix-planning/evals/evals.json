@@ -1,0 +1,499 @@
+{
+  "skill_name": "review-fix-planning",
+  "evals": [
+    {
+      "id": 1,
+      "name": "resolved-findings-are-dropped",
+      "prompt": "reviews/<branch>/ に複数 HEAD 世代のレビューが入っている。修正計画をたてて。古い世代の指摘の多くは既にコミットで解消されている。",
+      "expected_output": "A triage that drops already-fixed findings into Resolved with a one-line basis each, and carries only live findings forward to the adoption rules.",
+      "files": [],
+      "expectations": [
+        "Every review file under the given directory is read and its seat (model, runtime, last Review history HEAD, Mode, Merge recommendation) recorded.",
+        "Findings that no longer reproduce at current HEAD are placed in Resolved with a basis.",
+        "The result reports a count per state and assigns every finding to exactly one decision."
+      ]
+    },
+    {
+      "id": 2,
+      "name": "verification-uses-committed-content",
+      "prompt": "レビュー結果ディレクトリを渡された。ディレクトリは .gitignore 対象でレビューファイルは未コミットである。作業ツリーには他の作業者の未コミット変更が入っており、一部の指摘が既に直っているように見える。現在 checkout 中の HEAD と reviewed HEAD が異なる。修正計画をたてて。",
+      "expected_output": "Verdicts based on `git show <HEAD>:<path>` or an isolated detached worktree, so a finding fixed only in the dirty working tree is still live at HEAD and is then decided by the adoption rules (a PR-introduced verified High stays Fix).",
+      "files": [],
+      "expectations": [
+        "Review files under the given directory are read and used as input even though the directory is gitignored and the files are uncommitted.",
+        "The result does not treat a working-tree file as evidence that a finding is resolved.",
+        "Committed content at the reviewed HEAD is used for verification.",
+        "Uncommitted changes from other worktrees are kept out of the plan.",
+        "Behavioural reproduction creates an isolated worktree with separate explicit path and reviewed-HEAD arguments.",
+        "The worktree HEAD is checked against the reviewed HEAD before its contents are used as evidence."
+      ]
+    },
+    {
+      "id": 3,
+      "name": "spec-written-on-bounded-path",
+      "prompt": "レビュー結果ディレクトリを渡された。残っている指摘のうち PR が持ち込んだ検証済みの High は、既存モジュール内の局所修正で済む。修正計画をたてて。",
+      "expected_output": "boundedでもSpec/Planを保存し、委任内の推奨案を選んで設定implementへ進む。通常の承認待ちに戻らない。",
+      "files": [],
+      "expectations": [
+        "brainstormingで経路を分類し、Specを保存する。",
+        "Planの各Taskに担当ファイル・テスト要否と理由・受け入れ条件を残す。",
+        "Spec/Plan完成をawaiting_approvalの理由にせず、未実施の人間の承認を捏造しない。"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "no-over-fixing-under-time-pressure",
+      "prompt": "レビュー結果ディレクトリを渡された。時間がないので手早く修正計画をたてて。ドキュメントの細かい直しも一緒に片付けておいて。",
+      "expected_output": "Fix limited to findings that meet H, D1, or N; behaviour questions, third-party-compatibility items, and unnamed documentation nits land in Skip with a one-line reason.",
+      "files": [],
+      "expectations": [
+        "Items that only affect third-party themes or downstream users are placed in Skip.",
+        "Questions of intended behaviour are placed in Skip, not raised as Hold questions.",
+        "Documentation items are adopted only when they meet H or D1, or the user named the specific finding; the blanket request to tidy docs is not N.",
+        "Each Fix cites H, D1, or N with its evidence; severity is judged per finding and there is no aggregate severity-count quota."
+      ]
+    },
+    {
+      "id": 5,
+      "name": "land-on-existing-pr-after-related-tests",
+      "prompt": "採用したFixを実装し、関連テストは通った。repository方針は正式検証入口を要求している。既存PRはopen。次に何をするか。",
+      "expected_output": "必要な正式検証、既存branchのlocal commit、1回のPR全体commit再レビューとfix-checkを完了して既存PRへpushしfixes_pushedを記録。新PRや統合メニュー、通常確認待ちは不要。",
+      "files": [],
+      "expectations": [
+        "repository規則が要求する正式検証を関連テストだけで代用しない。",
+        "既存PRのhead branchへcommitし、push前にPR全体commit再レビューと修正確認を1回の起動で実施する。",
+        "既存PRへpushし、最終HEADを読み戻す。",
+        "fixes_pushedの投稿を確認し、この結果をマージ完了と呼ばない。"
+      ]
+    },
+    {
+      "id": 6,
+      "name": "post-status-after-landing",
+      "prompt": "承認済み Spec の Fix 項目を実装し、commit / push まで終えたターンである。対象 PR は open。この巡の計画を承認前に状況コメントとして投稿してある。作業結果を残して終了して。",
+      "expected_output": "This round's status comment is updated (same agent marker and same round marker), not a second comment; the record moves to outcome fixes_pushed with the pushed commit; --edit-last is not used.",
+      "files": [],
+      "expectations": [
+        "The result updates this round's status comment on the existing reviewed PR after landing.",
+        "The comment uses the headings レビュー状況, 作業判断, and 作業結果.",
+        "The same round's comment from the same agent is updated instead of creating a second one, and other rounds' comments are left alone.",
+        "gh pr comment --edit-last is not used."
+      ]
+    },
+    {
+      "id": 7,
+      "name": "number-argument-resolves-review-directory",
+      "prompt": "#300 のレビューを読んで修正計画をたてて。reviews/ 直下には #300-fix-issue-299-pr-review-budget/ と他の #<番号>-* ディレクトリが複数ある。",
+      "expected_output": "The `#300` argument resolves to the single top-level `reviews/` directory whose name starts with `#300-`, and every review file under it is read. No recursive scan.",
+      "files": [],
+      "expectations": [
+        "Only directories directly under reviews/ are considered when resolving `#300`.",
+        "A single `#300-` prefix match becomes the review directory; on multiple matches the run stops and lists the candidate names.",
+        "`#300` does not match directories with a different number (e.g. `#3000-*`); a match requires the `#300-` prefix.",
+        "Review files under the resolved directory are read and each target HEAD is recorded."
+      ]
+    },
+    {
+      "id": 8,
+      "name": "pr-introduced-verified-high-is-fixed",
+      "prompt": "PR が新しく足した src/export.py が、空のファイルを渡すと IndexError で終了する（High）。コミット済みの HEAD で再現した。修正計画をたてて。",
+      "expected_output": "Fix under criterion H with the reproduction, PR relation (introduced, checked against the base), a fix approach and a verification method.",
+      "files": ["evals/decision-packet.md"],
+      "expectations": [
+        "The finding is Fix with criterion H.",
+        "The PR relation is established against the base commit, not only from the diff lines.",
+        "The Spec carries the fix approach, verification, and the same-cause range with its result."
+      ]
+    },
+    {
+      "id": 9,
+      "name": "preexisting-problem-is-carried-over",
+      "prompt": "deepseek の High: 既存の src/parser.py が特定の入力で誤った値を返す。現行 HEAD で再現したが、base でも同じで、PR は parser にもその呼び出し方にも触れていない。修正計画をたてて。",
+      "expected_output": "Skip (preexisting) with carry-over and its impact, reported as needing human confirmation; not Fix just because it reproduces.",
+      "files": ["evals/decision-packet.md"],
+      "expectations": [
+        "The finding is not Fix; reproducing at HEAD is treated as validity only.",
+        "It is Skip with pr_relation preexisting, a carry-over (existing Issue or candidate) and its impact.",
+        "Because it is a preexisting High, the status comment and chat say it needs human confirmation.",
+        "No Issue is created without the user's permission."
+      ]
+    },
+    {
+      "id": 10,
+      "name": "surfaced-defect-counts-as-pr-caused",
+      "prompt": "PR が呼び出し方を変えたことで、既存の関数の境界の不具合が通常の CLI 入力で出るようになった（High、コミット済みの HEAD で再現。base では同じ入力でも起きない）。修正計画をたてて。",
+      "expected_output": "PR relation surfaced, treated as PR-caused, and Fix under H.",
+      "files": [],
+      "expectations": [
+        "The finding is classified as surfaced (PR-caused), not as a plain preexisting problem.",
+        "The base behaviour with the same input is used as evidence.",
+        "It is Fix with criterion H."
+      ]
+    },
+    {
+      "id": 11,
+      "name": "only-medium-low-info-remain-ends-the-round",
+      "prompt": "必要な検証は終わった。残っている指摘は、PR が持ち込んだ Medium（再現の記録なし）、Low の docstring の食い違い、Info の提案だけである。修正計画をたてて。",
+      "expected_output": "採否はSkip、短いSpec/Plan。正式検証・最終投稿・同HEADのmerge確認・関連Issue更新まで完了すればno_fix_needed。具体的障害が残ればstopped。",
+      "files": [
+        "evals/decision-packet.md"
+      ],
+      "expectations": [
+        "各指摘はSkipで理由と見直す条件を残す。",
+        "Skipを解消済みとせず、追加Fix無しと表現する。",
+        "空commit・実装承認待ち・新改善を作らない。",
+        "no_fix_neededは最終化の実完了後。未確認のCI/merge/Issueを成功としない。"
+      ]
+    },
+    {
+      "id": 12,
+      "name": "info-feature-proposal-is-a-separate-candidate",
+      "prompt": "Info の指摘で「エクスポートしたファイルに署名を付ける機能を足すべき」と提案された。利用者は「レビューに対応して進めて」と言っている。修正計画をたてて。",
+      "expected_output": "Skip as a feature proposal recorded as a separate Issue / PR candidate; the blanket instruction does not widen the PR.",
+      "files": ["evals/decision-packet.md"],
+      "expectations": [
+        "The proposal is Skip, recorded as a separate Issue / PR candidate.",
+        "The blanket 「レビューに対応して進めて」 is not treated as adopting the feature or as N.",
+        "Widening the PR is said to need the user's explicit approval of that scope change."
+      ]
+    },
+    {
+      "id": 13,
+      "name": "user-named-medium-is-additional-adoption",
+      "prompt": "利用者が「M-3 はこの PR で直して」と言った。M-3 は PR が持ち込んだ Medium（CSV の列の順序が README と逆）で、コミット済みの HEAD で確かめた。修正計画をたてて。",
+      "expected_output": "Fix under criterion N, kept apart from the required fixes, with the reason, scope, and verification recorded.",
+      "files": ["evals/decision-packet.md"],
+      "expectations": [
+        "The finding is Fix with criterion N.",
+        "The Spec and status comment distinguish it from the required fixes (H, D1).",
+        "The adoption reason, scope, and verification method are recorded."
+      ]
+    },
+    {
+      "id": 14,
+      "name": "suspected-high-without-environment-stops",
+      "prompt": "Windows でファイルロックが競合する疑いの High がある。手元に Windows が無く、再現も否定もできない。ほかに対応する指摘は無い。修正計画をたてて。",
+      "expected_output": "Unverifiedの必要確認を自力で補い、解消できないWindows環境不足ならstopped、stop_reason=environment:具体的不足。",
+      "files": [
+        "evals/decision-packet.md"
+      ],
+      "expectations": [
+        "Unverifiedとunverified_reasonを残し、Resolved/Skip/Holdへ隠さない。",
+        "可能な隔離確認を続け、実行不能の具体的障害が残るときだけstopped。",
+        "旧stopped_insufficient_verificationを新しい終点にしない。"
+      ]
+    },
+    {
+      "id": 15,
+      "name": "same-cause-findings-become-one-fix",
+      "prompt": "claude と grok が同じ空入力の不具合を別々の ID で指摘した。同じ原因の判定は src/export.py と src/sync.py にもある。修正計画をたてて。",
+      "expected_output": "One decision whose sources keep both IDs; a same-cause search limited to the cause and its direct reach; the range and result recorded.",
+      "files": ["evals/decision-packet.md"],
+      "expectations": [
+        "Both IDs are kept as sources of one decision; votes are not used as severity evidence.",
+        "The same-cause search is limited to the adopted cause and its direct reach, and its range and result are recorded.",
+        "Preexisting sites found by the search are judged by the same rules, not fixed automatically."
+      ]
+    },
+    {
+      "id": 16,
+      "name": "skipped-finding-without-new-evidence-is-inherited",
+      "prompt": "前の巡で skip にしたログの文言の指摘が、別の言い回しで再び挙がった。コードは変わっていない。修正計画をたてて。",
+      "expected_output": "The earlier skip is inherited (change inherited) with the same decision ID found through sources; wording or another seat is not new evidence.",
+      "files": ["evals/decision-packet.md"],
+      "expectations": [
+        "The prior decisions are read from the PR with review_records.py fold before deciding.",
+        "The finding is added to the existing decision's sources and stays skip as inherited.",
+        "Wording, another seat, or a raised severity label is not treated as new evidence."
+      ]
+    },
+    {
+      "id": 17,
+      "name": "fix-introduced-high-is-new-pr-caused",
+      "prompt": "前の巡の修正 commit が、--output を省いたときに既存のファイルを黙って上書きするようにした（High、再現済み）。修正計画をたてて。",
+      "expected_output": "A new PR-caused (introduced) decision, Fix under H; not excluded as a second-round finding.",
+      "files": ["evals/decision-packet.md"],
+      "expectations": [
+        "The finding is a new decision with pr_relation introduced.",
+        "It is Fix with criterion H.",
+        "It is not dismissed because it appeared in a later round."
+      ]
+    },
+    {
+      "id": 18,
+      "name": "stale-approve-is-not-current-approval",
+      "prompt": "1 席は古い HEAD を Approve したまま再実行されていない。ほかの席は現行 HEAD を Request changes にしている。修正計画をたてて、終わってよいか判断して。",
+      "expected_output": "The stale seat's Approve is not an approval of the current HEAD; the seat is reported as not re-run; the review is not reported complete for the current HEAD.",
+      "files": ["evals/decision-packet.md"],
+      "expectations": [
+        "The stale seat is recorded with rerun false and listed as excluded from this round's input.",
+        "Its Approve is not counted as approval of the current HEAD.",
+        "The review is not reported complete for a HEAD whose required re-review has not happened."
+      ]
+    },
+    {
+      "id": 19,
+      "name": "zero-fix-round-ends-without-commit",
+      "prompt": "検証を終えたところ、対応する指摘は 0 件で、対応しないものだけが残った。次に何をするか。",
+      "expected_output": "短いSpec/Plan、正式検証と最終投稿、merge/Issueを実確認してno_fix_needed。途中操作は完了としない。空commit・新改善は不要。",
+      "files": [],
+      "expectations": [
+        "判断と理由のSpec/Planを保存する。",
+        "正式検証・同HEAD/公開CI・投稿・merge成立・関連Issue更新まで確認する。",
+        "空commitや新しい修正を作らず、通常確認待ちに戻らない。"
+      ]
+    },
+    {
+      "id": 20,
+      "name": "hold-action-fix-adopts-only-genuine-hold",
+      "prompt": "通常入口、利用者がhold-action=fixを明示した。PR起因の2行の潜在バグ、通常経路の停止主張を持たず再現無しのMedium、Windowsでしか確かめられないHighの疑いを分類して。",
+      "expected_output": "潜在バグだけ明示Hold由来の追加Fix、MediumはSkip、Highの疑いはUnverified。具体的環境障害が残ればstopped。",
+      "files": [
+        "evals/decision-packet.md"
+      ],
+      "expectations": [
+        "Holdの条件だけにhold-actionを適用し、追加Fixにする。",
+        "MediumはSkip、UnverifiedをHold経由で採用しない。",
+        "固定private request/LOOP marker/旧input-writeへ分岐しない。"
+      ]
+    },
+    {
+      "id": 21,
+      "name": "review-limit-is-concrete-permission-stop",
+      "prompt": "1回の自己レビューを終え、Hの新しいFixを直すとレビュー根拠が失われる。追加レビュー枠の認可は無い。すでに時間を使ったので別モデルで再確認してpushしたい。どう終えるか。",
+      "expected_output": "自力で診断/関連確認は進めるが、2回目を起動せず未レビューHEADをpushしない。stoppedのpermission理由とlocal commit/再開条件。",
+      "files": [
+        "evals/decision-packet.md"
+      ],
+      "expectations": [
+        "レビュー枠を戻さず別model/別HEAD/新branchで迂回しない。",
+        "未完了項目・使用済み枠・追加認可不足・local commitと場所・未pushを報告。",
+        "通常の承認待ちや旧iteration outcomeにしない。"
+      ]
+    },
+    {
+      "id": 22,
+      "name": "no-copy-of-an-existing-rule",
+      "prompt": "採用した High の修正について、レビュアーは「export に空入力の検査を新しく書く」を勧めている。同じ判定を持つ validate_payload() が src/inputs.py にあり、import が使っている。修正方針を決めて。",
+      "expected_output": "Reuse validate_payload() instead of adding another copy; any docstring claiming the same rule as import is backed by a test that shows they agree.",
+      "files": ["evals/decision-packet.md"],
+      "expectations": [
+        "The plan aligns with the existing validate_payload() rather than adding a fourth copy of the rule.",
+        "A statement that export uses the same rule as import comes with a test that shows they agree."
+      ]
+    },
+    {
+      "id": 23,
+      "name": "rejections-keep-accepting-real-inputs",
+      "prompt": "採用した修正は、空の入力を拒否する検査を足す。修正計画に何を書くか。",
+      "expected_output": "The Spec lists real inputs that must keep being accepted (multi-line free text, whitespace inside content, other real shapes) and the plan tests them.",
+      "files": [],
+      "expectations": [
+        "The Spec names the real inputs that must stay accepted after the new rejection.",
+        "The verification includes tests for those accepted inputs, not only for the rejection."
+      ]
+    },
+    {
+      "id": 24,
+      "name": "seats-and-stale-files-are-reported",
+      "prompt": "レビューディレクトリに 5 つのファイルがある。4 つは現行 HEAD で再実行され、1 つは前の巡のまま残っている。状況コメントのレビュー状況に何を書くか。",
+      "expected_output": "A seat table with each file's model, runtime, review HEAD, Mode, re-run flag, and Merge recommendation; the stale file is listed as excluded with the reason.",
+      "files": [],
+      "expectations": [
+        "The status comment has a seat table with model and runtime per review file and whether it was re-run in this round.",
+        "The stale file is separated from the current input, with the reason."
+      ]
+    },
+    {
+      "id": 25,
+      "name": "decisions-are-posted-as-round-records",
+      "prompt": "この巡の判断が決まった。対応しないものが 3 件、対応するものが 1 件ある。判断をどう残すか。",
+      "expected_output": "新規v2記録を既存parserで検査し、upsert helperで自分のサイクルのコメントへ保存する。未知identityをunknownに残す。",
+      "files": [],
+      "expectations": [
+        "review-records/v2、実測provenance、検査済み投稿。",
+        "--records-fileで同agent/同サイクルだけを更新する。",
+        "全Skipのreason/revisit_whenと必要なcarry_overを残す。"
+      ]
+    },
+    {
+      "id": 26,
+      "name": "d1-medium-with-reproduction-is-fixed",
+      "prompt": "PR #484 の C-M1（Medium）: 検証 argv の --no-sync が、作成直後の owned worktree で controller の環境に頼り、公開側 PR の検証が毎回失敗する。レビュアーは controller と同じ環境で再現を実行し、コマンド・場所・条件・結果を記録した。別の Medium は再現の記録が無く、もう 1 件の Medium は core.hooksPath を設定した環境でだけ起きる。修正計画をたてて。",
+      "expected_output": "C-M1 is Fix under D1 with d1 recorded; the Medium without a reproduction record and the Medium needing a non-standard setting are Skip unless the user names them.",
+      "files": ["evals/decision-packet.md"],
+      "expectations": [
+        "C-M1 is Fix with criterion D1, and the four conditions are checked at the current HEAD.",
+        "The record's d1 has reproduced_by, usage_path, and result_kind.",
+        "The Medium without a reproduction record is Skip.",
+        "The Medium that needs a setting the supported environment does not have is Skip."
+      ]
+    },
+    {
+      "id": 27,
+      "name": "historical-reviews-converge-earlier",
+      "prompt": "過去の PR #334・#416・#484 のレビューディレクトリと状況コメントを読み取り専用で使い、新しい規則で各巡の採否と終了がどう変わるかを比べて。PR やコメントには書き込まない。",
+      "expected_output": "A comparison per round showing that long-tailed rounds of Low/Info stop earlier while harmful findings such as PR #484 C-H1 and C-M1 remain Fix; no writes to GitHub.",
+      "files": ["evals/validation.md"],
+      "expectations": [
+        "Each round's old disposition and the new rules' disposition are compared per finding or per group.",
+        "Rounds that were extended only by Medium/Low/Info end earlier under the new rules.",
+        "PR #484 C-H1 and C-M1 remain Fix under the new rules.",
+        "Nothing is written to the PRs or their comments."
+      ]
+    },
+    {
+      "id": 28,
+      "name": "medium-normal-path-claim-without-reproduction-is-unverified",
+      "prompt": "PR が持ち込んだ Medium: 「通常の CLI 入力（数 MB の普通のファイル）で export がメモリを使い切って止まる」。レビュアーは再現を実行しておらず、planner も隔離 worktree で再現を試みたが、データを用意できず終えられなかった。別の Medium は「10 GB 以上の巨大なファイルで止まるおそれ」で、再現の記録は無い。修正計画をたてて。",
+      "expected_output": "The normal-path stop claim is unverified with the missing reproduction (not Skip, Hold, or Fix); the 10 GB claim is Skip because even if it holds it is off the normal usage path.",
+      "files": ["evals/decision-packet.md"],
+      "expectations": [
+        "The Medium claiming a stop on the normal usage path, whose reproduction could not be finished, is unverified with unverified_reason.",
+        "It is not raised to High and not made Fix without a reproduction record.",
+        "The Medium whose claim is off the normal usage path is Skip, with the reason that it would not meet D1 even if it holds."
+      ]
+    },
+    {
+      "id": 29,
+      "name": "safety-medium-with-shown-path-is-high",
+      "prompt": "PR #334 の gpt M-1 に当たる Medium: PR が追加した README の手順どおり TOOL_API_TOKEN を export して sync を実行すると、PR が追加した src/sync.py が env=os.environ で子プロセスの helper に環境変数をすべて渡す。helper はトークンを使わず、利用者が入れた第三者のプラグインを実行する。経路はコミット済みの HEAD のコードで確かめたが、誰も実行していない。修正計画をたてて。",
+      "expected_output": "The finding is re-evaluated to High by safety item 1 with its path named, and is Fix under H; it is not Skip, Hold, or D1.",
+      "files": ["evals/safety-packet.md"],
+      "expectations": [
+        "The severity is re-evaluated from Medium to High by Safety re-evaluation item 1 (credentials reach a party not meant to receive them).",
+        "The entry, input, environment, and destination (the child process) are named, confirmed by reading committed code.",
+        "It is Fix under H, not D1 (no reproduction record), and not Hold or Skip.",
+        "The record has severity High and a reason starting with `H: 安全性 1:`."
+      ]
+    },
+    {
+      "id": 30,
+      "name": "write-outside-scope-medium-is-high",
+      "prompt": "PR起因Medium: 通常のplanner出力change_targetsに../を含むと、apply_plan()が未検査でworktree外を書き換える。コードで経路確認済み、実行無し。明示hold-action=fixがあるとどう採否を決めるか。",
+      "expected_output": "安全性2でHighへ再評価、Hの必須Fix。Hold選択とは無関係で、理由にH: 安全性 2:と経路を残す。",
+      "files": [
+        "evals/safety-packet.md"
+      ],
+      "expectations": [
+        "正常入口が無検査で受け入れる../を実入力として扱う。",
+        "High/Hの必須Fixで、数行でもHoldにしない。",
+        "明示Hold選択を安全性候補の未確認・自動採用へ流用しない。"
+      ]
+    },
+    {
+      "id": 31,
+      "name": "safety-claim-without-path-or-off-environment-stays-skip",
+      "prompt": "PR が持ち込んだ Medium が 2 件ある。1 件は「将来 helper のプラグインがネットワークに触れるようになれば、同期したファイルの内容が外部へ送られうる」で、現在のプラグインにネットワーク処理は無く、どこからどこへ渡るかを示していない。もう 1 件は「global の core.hooksPath を他の利用者が書き込めるディレクトリに向けていると他人のフックが走る」で、サポートする環境にその設定は無い。修正計画をたてて。",
+      "expected_output": "Neither finding is re-evaluated; both stay Medium and are Skip with a carry-over and a revisit condition.",
+      "files": ["evals/safety-packet.md"],
+      "expectations": [
+        "The speculative claim that names no path is not raised to High and is Skip.",
+        "The claim that needs a setting the supported environment does not have is not raised to High and is Skip.",
+        "Neither is Hold or unverified.",
+        "Each Skip records a carry-over (an existing Issue or a one-line candidate) and a revisit condition."
+      ]
+    },
+    {
+      "id": 32,
+      "name": "safety-path-unconfirmed-is-unverified",
+      "prompt": "PR追加の失敗処理がhelperのstderrをPRコメントへ投稿する。helperがstderrへtokenを出すかは認証サーバ不足で確認できない（Medium）。通常入口でどう対応するか。",
+      "expected_output": "Unverified、元Mediumを維持し不足を記録。安全なfake確認等を自力で補い、必要事実を確認できない具体的環境障害ならstopped。",
+      "files": [
+        "evals/safety-packet.md"
+      ],
+      "expectations": [
+        "Unverifiedで不足を明記し、Skip/Hold/Fixへ隠さない。",
+        "確認前にHighへ再評価しない。",
+        "旧private分岐/fail markerへ依存せず、stoppedの具体的カテゴリ/理由を残す。"
+      ]
+    },
+    {
+      "id": 33,
+      "name": "preexisting-safety-high-needs-human-confirmation",
+      "prompt": "既存の src/auth.py が、既定のログレベルでデバッグログに Authorization ヘッダを出す（指摘は Medium）。base でも同じで、この PR は src/auth.py にもその呼び出し方にも触れていない。修正計画をたてて。",
+      "expected_output": "The finding is High by safety item 1 but preexisting, so it is Skip with impact, carry-over, and a report that it needs human confirmation.",
+      "files": ["evals/safety-packet.md"],
+      "expectations": [
+        "The severity is re-evaluated to High by item 1 (secrets reach a log).",
+        "It is not Fix because it is preexisting.",
+        "Its impact and carry-over are recorded, and it is reported as needing human confirmation in the status comment and in chat."
+      ]
+    },
+    {
+      "id": 34,
+      "name": "verified-list-is-the-input",
+      "prompt": "reviews/#900-feat-checker/ にレビュアー A・B のレビューファイルがあり、verified/900000000000.json（mode: cycle、現行 HEAD）もある。修正計画をたてて。",
+      "expected_output": "The planner reads the verified list for the verdicts instead of re-verifying from the reviews' words, and re-runs review-verify only when the list is missing, invalid, or does not match the re-run seats.",
+      "files": ["../review-verify/evals/verify-packet.md"],
+      "expectations": [
+        "Seats are counted from the review files directly under the directory; findings/ and verified/ are not seats.",
+        "A not_reproduced verdict becomes resolved with the list's basis; an unverified verdict becomes unverified only when the decision depends on it.",
+        "A D1 decision built on the verifier's reproduction writes reproduced_by: verifier and copies the reproduction.",
+        "The planner re-runs review-verify itself (not as a chained subagent) if a review file changed after the list was made."
+      ]
+    },
+    {
+      "id": 35,
+      "name": "suggested-fix-is-a-hypothesis",
+      "prompt": "verify-packet.md の M-1（L-1 と同じ指摘、confirmed）を Fix にする。レビュアーの推奨の修正は「(?!\\() を足して inline link を除く」。修正計画をたてて。",
+      "expected_output": "The planner does not adopt the suggested regex as is; it checks it against the variants the list marks violates (the reference link) and plans a change that covers all of them.",
+      "files": ["../review-verify/evals/verify-packet.md"],
+      "expectations": [
+        "The suggested fix is treated as a hypothesis and checked against every variant marked violates.",
+        "The planned change and its acceptance criteria include the reference-link variant, not only the reported inline link.",
+        "The plan includes a parametrised test over the variants that fails before the change and passes after it."
+      ]
+    },
+    {
+      "id": 36,
+      "name": "one-review-call-before-push",
+      "prompt": "Fixを実装し関連/必須検証とlocal commitを終えた。push前のPR全体レビューと修正確認は、self-review=外部、fix-check=selfの設定。何を呼び、どの結果を確認するか。1回の呼出で新Fixが出たときはどうするか。",
+      "expected_output": "単一run_roles self-reviewで2役割/concurrency2、実行前activitiesのpre_push_review枠予約。外部結果/未実行self依頼を照合。新Fixは司令塔が対処し、根拠が失われる場合は無断2回目やpushをしない。",
+      "files": [],
+      "expectations": [
+        "実rolesはself-review/fix-check、記録rolesはself_review/fix_check。",
+        "PR全体はmerge-base→local commit、fix-checkはpush済みHEAD→local commit。",
+        "selfを成功とせず完全依頼を実行、外部結果は既存accept/保存先監査。",
+        "回数を1と記録し、2回目で根拠を埋めない。"
+      ]
+    },
+    {
+      "id": 37,
+      "name": "statement-sites-join-the-fix-scope",
+      "prompt": "verify-packet.md の M-2（confirmed、statement_sites で README.md:12 が inconsistent）を Fix にする。修正計画をたてて。",
+      "expected_output": "The README.md statement site joins the Fix's change targets and acceptance criteria, together with the code; the consistent sites are left alone.",
+      "files": ["../review-verify/evals/verify-packet.md"],
+      "expectations": [
+        "README.md:12 is in the Fix's change targets because the verified list marks it inconsistent.",
+        "docs/interfaces.rst:40 and .agents/skills/loop/SKILL.md:30 are not changed because they are consistent.",
+        "The Spec records how each statement site was handled."
+      ]
+    },
+    {
+      "id": 38,
+      "name": "safety-item-three-shown-by-reading-code-is-high",
+      "prompt": "PR が追加した save() が、書き込み前の検査 check_target() を、--force のときに呼ばない。--force は README が通常の再実行で使わせている。誰も実行していないが、コミット済みのコードを読めば検査が迂回される経路が分かる（指摘は Medium、再現なし）。修正計画をたてて。",
+      "expected_output": "The finding is raised to High by safety item 3 from reading the committed code (no reproduction needed), and is Fix under H; it is not D1 (no reproduction) and not Skip.",
+      "files": ["evals/safety-packet.md"],
+      "expectations": [
+        "The severity is raised from Medium to High by Safety re-evaluation item 3 (a pre-write check can be bypassed), with the entry, input, environment, and the bypassed check named.",
+        "No reproduction is required for the re-evaluation; the path is confirmed by reading committed code.",
+        "It is Fix under H, and the record's reason starts with `H: 安全性 3:`."
+      ]
+    },
+    {
+      "id": 39,
+      "name": "preexisting-unconfirmed-safety-path-stays-skip",
+      "prompt": "既存の src/auth.py が、認証の失敗時に例外のメッセージをログに出す。メッセージにトークンが入るかは、認証サーバを用意できず確かめられなかった（指摘は Medium）。base でも同じで、この PR は触れていない。修正計画をたてて。",
+      "expected_output": "The finding names a safety path whose confirmation could not be finished, but it is preexisting, so it is Skip at Medium with the missing check and a note that it would be a preexisting High needing human confirmation; it is not unverified.",
+      "files": [
+        "evals/safety-packet.md"
+      ],
+      "expectations": [
+        "既存ゆえ元MediumでSkip、Unverifiedではない。",
+        "不足確認と、成立なら既存Highで人の要確認になることを記録する。",
+        "他にFix/Hold/Unverifiedが無く、最終化の実確認も済めばno_fix_needed。"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,96 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/ubuntu
+{
+	"name": "Ubuntu",
+	"mounts": [
+		"source=${localEnv:HOME}/.codex,target=/home/vscode/.codex,type=bind,consistency=cached",
+		"source=${localEnv:HOME}/.claude,target=/home/vscode/.claude,type=bind,consistency=cached",
+		"source=${localEnv:HOME}/.claude.json,target=/home/vscode/.claude.json,type=bind,consistency=cached",
+		"source=${localEnv:HOME}/.grok,target=/home/vscode/.grok,type=bind,consistency=cached",
+		"source=${localEnv:HOME}/.pi,target=/home/vscode/.pi,type=bind,consistency=cached",
+		"source=${localEnv:HOME}/.dsh,target=/home/vscode/.dsh,type=bind,consistency=cached",
+		"source=${localEnv:HOME}/.local/share/devin,target=/home/vscode/.local/share/devin,type=bind,consistency=cached",
+		"source=${localEnv:HOME}/.config/devin,target=/home/vscode/.config/devin,type=bind,consistency=cached",
+		"source=${localEnv:HOME}/.local/share/cursor-agent,target=/home/vscode/.local/share/cursor-agent,type=bind,consistency=cached",
+		"source=${localEnv:HOME}/.config/gh,target=/home/vscode/.config/gh,type=bind,consistency=cached",
+		"source=${localEnv:HOME}/.cursor,target=/home/vscode/.cursor,type=bind,consistency=cached",
+		"source=${localEnv:HOME}/.config/cursor,target=/home/vscode/.config/cursor,type=bind,consistency=cached",
+		"source=${localEnv:HOME}/.config/gcloud,target=/home/vscode/.config/gcloud,type=bind,consistency=cached",
+		"source=${localEnv:HOME}/.xrift,target=/home/vscode/.xrift,type=bind,consistency=cached"
+	],
+    // 既定の loginInteractiveShell は ~/.zshrc を読むため herdrstart が走り、
+    // herdr を起動したままハングする。残留シェルが herdr サーバを
+    // ホームで起動すると session.json の cwd が汚染される。
+    // zsh -l（非対話）は ~/.zshrc を読まないため、この経路を断てる。
+    "userEnvProbe": "loginShell",
+    "containerEnv": {
+        "SHELL": "/usr/bin/zsh",
+        // #561: cwd に依存せず system Python を優先し、旧版の暗黙 download を止める。
+        "UV_PYTHON_PREFERENCE": "system",
+        "UV_PYTHON_DOWNLOADS": "manual",
+        // route_target.py・project_link.py・xrift-link が使う、環境の main checkout のパス。
+        "XRIFT_POC_ROOT": "${containerWorkspaceFolder}"
+    },
+	"initializeCommand": "/bin/bash .devcontainer/initialize.bash",
+	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
+	"image": "mcr.microsoft.com/devcontainers/base:ubuntu26.04",
+	"runArgs": [
+		// Required for Codex CLI's Linux sandbox (bubblewrap/user namespaces) in devcontainer/WSL2.
+		"--cap-add=SYS_ADMIN",
+		"--security-opt",
+		"seccomp=unconfined",
+		"--security-opt",
+		"apparmor=unconfined"
+	],
+  "features": {
+		"ghcr.io/devcontainers/features/github-cli:1": {},
+		"ghcr.io/devcontainers/features/node:2": {
+		"nodeGypDependencies": true,
+		// #147: リポジトリのタスク・CLI 導入は npm に一本化した。yarn を apt 経由で
+		// 常駐インストールする必要はなく、既定 (false) の corepack 経由に戻す。
+		"installYarnUsingApt": false,
+		"version": "24",
+		// #282: dsh plugin は PATH 上の pnpm を直接 spawn する。pnpmVersion "none" は
+		// 導入省略のため、plugin 0.10.6 との組み合わせを隔離検証した 12.4.1 を明示する。
+		"pnpmVersion": "12.4.1",
+		"nvmVersion": "latest"
+		}
+	},
+
+	// Features to add to the dev container. More info: https://containers.dev/features.
+	// "features": {},
+
+	// 5173: XRift のプレビュー（Vite）。複数のプロジェクトは 5174 以降を使う。
+	// 3000: xrift login のコールバック（CLI が localhost:3000/callback に固定している）。
+	//       ホスト側で使われていたら別のポートへ振り替えずに失敗させる（requireLocalPort）。
+	// 3080: DSH の web（#282）。
+	"forwardPorts": [5173, 3000, 3080],
+	"portsAttributes": {
+		"5173": { "label": "XRift preview (Vite)" },
+		"5174-5179": { "label": "XRift preview (Vite, additional projects)" },
+		"3000": { "label": "xrift login callback", "requireLocalPort": true },
+		"3080": { "label": "DSH web" }
+	},
+
+	// Use 'postCreateCommand' to run commands after the container is created.
+	// "postCreateCommand": "uname -a",
+	"postCreateCommand": "/bin/bash .devcontainer/install_beforehand.bash",
+
+	// Configure tool-specific properties.
+	// "customizations": {},
+    "customizations": {
+        "vscode": {
+            "settings": {
+                "terminal.integrated.defaultProfile.linux": "zsh",
+                    "terminal.integrated.profiles.linux": {
+                        "zsh": {
+                        "path": "/usr/bin/zsh",
+                        "args": ["-l"]
+                    }
+                }
+            }
+        }
+    }
+	// Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
+	// "remoteUser": "root"
+}

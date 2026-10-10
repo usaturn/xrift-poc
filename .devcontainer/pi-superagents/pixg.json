@@ -1,0 +1,9 @@
+{
+  "superagents": {
+    "modelTiers": {
+      "cheap": { "model": "opencode-go/deepseek-v4.1-flash", "thinking": "max" },
+      "balanced": { "model": "opencode-go/deepseek-v4.1-flash", "thinking": "max" },
+      "max": { "model": "xai/grok-4.7", "thinking": "xhigh" }
+    }
+  }
+}

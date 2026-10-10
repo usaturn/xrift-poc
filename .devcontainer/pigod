@@ -1,0 +1,61 @@
+#!/usr/bin/env zsh
+
+set -euo pipefail
+
+#
+# pi-superagents のランチャー別設定を適用する共通ヘルパ。
+# install_beforehand.bash は本体と一緒に ~/.local/bin へ配置する。
+# リポジトリから直接実行する場合は .devcontainer/ 側を使う。
+#
+typeset -a PI_SUPERAGENTS_HELPER_CANDIDATES=(
+    "${0:A:h}/pi-superagents-exec.zsh"
+    "${HOME}/.local/bin/pi-superagents-exec.zsh"
+)
+typeset PI_SUPERAGENTS_HELPER=""
+for _candidate in "${PI_SUPERAGENTS_HELPER_CANDIDATES[@]}"; do
+    if [[ -f "${_candidate}" ]]; then
+        PI_SUPERAGENTS_HELPER="${_candidate}"
+        break
+    fi
+done
+unset _candidate
+if [[ -z "${PI_SUPERAGENTS_HELPER}" ]]; then
+    print -ru2 -- "[${0:t}] ERROR: pi-superagents-exec.zsh が見つかりません。"
+    print -ru2 -- ""
+    print -ru2 -- "リポジトリのルートで setup スクリプトを一度実行してください:"
+    print -ru2 -- ""
+    print -ru2 -- "  zsh scripts/setup_pi_superagents.zsh"
+    exit 1
+fi
+source "${PI_SUPERAGENTS_HELPER}"
+
+#
+# Compatibility with the environment variable used by an older setup.
+#
+if [[ -z "${OPENCODE_API_KEY:-}" && -n "${OPENCODE_GO_API_KEY:-}" ]]; then
+    export OPENCODE_API_KEY="${OPENCODE_GO_API_KEY}"
+fi
+
+#
+# 既定モデルは opencode-go の deepseek-v4.1-flash（表示名 "DeepSeek V4.1 Flash"）。
+# 近縁の deepseek-v4-flash（表示名 "DeepSeek V4 Flash"、テキスト入力のみ）は
+# 別のモデルなので、取り違えないこと。
+#
+# 2026-09-11 に pi.dev 側のカタログで deepseek-flash が deepseek-v4.1-flash へ
+# 改名された。カタログに無い ID を渡すと pi は警告を出したうえで opencode-go の
+# 既定モデル（kimi-k2.6）の定義を複製して使うため、contextWindow と maxTokens が
+# kimi-k2.6 の値に縮み、reasoning_effort も送られなくなる。ID はカタログ側の値に
+# 合わせること。setup スクリプトの手順 6 が各ランチャーの ID を検証する。
+#
+# pigo と違い、このモデルは pi のモデルカタログに baseUrl
+# (https://opencode.ai/zen/go/v1) 付きで存在するため、pi-models.json への
+# 定義追加は不要。--provider の指定だけで OpenCode Go のエンドポイントに解決される。
+#
+# --thinking max はこのエンドポイントで受理される。pi は
+# thinkingLevelMap の max -> "max" をそのまま reasoning_effort として送る。
+#
+pi_superagents_exec pigod \
+    --provider opencode-go \
+    --model deepseek-v4.1-flash \
+    --thinking max \
+    "$@" || exit 1

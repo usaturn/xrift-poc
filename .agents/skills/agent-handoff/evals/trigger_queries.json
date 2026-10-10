@@ -1,0 +1,82 @@
+{
+  "skill_name": "agent-handoff",
+  "queries": [
+    {
+      "id": "q1",
+      "query": "Claude Code 側で進めた superpowers の結果を引き継いで",
+      "should_trigger": true,
+      "expected_terms": ["Claude", "superpowers", "引き継"],
+      "notes": "Reading side, direct"
+    },
+    {
+      "id": "q2",
+      "query": "python-tdd-team の Phase C がどこまで終わったか Codex で確認して",
+      "should_trigger": true,
+      "expected_terms": ["python-tdd-team", "Phase", "Codex"],
+      "notes": "Reading side, repo-local Claude skill continuation"
+    },
+    {
+      "id": "q3",
+      "query": "最新の Claude handoff を読んで次の実装に進んで",
+      "should_trigger": true,
+      "expected_terms": ["Claude", "handoff"],
+      "notes": "Reading side, existing artifact"
+    },
+    {
+      "id": "q4",
+      "query": "区切りのいい所で停止して、別のエージェントに作業を引き継がせる資料を作成して",
+      "should_trigger": true,
+      "expected_terms": ["引き継", "エージェント", "資料"],
+      "notes": "Writing side, direct"
+    },
+    {
+      "id": "q5",
+      "query": "実装は他のエージェントにやらせる。あのエージェントには spec を渡せば問題ないか",
+      "should_trigger": true,
+      "expected_terms": ["エージェント", "spec"],
+      "notes": "Writing side, phrased as a question about sufficiency"
+    },
+    {
+      "id": "q6",
+      "query": "この worktree の作業、私が寝てる間に別セッションに続きをやってほしいんだけど何を書き残しとけばいい",
+      "should_trigger": true,
+      "expected_terms": ["worktree", "続き"],
+      "notes": "Writing side, casual phrasing without the word handoff"
+    },
+    {
+      "id": "q7",
+      "query": "FastAPI の Depends の使い方を調べて",
+      "should_trigger": false,
+      "expected_terms": [],
+      "notes": "Library documentation request"
+    },
+    {
+      "id": "q8",
+      "query": "staged files を詳細メッセージで commit して",
+      "should_trigger": false,
+      "expected_terms": [],
+      "notes": "A commit request, not a handoff"
+    },
+    {
+      "id": "q9",
+      "query": "reviews/#225-feature-piccg-commandcode-goat のレビューを見て、対応する指摘を選別して修正計画を立てて",
+      "should_trigger": false,
+      "expected_terms": [],
+      "notes": "Near miss. Triage and spec authoring belong to review-fix-planning, even though its output later feeds a handoff"
+    },
+    {
+      "id": "q10",
+      "query": "サブエージェントを 3 つ並列で走らせて Task 4 から 6 を実装して",
+      "should_trigger": false,
+      "expected_terms": [],
+      "notes": "Near miss. Dispatching subagents inside one session is not a cross-agent handoff"
+    },
+    {
+      "id": "q11",
+      "query": "前回のセッションで何をやったか思い出したいので会話ログを要約して",
+      "should_trigger": false,
+      "expected_terms": [],
+      "notes": "Near miss. A summary for the user, with no receiving agent and no dispositions to carry"
+    }
+  ]
+}

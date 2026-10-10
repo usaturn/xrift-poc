@@ -1,0 +1,24 @@
+"""python -m confkit.cli show --env FILE [--set KEY=VALUE ...]"""
+
+import argparse
+from pathlib import Path
+
+from confkit.loaders import load_env_file, parse_overrides
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="confkit")
+    commands = parser.add_subparsers(dest="command", required=True)
+    show = commands.add_parser("show", help="設定を表示する")
+    show.add_argument("--env", type=Path, required=True)
+    show.add_argument("--set", action="append", default=[])
+    args = parser.parse_args(argv)
+    values = load_env_file(args.env)
+    values.update(parse_overrides(args.set))
+    for key in sorted(values):
+        print(f"{key}={values[key]}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,69 @@
+{
+  "skill_name": "agent-handoff",
+  "evals": [
+    {
+      "id": 1,
+      "name": "write-handoff-after-approved-spec",
+      "prompt": "レビュー指摘の選別が終わって Spec も承認済みだけど、実装は別のエージェントにやらせたい。区切りのいい所で止めて、引き継ぎ資料を作って。",
+      "expected_output": "A handoff pair under tmp/docs_draft/claude_handoffs/ carrying the dispositions, the out-of-scope list, the verification commands with their isolation, and the landing target.",
+      "files": [],
+      "expectations": [
+        "Writes both the .handoff.md and the paired .handoff.json under tmp/docs_draft/claude_handoffs/.",
+        "Fills decisions with a disposition per finding, including the skip entries, not only the ones being fixed.",
+        "Fills out_of_scope, verification (commands and isolation), and landing (branch, PR, prohibitions).",
+        "Records the working worktree in git.worktree rather than only the parent checkout.",
+        "Points at the spec through sources.spec instead of restating the full rationale in the handoff.",
+        "States the breakpoint in session.stop_reason, including any partially applied edit left in the working tree."
+      ]
+    },
+    {
+      "id": 2,
+      "name": "is-the-spec-enough-to-hand-over",
+      "prompt": "実装は他のエージェントに任せる。あのエージェントには Spec のパスを渡せば足りる？",
+      "expected_output": "A judgement on what the spec alone does and does not carry, plus the handoff fields that close the gap.",
+      "files": [],
+      "expectations": [
+        "Answers the question rather than silently starting to write files.",
+        "Names concretely what a spec does not carry: the worktree location, the verification isolation, and the landing target.",
+        "Offers to write the handoff artifact, or writes it, using the schema fields."
+      ]
+    },
+    {
+      "id": 3,
+      "name": "resume-latest-handoff",
+      "prompt": "Claude Code 側で進めた superpowers の結果を引き継いで、次に何をすべきか確認して。",
+      "expected_output": "A handoff-based state report before any implementation work starts.",
+      "files": [],
+      "expectations": [
+        "Looks for an existing handoff under tmp/docs_draft/claude_handoffs/ before claiming the current phase.",
+        "Reports completed and pending tasks, decisions, out-of-scope items, and the landing target from the handoff.",
+        "Does not rely only on conversation memory, and does not act on items listed as out of scope."
+      ]
+    },
+    {
+      "id": 4,
+      "name": "no-handoff-yet",
+      "prompt": "Claude session 28d31377 の作業を引き継ぎたい。handoff を用意して。",
+      "expected_output": "A complete handoff pair written by hand against the schema.",
+      "files": [],
+      "expectations": [
+        "Looks for an existing handoff under tmp/docs_draft/claude_handoffs/ before writing a new one.",
+        "Writes both the .handoff.md and the paired .handoff.json against references/handoff-schema.md instead of stopping.",
+        "Fills decisions, out_of_scope, verification, landing, git.worktree / branch / head / status, and sources.spec."
+      ]
+    },
+    {
+      "id": 5,
+      "name": "manual-handoff-without-spec",
+      "prompt": "探索的に直した作業を別のエージェントに引き継ぎたい。formal な Spec ファイルは無い。handoff を書いて。",
+      "expected_output": "A complete handoff pair whose sources.spec is null/none with a reason, not a fabricated spec path.",
+      "files": [],
+      "expectations": [
+        "Writes both the .handoff.md and the paired .handoff.json.",
+        "Sets sources.spec to null (JSON) or none (Markdown) and states why there is no spec.",
+        "Does not invent a spec path that does not exist.",
+        "Still fills decisions, out_of_scope, verification, landing, and git.worktree / branch / head / status."
+      ]
+    }
+  ]
+}

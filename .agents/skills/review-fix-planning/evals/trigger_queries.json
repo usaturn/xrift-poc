@@ -1,0 +1,103 @@
+{
+  "skill_name": "review-fix-planning",
+  "queries": [
+    {
+      "id": "q1",
+      "query": "reviews/feat-theme-layout-shell のレビュー結果を確認して修正計画をたてて。",
+      "should_trigger": true,
+      "expected_terms": ["review", "plan", "findings"],
+      "notes": "Canonical request: review directory plus fix plan"
+    },
+    {
+      "id": "q2",
+      "query": "Read the reviews under docs/reviews/main and plan the fixes.",
+      "should_trigger": true,
+      "expected_terms": ["review", "plan"],
+      "notes": "English phrasing of the same request"
+    },
+    {
+      "id": "q3",
+      "query": "reviews/ に7モデル分のレビューが入っている。妥当な指摘だけ拾って直したい。",
+      "should_trigger": true,
+      "expected_terms": ["review", "findings", "triage"],
+      "notes": "Selection wording without the word plan"
+    },
+    {
+      "id": "q4",
+      "query": "この PR のレビュー指摘のどれに対応するか決めたい。レビュー結果は reviews/fix-nav にある。",
+      "should_trigger": true,
+      "expected_terms": ["review", "findings", "disposition"],
+      "notes": "Disposition wording"
+    },
+    {
+      "id": "q5",
+      "query": "複数モデルのレビューをまとめて、対応方針を出して。",
+      "should_trigger": true,
+      "expected_terms": ["review", "consolidate"],
+      "notes": "Multi-model consolidation wording"
+    },
+    {
+      "id": "q6",
+      "query": "PR #42 をレビューして指摘をドキュメントに書き出して。",
+      "should_trigger": false,
+      "expected_terms": [],
+      "notes": "Hard negative: producing a review, not planning fixes from existing ones (pr-review)"
+    },
+    {
+      "id": "q7",
+      "query": "ローカル main をレビューして docs/reviews/main に記録して。",
+      "should_trigger": false,
+      "expected_terms": [],
+      "notes": "Hard negative: writing a review into that directory"
+    },
+    {
+      "id": "q8",
+      "query": "この関数のバグを直して。",
+      "should_trigger": false,
+      "expected_terms": [],
+      "notes": "Hard negative: a plain bugfix with no review artifacts"
+    },
+    {
+      "id": "q9",
+      "query": "reviews/feat-theme-layout-shell を読んで、指摘を全部そのまま実装して。",
+      "should_trigger": true,
+      "expected_terms": ["review", "findings"],
+      "notes": "全件実装の依頼でも採否を適用する。包括的委任で名指しN・Hold選択を作らない。通常判断の承認待ちには戻らない"
+    },
+    {
+      "id": "q10",
+      "query": "承認した review-fix Spec の実装が終わった。関連テストは通ったので既存 PR に載せて。",
+      "should_trigger": true,
+      "expected_terms": ["review", "pr", "tests"],
+      "notes": "Post-implementation landing onto the reviewed PR"
+    },
+    {
+      "id": "q11",
+      "query": "この PR に作業結果をコメントしておいて。",
+      "should_trigger": false,
+      "expected_terms": [],
+      "notes": "Hard negative: a plain request to comment results on the PR with no review directory or fix plan (guards description-bloat mistrigger)"
+    },
+    {
+      "id": "q12",
+      "query": "#300 のレビューを読んで修正計画をたてて。",
+      "should_trigger": true,
+      "expected_terms": ["review", "plan"],
+      "notes": "PR番号は親main rootのreviews/<owner>/<repo>/#<PR>-*を解決する。旧配置は明示パスのみ"
+    },
+    {
+      "id": "q13",
+      "query": "#700 のレビュー指摘は全件確認済みで追加修正なし。推奨案で正式検証と最終化まで進めて。",
+      "should_trigger": true,
+      "expected_terms": ["review", "pr"],
+      "notes": "レビュー後の修正不要経路。状況投稿・マージ確認・関連Issue更新までの実確認が必要"
+    },
+    {
+      "id": "q14",
+      "query": "親Issue #564 のSub Issueから、次に着手できる子を選んで。",
+      "should_trigger": false,
+      "expected_terms": [],
+      "notes": "Issueボードの子選択はplanning-parallel-issues。レビュー後の採否・反映ではない"
+    }
+  ]
+}

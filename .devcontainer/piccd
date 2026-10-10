@@ -1,0 +1,149 @@
+#!/usr/bin/env zsh
+
+set -euo pipefail
+
+#
+# pi-superagents のランチャー別設定を適用する共通ヘルパ。
+# install_beforehand.bash は本体と一緒に ~/.local/bin へ配置する。
+# リポジトリから直接実行する場合は .devcontainer/ 側を使う。
+#
+typeset -a PI_SUPERAGENTS_HELPER_CANDIDATES=(
+    "${0:A:h}/pi-superagents-exec.zsh"
+    "${HOME}/.local/bin/pi-superagents-exec.zsh"
+)
+typeset PI_SUPERAGENTS_HELPER=""
+for _candidate in "${PI_SUPERAGENTS_HELPER_CANDIDATES[@]}"; do
+    if [[ -f "${_candidate}" ]]; then
+        PI_SUPERAGENTS_HELPER="${_candidate}"
+        break
+    fi
+done
+unset _candidate
+if [[ -z "${PI_SUPERAGENTS_HELPER}" ]]; then
+    print -ru2 -- "[${0:t}] ERROR: pi-superagents-exec.zsh が見つかりません。"
+    print -ru2 -- ""
+    print -ru2 -- "リポジトリのルートで setup スクリプトを一度実行してください:"
+    print -ru2 -- ""
+    print -ru2 -- "  zsh scripts/setup_pi_superagents.zsh"
+    exit 1
+fi
+source "${PI_SUPERAGENTS_HELPER}"
+
+readonly PI_DIR="${PI_CODING_AGENT_DIR:-${HOME}/.pi/agent}"
+readonly MODELS_JSON="${PI_DIR}/models.json"
+readonly PROVIDER="commandcode"
+readonly MODEL="deepseek/deepseek-v4.1-flash"
+
+#
+# pi + Command Code GOAT + DeepSeek V4.1 Flash
+#
+# commandcode は pi の built-in provider ではないため、provider 定義は
+# models.json（bind mount した ~/.pi 側）にしか無い。
+# install_beforehand.bash は models.json を「無い場合のみ」配置する一方、
+# このランチャは毎回上書きで配置される。そのため既存の models.json を持つ
+# 環境では、pi が次の 2 通りで落ちうる。
+#
+#   1. provider 自体が無い
+#      → `Unknown provider "commandcode"`
+#   2. provider はあるが、このモデルだけが無い
+#      → モデル一覧に現れず `No models matching "..."`。
+#        commandcode の定義が muse-spark だけの環境がこれに当たる
+#
+# piccd は provider の有無に加えて 2. も検出する。commandcode プロバイダを
+# 反映済みの環境（piccg を使っている環境）では provider の有無だけを見る
+# チェックを素通りし、2. で落ちるためである。
+#
+# 判定できないとき（python3 が無い、models.json が読めない・壊れている）は
+# チェックをスキップして pi に委ねる。ランチャが余計に起動を妨げないため。
+#
+if command -v python3 >/dev/null 2>&1 && [[ -f "${MODELS_JSON}" ]]; then
+    if ! check="$(python3 - "${MODELS_JSON}" "${PROVIDER}" "${MODEL}" <<'PY'
+import json
+import sys
+
+try:
+    data = json.loads(open(sys.argv[1]).read())
+except Exception:
+    print("ok")
+    sys.exit(0)
+
+if not isinstance(data, dict):
+    print("ok")
+    sys.exit(0)
+
+providers = data.get("providers")
+if not isinstance(providers, dict):
+    print("ok")
+    sys.exit(0)
+
+provider = providers.get(sys.argv[2])
+if not isinstance(provider, dict):
+    print("no-provider")
+    sys.exit(0)
+
+models = provider.get("models")
+if not isinstance(models, list):
+    print("no-model")
+    sys.exit(0)
+
+ids = [entry.get("id") for entry in models if isinstance(entry, dict)]
+
+print("ok" if sys.argv[3] in ids else "no-model")
+PY
+)"
+    then
+        check="ok"
+    fi
+
+    case "${check}" in
+        ok)
+            ;;
+        no-provider)
+            print -ru2 -- "[piccd] ERROR: provider \"${PROVIDER}\" is not defined in"
+            print -ru2 -- "  ${MODELS_JSON}"
+            print -ru2 -- ""
+            print -ru2 -- "リポジトリのルートで setup スクリプトを一度実行してください:"
+            print -ru2 -- ""
+            print -ru2 -- "  zsh scripts/setup_pi_commandcode_goat.zsh"
+            exit 1
+            ;;
+        no-model)
+            print -ru2 -- "[piccd] ERROR: model \"${MODEL}\" is not defined in"
+            print -ru2 -- "  ${MODELS_JSON}"
+            print -ru2 -- ""
+            print -ru2 -- "provider \"${PROVIDER}\" の定義が古い可能性があります。"
+            print -ru2 -- "リポジトリのルートで setup スクリプトを一度実行してください:"
+            print -ru2 -- ""
+            print -ru2 -- "  zsh scripts/setup_pi_commandcode_goat.zsh"
+            exit 1
+            ;;
+        *)
+            #
+            # 想定外の出力。判断できないのでチェックせず pi に委ねる。
+            #
+            ;;
+    esac
+fi
+
+#
+# 認証は models.json の apiKey フィールド（"$COMMANDCODE_API_KEY"）が
+# 実行時の環境変数を参照して解決する。pigo（auth.json 経由）と違い、
+# 実行のたびに COMMANDCODE_API_KEY が必要。
+#
+if [[ -z "${COMMANDCODE_API_KEY:-}" ]]; then
+    print -ru2 -- "[piccd] ERROR: COMMANDCODE_API_KEY is not set."
+    print -ru2 -- ""
+    print -ru2 -- "Command Code の API キーを export してから再実行してください:"
+    print -ru2 -- ""
+    print -ru2 -- '  export COMMANDCODE_API_KEY="..."'
+    print -ru2 -- ""
+    print -ru2 -- "キーは https://commandcode.ai/settings/keys で作成できます。"
+    exit 1
+fi
+
+pi_superagents_exec piccd \
+    --provider commandcode \
+    --model deepseek/deepseek-v4.1-flash \
+    --models "deepseek/deepseek-v4.1-flash" \
+    --thinking max \
+    "$@" || exit 1

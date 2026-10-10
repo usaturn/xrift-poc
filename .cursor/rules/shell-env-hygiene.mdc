@@ -1,0 +1,18 @@
+---
+description: Prevent polluting persistent shell env (HOME/PATH) during agent commands
+alwaysApply: true
+---
+
+# Shell environment hygiene
+
+Cursor / agent Shell は呼び出し間で cwd と環境変数を保持する。
+
+- `export HOME=...` や、セッション全体の `PATH` を書き換える `export PATH=...` は禁止する
+- 一時ホームや隔離環境が必要ならワンショットだけ使う:
+
+```bash
+env HOME="$tmpdir" zsh path/to/script.zsh
+```
+
+- 「あとで戻す」前提の `export HOME` は禁止（忘れやすく、`gh` / `git` 認証が別ホームを見て未ログインになる）
+- `gh` / `git` の認証確認や GitHub API 呼び出しの直前に、意図しない `HOME` のまま走らせない

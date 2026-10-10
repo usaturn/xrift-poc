@@ -1,0 +1,9 @@
+{
+  "superagents": {
+    "modelTiers": {
+      "cheap": { "model": "opencode-go/muse-spark-1.3-contributor", "thinking": "max" },
+      "balanced": { "model": "opencode-go/muse-spark-1.3-contributor", "thinking": "max" },
+      "max": { "model": "opencode-go/deepseek-v4.1-flash", "thinking": "max" }
+    }
+  }
+}

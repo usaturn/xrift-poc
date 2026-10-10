@@ -1,0 +1,6 @@
+interface:
+  display_name: "Review Fix Planning"
+  short_description: "全レビューの採否を決め、Spec/Plan・設定役割・1回のレビューを経て、修正push・修正不要の最終化・具体的障害の3結果まで進める"
+  default_prompt: "$review-fix-planning を使い、全指摘・全変更ファイル・関連処理とテストを確認し、既存の採否と安全性を保って推奨案でSpec/Plan、設定役割の実装、1回のPR全体レビュー/修正確認、既存PRへの反映まで進めてください。修正不要なら正式検証・最終投稿・マージ確認・関連Issue更新、具体的障害なら未完了を記録してください。"
+policy:
+  allow_implicit_invocation: true

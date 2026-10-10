@@ -1,0 +1,6 @@
+interface:
+  display_name: "Repo Cleanup After Merge"
+  short_description: "マージ済みPRのbranch/worktree/残骸を照合してから整理する"
+  default_prompt: "$repo-cleanup-after-merge を使い、PR が全てマージ済みであることを確認したうえで、マージ済み branch と使い終わった worktree を整理し、作業ツリーを origin/main へ追従させてください。git 管理外ファイルの削除とリモートへの push は確認を経てから行ってください。"
+policy:
+  allow_implicit_invocation: true

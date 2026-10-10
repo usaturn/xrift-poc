@@ -1,0 +1,11 @@
+"""指摘を JSON ファイルへ保存する。"""
+
+import json
+from pathlib import Path
+
+
+def save_finding(store_dir: Path, finding_id: str, content: str) -> Path:
+    """指摘を <store_dir>/<finding_id>.json に保存し、そのパスを返す。"""
+    path = store_dir / f"{finding_id}.json"
+    path.write_text(json.dumps({"id": finding_id, "content": content}, ensure_ascii=False), encoding="utf-8")
+    return path

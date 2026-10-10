@@ -1,0 +1,74 @@
+.. _test_support:
+
+==========================================
+test_support: 実環境の形をした共有 fixture
+==========================================
+
+.. _test_support_overview:
+
+概要
+====
+
+``tools/test_support`` は、 xrift-poc の実環境の形をした入力を共有するテスト補助パッケージである。
+``items/`` ・ ``worlds/`` を無視する環境リポジトリの main checkout、 Git の有無と origin を選べる制作物、 ``.venv`` の無い新規 worktree、そこで失敗する ``uv run`` 、改行・タブ・CRLF・非 ASCII を含む複数行の自由記述を、ローカルの Git とオフライン指定だけで再現する。
+ネットワーク・実 PR は使わない。
+
+.. _test_support_provides:
+
+提供物
+======
+
+``tools.test_support.repos``
+    ``create_env_repo`` は、 ``git init`` した環境リポジトリの main checkout を ``<base_dir>/xrift-poc`` に作る。
+    origin は GitHub の URL（ ``ENV_ORIGIN`` ）で、 HEAD は ``refs/remotes/origin/main`` を指す detached HEAD、ローカルの ``main`` ブランチは持たない。
+    ``items/`` ・ ``worlds/`` は ``.gitignore`` でルートから無視し、ディレクトリを作っておく。
+    ブランチが必要なテストは ``git -C <root> switch -c <branch> origin/main`` で自分で作る。
+    ``create_product`` は ``items/<name>`` ・ ``worlds/<name>`` に制作物を作る。 ``git=False`` なら Git を初期化せず、 ``origin_url`` で origin を選べる。
+    ``create_owned_worktree`` は ``git worktree add --detach`` で ``.venv`` を持たない worktree を作る。
+
+``tools.test_support.texts``
+    ``FINDING_CONTENT`` と ``FINDING_REASON`` は、改行・タブ・CRLF・非 ASCII 文字を含み、識別子として解釈できない（ ``str.isidentifier()`` が ``False`` ）自由記述のサンプル。
+
+``tools.test_support.uv``
+    ``offline_uv_env`` は ``UV_OFFLINE=1`` ・隔離した ``UV_CACHE_DIR`` ・ ``UV_PYTHON=<テスト実行中の interpreter>`` を立てた環境変数を返す。
+    テストを動かしている venv の ``bin`` は ``PATH`` から除く。残っていると、 ``uv run`` が spawn するコマンドが漏れた venv から解決され、 venv 無し worktree での失敗を再現できない。
+    ``run_uv_offline`` はその環境で ``uv`` を起動し、 ``CompletedProcess`` を返す。
+
+``tools.test_support.plugin``
+    pytest fixture ``env_repo_factory`` ・ ``env_repo`` ・ ``owned_worktree`` 。制作物は ``create_product`` を直接呼んで作る。
+
+.. _test_support_usage:
+
+利用方法
+========
+
+fixture 経由
+------------
+
+test module の先頭でプラグインを宣言する ::
+
+    pytest_plugins = ("tools.test_support.plugin",)
+
+
+    def test_something(env_repo: EnvRepo, owned_worktree: Path) -> None:
+        product = create_product(env_repo.root, "worlds", "空白 ワールド", git=False)
+
+複数個の構築には ``env_repo_factory`` を使う ::
+
+    def test_two(env_repo_factory: Callable[[], EnvRepo]) -> None:
+        first, second = env_repo_factory(), env_repo_factory()
+
+直接呼び出し
+------------
+
+::
+
+    env = create_env_repo(tmp_path / "repo")
+    worktree = create_owned_worktree(env.root, tmp_path / "owned")
+    result = run_uv_offline(
+        ["run", "--project", "tools/devenv", "--no-sync", "pytest"],
+        cwd=worktree,
+        cache_dir=tmp_path / "uv-cache",
+    )
+
+``create_env_repo`` は既定で ``tools/devenv/pyproject.toml`` と ``tools/devenv/uv.lock`` を実 checkout からコピーしてコミットする（ ``copy_paths`` で変えられる）。

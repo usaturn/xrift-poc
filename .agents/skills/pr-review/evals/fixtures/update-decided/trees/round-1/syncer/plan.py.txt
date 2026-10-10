@@ -1,0 +1,16 @@
+"""計画（JSON）を読み、変更対象と本文の対応を返す。"""
+
+import json
+from pathlib import Path
+
+from syncer.log import append_log
+
+
+def load_plan(plan_file: Path, root: Path) -> dict[str, str]:
+    """plan_file の changes を {target: text} にする。target は root からの相対パス。"""
+    data = json.loads(plan_file.read_text(encoding="utf-8"))
+    changes: dict[str, str] = {}
+    for item in data["changes"]:
+        changes[item["target"]] = item["text"]
+    append_log(root / ".syncer.log", f"loaded {len(changes)} changes from {plan_file.name}")
+    return changes

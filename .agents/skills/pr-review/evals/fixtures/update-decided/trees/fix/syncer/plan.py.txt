@@ -1,0 +1,30 @@
+"""計画（JSON）を読み、変更対象と本文の対応を返す。"""
+
+import json
+from pathlib import Path
+
+from syncer.log import append_log
+
+
+def _is_inside(root: Path, target: str) -> bool:
+    """target が root の中を指すかを返す。
+
+    apply.py の _check_target と同じ規則で判定する（計画の段階で、適用と同じ判定をするため）。
+    """
+    return str((root / target).resolve()).startswith(str(root.resolve()))
+
+
+def load_plan(plan_file: Path, root: Path) -> dict[str, str]:
+    """plan_file の changes を {target: text} にする。target は root からの相対パス。
+
+    worktree の外を指す target があれば、何も返さずに ValueError で止まる（安全側に倒れる）。
+    """
+    data = json.loads(plan_file.read_text(encoding="utf-8"))
+    changes: dict[str, str] = {}
+    for item in data["changes"]:
+        target = item["target"]
+        if not _is_inside(root, target):
+            raise ValueError(f"target escapes the worktree: {target}")
+        changes[target] = item["text"]
+    append_log(root / ".syncer.log", f"loaded {len(changes)} changes from {plan_file.name}")
+    return changes

@@ -1,0 +1,95 @@
+# Starship プロンプト設定
+# リポジトリ管理の原本。postCreate で ~/.config/starship.toml へコピーされる。
+# 1段目: ╭─ フルパス → uv Python → Node → git ブランチ → GCP project(region)
+# 2段目: ╰─ HH:MM:SS 時刻 → 入力マーク
+# 配色: Catppuccin Mocha palette（Powerline preset は使わない）
+format = """
+[╭─](bold overlay0) $directory${custom.uv_python}${custom.node_version}$git_branch$gcloud
+[╰─](bold overlay0) $time$character"""
+
+palette = 'catppuccin_mocha'
+
+[directory]
+# カレントディレクトリを常にフルパスで表示する
+truncation_length = 0
+truncate_to_repo = false
+style = "bold peach"
+
+# venv 未アクティベート時にシステム Python (3.12) を誤表示するため無効化。
+# uv 管理の実バージョンは custom.uv_python が表示する。
+[python]
+disabled = true
+
+# package.json 検出時のみ表示の仕様が「Node 常時表示」要件と合わないため無効化。
+# custom.node_version が常時表示する。
+[nodejs]
+disabled = true
+
+[custom.uv_python]
+description = "uv 管理の Python バージョン（.venv/pyvenv.cfg の version_info）"
+command = "awk -F' = ' '/^version_info/ {print $2}' \"$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.venv/pyvenv.cfg\""
+when = "test -f \"$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.venv/pyvenv.cfg\""
+shell = ["bash", "--noprofile", "--norc"]
+symbol = "🐍 "
+style = "bold yellow"
+format = "[$symbol$output]($style) "
+
+[custom.node_version]
+description = "Node.js のバージョン（node コマンドがあれば常時表示）"
+command = "node --version"
+when = "command -v node"
+shell = ["bash", "--noprofile", "--norc"]
+symbol = "󰎙 "
+style = "bold green"
+format = "[$symbol$output]($style) "
+
+[git_branch]
+symbol = " "
+style = "bold mauve"
+format = "[$symbol$branch]($style) "
+
+[gcloud]
+# project ID を主表示し、region を括弧付きで併記する（configuration 名 $active は使わない）
+# (\($region\)) は optional グループ + リテラル括弧。region 未設定時は project のみ
+format = '[$symbol$project(\($region\))]($style) '
+symbol = "☁️ "
+style = "bold blue"
+
+[time]
+disabled = false
+time_format = "%H:%M:%S"
+format = "[$time]($style) "
+style = "bold lavender"
+
+[character]
+success_symbol = "[❯](bold green)"
+error_symbol = "[❯](bold red)"
+
+# starship preset catppuccin-powerline の mocha 定義を流用（mocha のみ）
+[palettes.catppuccin_mocha]
+rosewater = "#f5e0dc"
+flamingo = "#f2cdcd"
+pink = "#f5c2e7"
+mauve = "#cba6f7"
+red = "#f38ba8"
+maroon = "#eba0ac"
+peach = "#fab387"
+yellow = "#f9e2af"
+green = "#a6e3a1"
+teal = "#94e2d5"
+sky = "#89dceb"
+sapphire = "#74c7ec"
+blue = "#89b4fa"
+lavender = "#b4befe"
+text = "#cdd6f4"
+subtext1 = "#bac2de"
+subtext0 = "#a6adc8"
+overlay2 = "#9399b2"
+overlay1 = "#7f849c"
+overlay0 = "#6c7086"
+surface2 = "#585b70"
+surface1 = "#45475a"
+surface0 = "#313244"
+base = "#1e1e2e"
+mantle = "#181825"
+crust = "#11111b"

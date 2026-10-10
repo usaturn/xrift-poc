@@ -1,0 +1,44 @@
+"""設定ファイルの読み込み。"""
+
+from pathlib import Path
+
+
+def read_pairs(path: Path) -> list[tuple[str, str]]:
+    """KEY=VALUE の行を、出現順の組の一覧として読む。"""
+    pairs: list[tuple[str, str]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            pairs.append((key.strip(), value.strip()))
+    return pairs
+
+
+def load_env_file(path: Path) -> dict[str, str]:
+    """KEY=VALUE の行を辞書として読む。空行と # で始まる行は無視する。"""
+    result: dict[str, str] = {}
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, value = line.split("=")
+        result[key.strip()] = value.strip()
+    return result
+
+
+def load_labels(path: Path) -> dict[str, str]:
+    """ラベル名=色 の行を辞書として読む。"""
+    labels: dict[str, str] = {}
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        if raw.strip():
+            name, color = raw.split("=")
+            labels[name.strip()] = color.strip()
+    return labels
+
+
+def parse_overrides(items: list[str]) -> dict[str, str]:
+    """コマンドラインの --set KEY=VALUE を辞書にする。"""
+    overrides: dict[str, str] = {}
+    for item in items:
+        key, value = item.split("=")
+        overrides[key] = value
+    return overrides

@@ -1,0 +1,117 @@
+{
+  "providers": {
+    "commandcode": {
+      "name": "Command Code",
+      "baseUrl": "https://api.commandcode.ai/provider/v1",
+      "apiKey": "$COMMANDCODE_API_KEY",
+      "api": "openai-completions",
+      "authHeader": true,
+      "models": [
+        {
+          "id": "meta/muse-spark-1.3",
+          "name": "Muse Spark 1.3 (Command Code GOAT)",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 1048576,
+          "maxTokens": 131072,
+          "thinkingLevelMap": {
+            "off": null,
+            "minimal": "minimal",
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "xhigh": "xhigh",
+            "max": "xhigh"
+          }
+        },
+        {
+          "id": "meta/muse-spark-1.3-contributor",
+          "name": "Muse Spark 1.3 Contributor (Command Code GOAT)",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 1048576,
+          "maxTokens": 131072,
+          "thinkingLevelMap": {
+            "off": null,
+            "minimal": "minimal",
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "xhigh": "xhigh",
+            "max": "xhigh"
+          }
+        },
+        {
+          "id": "deepseek/deepseek-v4.1-flash",
+          "name": "DeepSeek V4.1 Flash (Command Code GOAT)",
+          "reasoning": true,
+          "input": ["text"],
+          "contextWindow": 1000000,
+          "maxTokens": 131072,
+          "thinkingLevelMap": {
+            "off": null,
+            "minimal": "low",
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "xhigh": "xhigh",
+            "max": "max"
+          }
+        }
+      ]
+    },
+    "deepinfra": {
+      "name": "DeepInfra",
+      "baseUrl": "https://api.deepinfra.com/v1/openai",
+      "apiKey": "$DEEPINFRA_TOKEN",
+      "api": "openai-completions",
+      "authHeader": true,
+      "models": [
+        {
+          "id": "deepseek-ai/DeepSeek-V4-Flash-0731",
+          "name": "DeepSeek V4 Flash 0731",
+          "reasoning": true,
+          "input": ["text"],
+          "cost": {
+            "input": 0.09,
+            "output": 0.18,
+            "cacheRead": 0.018,
+            "cacheWrite": 0
+          },
+          "compat": {
+            "supportsDeveloperRole": false,
+            "thinkingFormat": "deepseek"
+          },
+          "contextWindow": 1048576,
+          "maxTokens": 65536
+        }
+      ]
+    },
+    "opencode-go": {
+      "models": [
+        {
+          "id": "muse-spark-1.3-contributor",
+          "name": "Muse Spark 1.3 Contributor",
+          "api": "openai-responses",
+          "baseUrl": "https://opencode.ai/zen/go/v1",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "compat": {
+            "sessionAffinityFormat": "openai-nosession"
+          },
+          "contextWindow": 1048576,
+          "maxTokens": 131072,
+          "thinkingLevelMap": {
+            "off": null,
+            "minimal": "minimal",
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "xhigh": "xhigh",
+            "max": "xhigh"
+          }
+        }
+      ]
+    }
+  }
+}
