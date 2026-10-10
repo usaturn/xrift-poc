@@ -21,7 +21,8 @@
 #   - 冪等に何度でも実行できる。削除した対象と件数を必ず出力する
 #   - git worktree として登録済みのものは、安全条件を満たす場合に限り
 #     `git worktree remove --force`（1 回。locked worktree は外さない）で撤去し、管理状態と整合させる。
-#     --force は dirty も消すため、status --porcelain が成功し空のときだけ呼ぶ。
+#     --force は dirty も消すため、status --porcelain --untracked-files=normal（利用者の
+#     status.showUntrackedFiles に左右されない）が成功し空のときだけ呼ぶ。
 #     status 失敗は判定不能として残す。
 #   - pr-review helper セッションは独自の rm -rf/worktree 操作をせず、helper の strict cleanup に任せる。
 #
@@ -155,7 +156,7 @@ resolve_git_worktrees_inside() {
 
         real_gitdir="$(cd "$gitdir" && pwd -P)"
 
-        status_out="$(git -C "$real_gitdir" status --porcelain 2>/dev/null)" || {
+        status_out="$(git -C "$real_gitdir" status --porcelain --untracked-files=normal 2>/dev/null)" || {
             echo "block (unverifiable git state): ${real_gitdir}" >&2
             return 1
         }

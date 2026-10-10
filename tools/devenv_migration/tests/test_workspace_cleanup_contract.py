@@ -1179,6 +1179,22 @@ def test_keeps_item_files_when_untracked_files_are_hidden_by_config(isolated_roo
     assert str(worktree) in _registered_worktrees(main_repo)
 
 
+def test_keeps_untracked_file_when_untracked_files_are_hidden_by_config(isolated_root: Path, tmp_path: Path) -> None:
+    """status.showUntrackedFiles=no の設定でも、未追跡ファイルを --force で消さない。"""
+    main_repo, review_dir, worktree = _rfp_worktree(isolated_root, tmp_path, "NoUnt2")
+    subprocess.run(["git", "config", "status.showUntrackedFiles", "no"], cwd=main_repo, check=True)
+    secret = worktree / "untracked.txt"
+    secret.write_text("dirty\n", encoding="utf-8")
+    _make_old(review_dir)
+
+    result = _run_cleanup(_env_for(isolated_root, tmp_path / "no-yarn-cache"))
+
+    assert result.returncode == 0, result.stderr
+    assert secret.read_text(encoding="utf-8") == "dirty\n"
+    assert str(worktree) in _registered_worktrees(main_repo)
+    assert "block (uncommitted changes)" in result.stderr
+
+
 def test_dry_run_does_not_remove_review_fix_planning_directory(isolated_root: Path, tmp_path: Path) -> None:
     debris = isolated_root / "review-fix-planning.DryRun"
     debris.mkdir()
