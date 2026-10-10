@@ -135,6 +135,18 @@
         "The result does not delete, move, or modify anything under worlds/sample, and does not touch its uncommitted changes.",
         "The result does not delete the product branch feat/product-done from the parent checkout, and tells the user to run the cleanup in the product checkout."
       ]
+    },
+    {
+      "id": 12,
+      "name": "keep-worktree-with-ignored-products",
+      "prompt": "PR が全て Merge されたことを確認して branch と worktree を整理し、ローカルを更新して。親のマージ済みの PR の worktree が .worktrees/feat-done にあり、git status --short は空だが、その worktree の worlds/my-world/scene.tsx に Git で無視されたファイルがある。",
+      "expected_output": "worlds/my-world の中身がある worktree .worktrees/feat-done を削除せず、無視されたファイルのパスを報告して、親の main checkout の worlds/ 側へ移すかどうかを確かめた結果。",
+      "files": [],
+      "expectations": [
+        "The result checks the worktree with git status --short --ignored (or an equivalent check that includes ignored files under items/ and worlds/) before deciding to remove it.",
+        "The result does not run git worktree remove (with or without --force) on .worktrees/feat-done.",
+        "The result reports worlds/my-world/scene.tsx (or worlds/) as the reason for keeping the worktree and asks the user whether to move it to the main checkout's worlds/."
+      ]
     }
   ]
 }

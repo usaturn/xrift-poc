@@ -70,9 +70,15 @@ git log --oneline origin/main..<branch>
 
 ```bash
 git -C <worktree の絶対パス> status --short
+git -C <worktree の絶対パス> status --short --ignored -- items worlds
+git -C <worktree の絶対パス> status --short --ignored=matching
 ```
 
-`-C` には絶対パスを渡す。worktree 隔離セッションでは相対パスが拒否されることがある。出力がある worktree は **削除しない**。ユーザーへ報告して判断を仰ぐ。
+`-C` には絶対パスを渡す。worktree 隔離セッションでは相対パスが拒否されることがある。次のどれかに当たる worktree は **削除しない**。パスを添えてユーザーへ報告し、判断を仰ぐ。
+
+- 1 つ目に出力がある（未コミットの変更・未追跡のファイル）
+- 2 つ目に出力がある。`items/`・`worlds/` の中身（Git 未初期化の制作物や、置かれた制作物の Git リポジトリ）は Git で無視されているため 1 つ目に出ないが、手順 5 の `git worktree remove` は `--force` なしでも消す。親の worktree は制作物の置き場所ではないので、親の main checkout の `items/`・`worlds/` 側へ移すかどうかを確かめる
+- 3 つ目の `!!` の行に、再生成できる依存・キャッシュ（`.venv/`・`node_modules/`・`__pycache__/`・`*.py[cod]`・`.pytest_cache/`・`.ruff_cache/`）以外がある（`reviews/`・`docs_draft/`・`tmp/`・`.env` など）。`items/`・`worlds/` の行は、中身が無くても出るので 2 つ目で判定する
 
 #### 毎回ここで止まるなら、直すのは片付け側ではなく生成側である
 
@@ -95,11 +101,13 @@ git worktree remove <path>
 git worktree prune
 ```
 
+`git worktree remove` は、Git で無視したファイルも含めて worktree のディレクトリごと消す。`--force` なしで拒否されるのは、未コミットの変更か未追跡のファイルがあるときだけである。無視したファイルを守るのは手順 4 の確認だけである。
+
 worktree 本体の削除と、手順 6 の残骸削除は **別の判断**である。worktree 本体は追跡済みの内容であり、マージ済み・clean を確認していれば削除してよい。手順 6 で保留が発生しても、worktree 本体の削除まで止める必要はない。
 
 ### 6. ゲート A: 残骸ディレクトリは照合してから消す
 
-`git worktree remove` は作業ツリーだけを消す。親ディレクトリに残る `session.json` や `review-backup/` は **git 管理外**であり、`git status` にも `git worktree list` にも現れない。
+`git worktree remove` が消すのは worktree のディレクトリ（Git で無視したファイルを含む）だけで、その外は消さない。親ディレクトリに残る `session.json` や `review-backup/` は **git 管理外**であり、`git status` にも `git worktree list` にも現れない。
 
 ゲート A の照合候補にする前に、helper の `state_file` が候補直下の `session.json` であることを確かめ、その state の `worktree` が候補内の `worktree/`、`backup_dir` が実在する候補内の `review-backup/`、`draft` がその `review-backup/` 内を指すことを確認する。さらに `destination` が安全に解決できて正しいリポジトリの `reviews/` 配下に収まることを確認する（基準は `version` 7 では `parent_root`、6 では `main_root`）。`review-backup/` がない場合は **`review-backup/ 欠落`** と分類する。
 
@@ -285,7 +293,7 @@ ls -la --time-style=long-iso "$(uv run --no-project python .agents/scripts/agent
 - `git branch -D` でマージ判定を握り潰さない。
 - clean を確認していない worktree に `--force` を付けない。
 - 手順 7 の checkout の衝突を `--force` / `--merge` / `git stash` / `git reset` で回避しない。衝突したら停止して報告する。
-- `items/`・`worlds/` の中身と、制作物の未コミットの変更を片付けの対象にしない。
+- `items/`・`worlds/` の中身と、制作物の未コミットの変更を片付けの対象にしない。親の worktree の `items/`・`worlds/` に中身があれば、その worktree を削除しない（手順 4）。
 - ユーザー確認なしに `git push`（`--delete` を含む）を実行しない。
 - Open PR が残っている branch と worktree、および対応する `refs/pr-review/*` を削除しない。detached な pr-review worktree も含む。
 - `reviews/` や `docs_draft/` など gitignore 対象ディレクトリの内容を、照合せずに削除しない。例外は、このスキルが作った `$GATE_DIR` と、ユーザーが項目ごとに確認した `tmp/agents/` のエントリだけである。
