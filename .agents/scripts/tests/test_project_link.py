@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -236,3 +238,95 @@ def test_relink_reports_user_files_hidden_by_another_worktrees_link(env: EnvRepo
     report = project_link.link(worktree, env.root)
 
     assert any(".agents/skills/alpha" in note and "他の worktree" in note for note in report.kept)
+
+
+@pytest.mark.parametrize("component", [".agents", ".claude", ".agents/skills", ".claude/skills"])
+def test_unlink_stops_without_change_when_its_link_resolves_outside(
+    env: EnvRepo, tmp_path: Path, component: str
+) -> None:
+    # usaturn/xrift-poc#4: 設定ディレクトリを共有ディレクトリへのリンクに替えても、外のリンクを消さない。
+    project = create_product(env.root, "worlds", "my-world", origin_url=ORIGIN)
+    project_link.link(project, env.root)
+    shared = tmp_path / "共有 設定"
+    shared.mkdir()
+    outside = shared / Path(component).name
+    shutil.move(project / component, outside)
+    (project / component).symlink_to(outside, target_is_directory=True)
+    outside_link = outside / "alpha" if component.endswith("skills") else outside / "skills" / "alpha"
+    before = (links(project), exclude_text(project))
+
+    with pytest.raises(project_link.LinkError) as caught:
+        project_link.unlink(project, env.root)
+
+    assert caught.value.code == 1
+    assert (links(project), exclude_text(project)) == before
+    assert os.readlink(outside_link) == str(env.root.resolve() / ".agents" / "skills" / "alpha")
+    assert shlex.quote(str(outside_link.parent.resolve() / "alpha")) in str(caught.value)
+
+
+def test_unlink_suggests_a_command_that_clears_the_shared_links(env: EnvRepo, tmp_path: Path) -> None:
+    # .agents と .claude が同じ共有ディレクトリを指すと、同じリンクが 2 行に出る。表示したコマンドはそのまま
+    # 実行できる。
+    project = create_product(env.root, "worlds", "my-world", origin_url=ORIGIN)
+    project_link.link(project, env.root)
+    shared = tmp_path / "共有 設定"
+    shutil.move(project / ".agents", shared)
+    shutil.rmtree(project / ".claude")
+    for name in (".agents", ".claude"):
+        (project / name).symlink_to(shared, target_is_directory=True)
+
+    with pytest.raises(project_link.LinkError) as caught:
+        project_link.unlink(project, env.root)
+    line = next(line for line in str(caught.value).splitlines() if "rm -- " in line)
+    subprocess.run(["bash", "-c", line[line.index("rm -- ") :]], check=True)
+
+    assert os.listdir(shared / "skills") == []
+    report = project_link.unlink(project, env.root)
+    assert report.removed == []
+    assert project_link.BLOCK_BEGIN not in exclude_text(project)
+
+
+def test_unlink_in_a_worktree_keeps_links_of_the_main_checkout(env: EnvRepo) -> None:
+    project = create_product(env.root, "worlds", "my-world", origin_url=ORIGIN)
+    worktree = create_owned_worktree(project, project / ".worktrees", name="feature")
+    project_link.link(project, env.root)
+    (worktree / ".agents").symlink_to(project / ".agents", target_is_directory=True)
+    before = exclude_text(project)
+
+    with pytest.raises(project_link.LinkError) as caught:
+        project_link.unlink(worktree, env.root)
+
+    assert caught.value.code == 1
+    assert len(links(project)) == 2 * len(SKILLS)
+    assert exclude_text(project) == before
+
+
+def test_unlink_follows_a_component_linked_inside_the_worktree(env: EnvRepo) -> None:
+    project = create_product(env.root, "worlds", "my-world", origin_url=ORIGIN)
+    project_link.link(project, env.root)
+    shutil.rmtree(project / ".claude" / "skills")
+    (project / ".claude" / "skills").symlink_to(Path("..") / ".agents" / "skills", target_is_directory=True)
+
+    report = project_link.unlink(project, env.root)
+
+    assert sorted(report.removed) == sorted(f".agents/skills/{name}" for name in SKILLS)
+    assert links(project) == {}
+    assert project_link.BLOCK_BEGIN not in exclude_text(project)
+
+
+def test_unlink_continues_when_an_outside_component_holds_no_link_of_ours(env: EnvRepo, tmp_path: Path) -> None:
+    project = create_product(env.root, "worlds", "my-world", origin_url=ORIGIN)
+    project_link.link(project, env.root)
+    shared = tmp_path / "共有 設定"
+    (shared / "skills").mkdir(parents=True)
+    own = shared / "skills" / "alpha"
+    own.symlink_to(tmp_path / "利用者のスキル", target_is_directory=True)
+    shutil.rmtree(project / ".agents")
+    (project / ".agents").symlink_to(shared, target_is_directory=True)
+
+    report = project_link.unlink(project, env.root)
+
+    assert os.readlink(own) == str(tmp_path / "利用者のスキル")
+    assert os.listdir(shared / "skills") == ["alpha"]
+    assert sorted(report.removed) == sorted(f".claude/skills/{name}" for name in SKILLS)
+    assert project_link.BLOCK_BEGIN not in exclude_text(project)
