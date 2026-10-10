@@ -5,7 +5,7 @@
 # 導入したパスと skills-lock.json は Git で無視する（.gitignore）。
 #
 # 更新するとき: XRIFT_SKILLS_REF を新しいコミットに変えてこのスクリプトを実行し、
-# README の「XRift スキルの更新」の確認をやり直してから PR にする。
+# README の「XRift スキルの更新」の手順に従って確認し直してから PR にする。
 set -euo pipefail
 
 readonly SKILLS_CLI_VERSION="1.7.2"

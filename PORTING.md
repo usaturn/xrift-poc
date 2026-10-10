@@ -82,9 +82,7 @@
 
 ## 更新の方法
 
-- XRift CLI: `npm view @xrift/cli version` で版を確かめ、`install_beforehand.bash` の `XRIFT_CLI_VERSION` を変える。README の「ワールドとアイテム」の手順をやり直してから PR にする
-- XRift 公式スキル: `WebXR-JP/xrift-skills` のコミットを確かめ、`scripts/install_xrift_skills.bash` の `XRIFT_SKILLS_REF` を変えて実行する。新しいスキルの名前が `xrift-` で始まらなければ `.gitignore` に加える
-- エージェント: zsh の `update`
+- エージェント、XRift CLI、XRift 公式スキルの更新は、README の「更新」の節に書いてある（手順を二重に書かない）。更新したら、この文書の「検証の記録」に確かめた版を追記する
 - 移植元の修正の取り込み: 移植元の `git log <前回の SHA>..origin/main -- <パス>` で対象の変更を確かめ、同じパスに手で適用する。適用した移植元の SHA をこの文書に追記する
 
 ## 検証の記録（2026-10-10）

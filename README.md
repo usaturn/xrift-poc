@@ -29,6 +29,7 @@ xrift-poc/
 ## 必要なもの（ホスト）
 
 - Docker と VS Code の Dev Containers 拡張（またはその互換ツール）
+- WSL2（Linux・macOS でも可）の中にリポジトリを clone し、そこから VS Code で開きます。コンテナの作成前にホスト側で `initialize.bash`（bash）を実行し、`${localEnv:HOME}` のホームを mount するため、WSL を使わずに Windows 側のパスから開くと、最初の手順で失敗します
 - ホストのホームにある各エージェントの設定は、コンテナと共有されます（`.devcontainer/README.md` の「ホームの bind mount と共有」）。無いディレクトリは `initialize.bash` が作ります
 - `~/.xrift` は実ディレクトリにします。dotfiles 管理などでディレクトリへのシンボリックリンクにしていると、`initialize.bash` が理由を表示して止まり、コンテナが起動しません
 
@@ -65,7 +66,7 @@ xrift check item --build
 
 - `xrift create` は、テンプレートの取得から依存の導入まで行います。`npm run build`（`tsc && vite build`）と `npm run typecheck`（`tsc --noEmit`）も使えます
 - プレビューはホストのブラウザで `http://localhost:5173` を開きます。2 つ目以降のプロジェクトは `npm run dev -- --host 0.0.0.0 --port 5174` のように 5174〜5179 を使います
-- コンテナ内でブラウザの描画を確かめるときは、Python Playwright を使います（`uv run --project tools/devenv python <script>`。`playwright install chromium` で、ブラウザを入れます）
+- コンテナ内でブラウザの描画を確かめるときは、Python Playwright を使います（`uv run --project tools/devenv python <script>`。ブラウザが無いときは `uv run --project tools/devenv playwright install chromium` で入れます）
 - `xrift check` のセキュリティ検査を省略するオプション（`--ignore-warnings`・`--skip-check`）は、標準の手順に使いません
 
 制作物は `worlds/<name>/`・`items/<name>/` の中で、必要に応じて独立した Git リポジトリとして管理します。Git を初期化していないローカルのプロジェクトでも構いません。
@@ -90,15 +91,36 @@ xrift check item --build
 - Git 未初期化の制作物では、そのまま Claude Code・pi・Codex が親の共通の指示と XRift スキルを読みます
 - 独立した Git リポジトリの制作物では、最初に一度 `xrift-link`（`project_link.py link`）を実行します。親のスキルへのリンクを制作物の `.agents/skills`・`.claude/skills` に置きます。制作物の既存のファイル・スキル・設定は上書きしません。リンクは制作物の `.git/info/exclude` で無視されるので、制作物の Git の状態は変わりません。外すときは `xrift-link unlink` です
 - 制作物の worktree は、制作物のディレクトリの中（例: `worlds/<name>/.worktrees/<branch>`）に作り、そこでも `xrift-link` を実行します。親の外に作った worktree は、親の指示とスキルを読めません
-- Codex は `cod` で起動します。独立した Git リポジトリの制作物から起動しても、親の `AGENTS.md` を読むよう `project_root_markers=[".devcontainer"]` を指定しています。制作物が自前の `.devcontainer` を持つ場合は、その制作物のディレクトリがルートになり、親の `AGENTS.md` を読めません
+- Codex は `cod` で起動します。独立した Git リポジトリの制作物から起動しても、親の `AGENTS.md` を読むよう `project_root_markers=[".devcontainer"]` を指定しています。この指定は codex-cli 0.162.1 で確かめました。将来の版で `project_root_markers` の意味が変わると、親の `AGENTS.md` を読めなくなるおそれがあるので、Codex を更新したら制作物から起動して確かめ直します。制作物が自前の `.devcontainer` を持つ場合は、その制作物のディレクトリがルートになり、親の `AGENTS.md` を読めません
 - Cursor CLI・Grok Build・DSH の読み込みは確かめていません。手動で確かめる手順は [PORTING.md](PORTING.md) の「未実施」にあります
 
 どの制作物の Git・Issue・PR を操作するかは、`uv run --no-project python "$XRIFT_POC_ROOT/.agents/scripts/route_target.py" <変更するパス>` で判定します。Git 未初期化の制作物は、祖先の xrift-poc に誤って振り分けず、操作を止めます。
 
 ## 更新
 
-- エージェント: `update`
-- XRift CLI と XRift スキル: [PORTING.md](PORTING.md) の「更新の方法」
+### エージェント
+
+zsh の `update` を実行します。XRift CLI は固定した版なので、`update` では更新しません。
+
+### XRift CLI の更新
+
+1. `npm view @xrift/cli version` で新しい版を確かめます
+2. `.devcontainer/install_beforehand.bash` の `XRIFT_CLI_VERSION` を変えます
+3. 新しい版に入れ替えます。`npm install -g @xrift/cli@<新しい版>` を実行するか、Rebuild Container します。PATH 上の `xrift` は、入れ替えるまで古い版のままです
+4. `xrift --version` が新しい版と一致することを確かめます
+5. 「ワールドとアイテム」の手順で、ワールドとアイテムの作成・`npm run build`・`xrift check world --build`・`xrift check item --build` をやり直します。警告が出たら理由を確かめます
+6. PR で取り込み、[PORTING.md](PORTING.md) の「検証の記録」に確かめた版を追記します
+
+### XRift スキルの更新
+
+1. `WebXR-JP/xrift-skills` の新しいコミットを確かめます（必要なら `skills` CLI の版も確かめます）
+2. `scripts/install_xrift_skills.bash` の `XRIFT_SKILLS_REF`（必要なら `SKILLS_CLI_VERSION`）を変えます
+3. `bash scripts/install_xrift_skills.bash` を実行します。固定した版と取得結果が違う、または取得物が Git で無視されていないときは、失敗します
+4. 新しいスキルの名前が `xrift-` で始まらなければ、`.gitignore` に加えます
+5. `.agents/skills/xrift-*` に新しいスキルが入り、`git status` に取得物が出ないことを確かめます。Claude Code・pi・Codex で、制作物から `xrift-world` が読み込まれることも確かめます
+6. PR で取り込みます
+
+移植元（maatlog-poc）の修正の取り込み方は [PORTING.md](PORTING.md) の「更新の方法」にあります。
 
 ## 検証
 
