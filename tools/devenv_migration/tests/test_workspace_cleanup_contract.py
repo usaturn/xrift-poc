@@ -11,6 +11,7 @@ import argparse
 import importlib.util
 import os
 import shlex
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -1112,9 +1113,15 @@ def test_review_fix_planning_removal_does_not_break_pr_review_survivor(isolated_
 
 
 def test_cleanup_leaves_work_directories_untouched(tmp_path: Path) -> None:
-    # クリーンアップは TMP_ROOT 配下の決まった種類だけを対象にし、ルートの items/・worlds/ と
-    # 子リポジトリの未コミットの変更には触らない。
+    # スクリプトは自身の位置から SCRIPT_ROOT（= root）を求める。root に配置したコピーを実行し、
+    # root の items/・worlds/ と子リポジトリの未コミットの変更に触らないことを確かめる。
     root = tmp_path / "root"
+    script = root / ".devcontainer" / "cleanup-workspace.bash"
+    script.parent.mkdir(parents=True)
+    shutil.copy2(CLEANUP_SCRIPT, script)
+    helper_dir = root / ".agents" / "skills" / "pr-review" / "scripts"
+    helper_dir.parent.mkdir(parents=True)
+    helper_dir.symlink_to(HELPER_SCRIPT.parent)
     world = root / "worlds" / "my-world"
     world.mkdir(parents=True)
     subprocess.run(["git", "init", "-q", str(world)], check=True)
@@ -1127,17 +1134,21 @@ def test_cleanup_leaves_work_directories_untouched(tmp_path: Path) -> None:
     old = tmp_root / "review-fix-planning.abc123"
     old.mkdir()
     before = sorted(str(path.relative_to(root)) for path in root.rglob("*"))
+    assert script.resolve().parent.parent == root.resolve()
+    assert script.resolve() != CLEANUP_SCRIPT.resolve()
 
-    result = _run_cleanup(
+    env = os.environ.copy()
+    env.update(
         {
             "XRIFT_POC_CLEANUP_TMP_ROOT": str(tmp_root),
             "XRIFT_POC_CLEANUP_MIN_AGE_DAYS": "0",
             "XRIFT_POC_CLEANUP_YARN_CACHE_DIR": str(tmp_path / "yarn"),
-        },
-        cwd=root,
+        }
     )
+    result = subprocess.run(["bash", str(script)], env=env, check=False, text=True, capture_output=True)
 
     assert result.returncode == 0, result.stderr
+    assert not old.exists()
     assert sorted(str(path.relative_to(root)) for path in root.rglob("*")) == before
     assert (world / "draft.txt").read_text(encoding="utf-8") == "未コミットの作業\n"
-    assert not old.exists()
+    assert (item / "model.glb").read_bytes() == b"glTF"
