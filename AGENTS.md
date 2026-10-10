@@ -12,7 +12,7 @@ xrift-poc は、XRift のワールドとアイテムを作るための開発環�
 |---|---|
 | 開発環境（`.devcontainer/`・`.agents/`・`.claude/`・`.pi/`・`.cursor/`・`scripts/`・`tools/`・`.github/`・ルートの文書と設定） | `usaturn/xrift-poc`（親） |
 | 制作物 | その制作物自身の Git リポジトリ。origin を確認してから操作する |
-| Git 未初期化、または操作先を確認できない制作物 | GitHub の操作を止め、必要な設定（`git init`・`git remote add origin <URL>`）を利用者に説明する。代わりに親へ commit・起票しない |
+| Git 未初期化、または操作先を確認できない制作物 | GitHub の操作を止め、必要な設定（`git init`・`git remote add origin <URL>`、origin を GitHub の URL として読めないときは `git remote set-url origin https://github.com/<owner>/<repo>.git`）を利用者に説明する。代わりに親へ commit・起票しない |
 
 - 操作の前に `uv run --no-project python "$XRIFT_POC_ROOT/.agents/scripts/route_target.py" <path>` で判定する。`kind` が `env` なら親、`product` なら制作物、`stop` なら操作しない。`product` でも `repository` が null なら Issue・PR を作らない。手順は `.agents/skills/repository-ownership/SKILL.md`（Claude は `.claude/skills/repository-ownership`）に定義する
 - 判定に渡す `<path>` は、これから変更するファイルまたはディレクトリであり、cwd ではない。これから作るファイルのように、まだ無いパスも渡せる（実在する最も近い祖先のディレクトリで判定する）。変更の対象のパスが変わるたびに判定し直す

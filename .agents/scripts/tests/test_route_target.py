@@ -105,10 +105,37 @@ def test_product_origin_credentials_are_not_reported(env: EnvRepo) -> None:
     assert "s3cret" not in json.dumps(asdict(result))
 
 
-@pytest.mark.parametrize("origin", [None, "/srv/git/my-item.git", "https://gitlab.com/someone/my-item.git"])
-def test_product_without_a_github_origin_has_no_repository(env: EnvRepo, origin: str | None) -> None:
+def test_product_without_an_origin_suggests_adding_one(env: EnvRepo) -> None:
+    project = create_product(env.root, "items", "my-item")
+    result = route_target.route(project, env.root)
+    assert (result.kind, result.code, result.repository) == ("product", "product_without_origin", None)
+    assert "git remote add origin" in result.reason
+
+
+# origin はあるが GitHub の URL として読めない。案内どおりに git remote add すると
+# remote origin already exists で失敗していた（usaturn/xrift-poc#7）ので、set-url を案内する
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "/srv/git/my-item.git",
+        "https://gitlab.com/someone/my-item.git",
+        "github-personal:someone/my-item.git",
+        "https://github.com@evil.test/someone/my-item",
+    ],
+)
+def test_product_origin_that_is_not_a_github_url_suggests_set_url(env: EnvRepo, origin: str) -> None:
     project = create_product(env.root, "items", "my-item", origin_url=origin)
-    assert summary(project, env) == ("product", "product_without_github", None)
+    result = route_target.route(project, env.root)
+    assert (result.kind, result.code, result.repository) == ("product", "product_origin_not_github", None)
+    assert "git remote set-url origin" in result.reason
+
+
+def test_product_with_an_empty_origin_url_suggests_set_url(env: EnvRepo) -> None:
+    # origin の値が空でも remote origin はあるので、git remote add は失敗する
+    project = create_product(env.root, "items", "my-item", origin_url="https://gitlab.com/someone/my-item.git")
+    subprocess.run(["git", "-C", str(project), "config", "remote.origin.url", ""], check=True)
+    result = route_target.route(project, env.root)
+    assert (result.code, result.repository) == ("product_origin_not_github", None)
 
 
 # 親を指す origin の書き方。正規形の GitHub の URL に直せないもの
