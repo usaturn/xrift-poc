@@ -287,18 +287,35 @@ def test_unlink_suggests_a_command_that_clears_the_shared_links(env: EnvRepo, tm
 
 
 def test_unlink_in_a_worktree_keeps_links_of_the_main_checkout(env: EnvRepo) -> None:
+    # worktree の .agents が main checkout の .agents を指しても、main checkout のリンクを残して自分のリンクを外す。
     project = create_product(env.root, "worlds", "my-world", origin_url=ORIGIN)
     worktree = create_owned_worktree(project, project / ".worktrees", name="feature")
     project_link.link(project, env.root)
     (worktree / ".agents").symlink_to(project / ".agents", target_is_directory=True)
-    before = exclude_text(project)
+    project_link.link(worktree, env.root)
+    before = (links(project), exclude_text(project))
 
-    with pytest.raises(project_link.LinkError) as caught:
-        project_link.unlink(worktree, env.root)
+    report = project_link.unlink(worktree, env.root)
 
-    assert caught.value.code == 1
-    assert len(links(project)) == 2 * len(SKILLS)
-    assert exclude_text(project) == before
+    assert sorted(report.removed) == sorted(f".claude/skills/{name}" for name in SKILLS)
+    assert all(any(f".agents/skills/{name}" in line for line in report.kept) for name in SKILLS)
+    assert (links(project), exclude_text(project)) == before
+    assert project_link.unlink(worktree, env.root).removed == []
+
+
+def test_unlink_in_the_main_checkout_keeps_links_of_a_nested_worktree(env: EnvRepo) -> None:
+    # main checkout の .agents が、中に作った worktree の .agents を指しても、その worktree のリンクを消さない。
+    project = create_product(env.root, "worlds", "my-world", origin_url=ORIGIN)
+    worktree = create_owned_worktree(project, project / ".worktrees", name="feature")
+    project_link.link(worktree, env.root)
+    (project / ".agents").symlink_to(worktree / ".agents", target_is_directory=True)
+    project_link.link(project, env.root)
+    before = (links(worktree), exclude_text(project))
+
+    report = project_link.unlink(project, env.root)
+
+    assert sorted(report.removed) == sorted(f".claude/skills/{name}" for name in SKILLS)
+    assert (links(worktree), exclude_text(project)) == before
 
 
 def test_unlink_follows_a_component_linked_inside_the_worktree(env: EnvRepo) -> None:
