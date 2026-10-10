@@ -19,11 +19,7 @@ git の操作はほぼ全て取り消せる。取り消せないのは次の 2 �
 
 ## 対象リポジトリの確定
 
-整理対象の PR が属するリポジトリで root を決める。`usaturn/maatlog`（公開アプリケーション）の PR なら `public/` submodule の checkout が root であり、Git コマンドは `git -C public ...`、`gh` 呼び出しには `--repo usaturn/maatlog` を付けて実行する。親 `usaturn/maatlog-poc` の PR なら親の toplevel が root である。両リポジトリにまたがる整理は、リポジトリごとにこの手順を回す。
-
-公開経路では次が変わる。手順 7 の `git submodule status public` と `git submodule update --init --checkout public` は親側だけの操作なので実行しない。手順 6 の `session.json` の `destination` は、`version` が 7（pr-review の通常の実行。Issue #483）なら `parent_root`（親の main worktree）からの `reviews/<owner>/<repo>/...`、`version` が 6（PR 修正ループ）なら `main_root`（公開 PR なら `public/`）からの `reviews/...` である。手順 1 の `gh pr list` は `--repo usaturn/maatlog` で公開側を見る。
-
-公開 checkout で手順 7 を実行すると、親には `modified: public (new commits)` が残る。これは次回 checkpoint までの正常な状態であり、`git submodule update` で巻き戻したり gitlink を stage して「直さない」。親経路の手順 7 でも、この状態の public を `git submodule update` で巻き戻さない（手順 7 の `+` 判定）。
+整理対象の PR が属するリポジトリで root を決める。`repository-ownership` の判定（`route_target.py`）で、親（`usaturn/xrift-poc`）なら親の checkout、制作物ならその制作物の `git_root` が root である。制作物の片付けは、その制作物の checkout の中だけで行い、親の checkout から `items/`・`worlds/` の中身を消したり動かしたりしない。`gh` には毎回 `--repo` を付ける。
 
 ## ワークフロー
 
@@ -92,16 +88,10 @@ untracked ファイルは保存先と照合する述語を持たないため、�
 
 手順 1 で対象外にした worktree（オープン PR の `headRefOid` と HEAD が一致するもの、`/tmp/pr-review-*` で親 `session.json` の `head_branch` がオープン PR と一致するもの）は削除しない。
 
-submodule（本リポジトリの `public`）を含む worktree では `git worktree remove` が次で失敗する。
-
-```
-fatal: working trees containing submodules cannot be moved or removed
-```
-
-手順 4 で clean を確認済みの worktree に限り `--force` を付ける。確認していない worktree に `--force` を付けない。
+手順 4 で clean を確認済みの worktree だけを削除する。
 
 ```bash
-git worktree remove --force <path>
+git worktree remove <path>
 git worktree prune
 ```
 
@@ -161,41 +151,23 @@ cp <残骸ディレクトリ>/review-backup/<model>.md <保存先ディレクト
 
 メイン作業ツリーが dirty かどうかでは止めない。未コミットの変更を失うかどうかは checkout の成否で決まる。`--force` / `--merge` を付けない `git checkout` は、ローカルの変更が checkout 先と衝突すると何も変更せずに中断し、衝突しない変更はそのまま引き継ぐ。
 
-checkout の前に、失敗時の比較用として HEAD と作業ツリーの状態を、submodule 更新の判定用として public の状態を記録する。
+checkout の前に、失敗時の比較用として HEAD と作業ツリーの状態を記録する。
 
 ```bash
 git rev-parse HEAD
 git status --short
-git submodule status public
 ```
-
-public の判定は checkout の前に行う。checkout で gitlink が変わると、gitlink どおりだった public も checkout 後は `+` になり、区別できなくなる。
 
 ```bash
-git checkout --no-recurse-submodules --detach origin/main
+git checkout --detach origin/main
 ```
 
-`--no-recurse-submodules` は、利用者設定の `submodule.recurse` に関係なく、checkout が public の中身に触れないようにする。public を動かすのは後続の `git submodule update` だけである。
-
-- 成功（exit 0）: 後述の submodule の分岐へ進む
+- 成功（exit 0）: 引き継いだ未コミット変更を `git status --short` で記録し、手順 11 で報告する
 - 失敗（exit 0 以外）: git が出力した衝突パスを添えてユーザーへ報告し、手順 7 を停止する。`git rev-parse HEAD` と `git status --short` が checkout 前の記録と一致し、HEAD と作業ツリーが変わっていないことを確認する。手順 8 以降は続ける
 
 衝突を `--force` / `--merge` / `git stash` / `git reset` で回避しない。
 
-checkout に成功したら、記録した `git submodule status public` の先頭文字で分岐する。
-
-- 先頭が空白または `-`: public は gitlink どおりか未初期化である。`git submodule update --init --checkout public` を実行する
-- 先頭が `+`: public は gitlink と別の commit を指している。`git submodule update` を実行せず、public の commit と新しい gitlink を手順 11 で報告する。公開経路で前進させた public を巻き戻さない（「対象リポジトリの確定」参照）
-
-```bash
-git submodule update --init --checkout public
-```
-
-`--checkout` は、利用者設定の `submodule.public.update` に関係なく、public を新しい gitlink の commit へ detached HEAD で移す。`none` だと exit 0 のまま public が動かず、`merge` / `rebase` だと public 内の branch を書き換える。
-
-`git submodule update` が public 内の未コミット変更との衝突で失敗した場合も、`--force` を付けずに停止し、衝突パスと、`git -C public rev-parse HEAD` が変わっていないことを報告する。親の checkout は完了しているので、手順 8 以降は続ける。
-
-checkout に成功した場合は、手順 7 の最後に、引き継いだ未コミット変更を `git status --short` で記録し、手順 11 で報告する。親経路では submodule の分岐（更新・省略・更新の失敗のいずれか）を終えてから記録し、checkout の直後には記録しない。gitlink が変わる checkout の直後は、public が更新前のため ` M public` と表示される。これは未コミット変更ではなく、public の untracked content（` ? public`）もこの表示に隠れる。
+`items/`・`worlds/` は親で `.gitignore` 対象であり、親の checkout の更新では触れない。制作物は、その制作物の root で同じ手順を行う。
 
 ローカル `main` branch は作成しない（プロジェクト規約）。
 
@@ -268,7 +240,7 @@ git worktree list
 git branch -a
 ```
 
-削除した対象、保留した対象、その理由を報告する。手順 7 で引き継いだ未コミット変更（submodule の分岐を終えた後の `git status --short`）、`git submodule update` を省略した場合の public の commit と gitlink、手順 7 が衝突で停止した場合の衝突パスも報告する。
+削除した対象、保留した対象、その理由を報告する。手順 7 で引き継いだ未コミット変更（`git status --short`）と、手順 7 が衝突で停止した場合の衝突パスも報告する。
 
 `tmp/agents/` に残っているセッションディレクトリも報告する。
 
@@ -312,8 +284,8 @@ ls -la --time-style=long-iso "$(uv run --no-project python .agents/scripts/agent
 - ローカル `main` branch を作成しない。
 - `git branch -D` でマージ判定を握り潰さない。
 - clean を確認していない worktree に `--force` を付けない。
-- 手順 7 の checkout・submodule 更新の衝突を `--force` / `--merge` / `git stash` / `git reset` で回避しない。衝突したら停止して報告する。
-- gitlink と別の commit を指している public を `git submodule update` で巻き戻さない。
+- 手順 7 の checkout の衝突を `--force` / `--merge` / `git stash` / `git reset` で回避しない。衝突したら停止して報告する。
+- `items/`・`worlds/` の中身と、制作物の未コミットの変更を片付けの対象にしない。
 - ユーザー確認なしに `git push`（`--delete` を含む）を実行しない。
 - Open PR が残っている branch と worktree、および対応する `refs/pr-review/*` を削除しない。detached な pr-review worktree も含む。
 - `reviews/` や `docs_draft/` など gitignore 対象ディレクトリの内容を、照合せずに削除しない。例外は、このスキルが作った `$GATE_DIR` と、ユーザーが項目ごとに確認した `tmp/agents/` のエントリだけである。
@@ -323,7 +295,6 @@ ls -la --time-style=long-iso "$(uv run --no-project python .agents/scripts/agent
 ## 関連スキル
 
 - `pr-review` — `/tmp/pr-review-*/` の使い捨て worktree、`review-backup/`、`refs/pr-review/<PR番号>` の pinned ref を作る側。手順 6 の残骸と手順 9 の ref はこのスキルの生成物である
-- `version-export` — リリース手順。一時生成物を worktree の外（親の main worktree の `tmp/agents/`）へ出す原則を共有する
 
 ## ランタイムごとの違い
 

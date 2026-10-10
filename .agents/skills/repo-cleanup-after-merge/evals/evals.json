@@ -40,13 +40,13 @@
     },
     {
       "id": 4,
-      "name": "force-remove-only-clean-worktree",
-      "prompt": "PR が全て Merge されたことを確認して branch と worktree を整理し、ローカルを更新して。worktree は 2 つあり、どちらも public submodule を含む。片方には未コミットの変更がある。",
-      "expected_output": "clean な worktree だけを --force で削除し、dirty な worktree は残して報告した結果。",
+      "name": "remove-only-clean-worktree",
+      "prompt": "PR が全て Merge されたことを確認して branch と worktree を整理し、ローカルを更新して。worktree は 2 つあり、片方には未コミットの変更がある。",
+      "expected_output": "clean な worktree だけを削除し、dirty な worktree は残して報告した結果。",
       "files": [],
       "expectations": [
         "The result runs git -C <worktree> status --short for every worktree before removing any.",
-        "The result uses git worktree remove --force only on the clean worktree, after the submodule error.",
+        "The result runs git worktree remove without --force only on the clean worktree.",
         "The result does not remove the worktree that has uncommitted changes and reports it to the user."
       ]
     },
@@ -66,12 +66,11 @@
       "id": 6,
       "name": "stay-detached-without-local-main",
       "prompt": "PR が全て Merge されたことを確認して branch と worktree を整理し、ローカルを更新して。作業ツリーは古い origin/main で detached HEAD になっている。",
-      "expected_output": "detached HEAD のまま最新の origin/main へ更新し、submodule を同期した結果。",
+      "expected_output": "detached HEAD のまま最新の origin/main へ更新した結果。",
       "files": [],
       "expectations": [
-        "The result runs git checkout --no-recurse-submodules --detach origin/main.",
-        "The result does not create a local main branch (no git switch -c main, no git checkout -b main).",
-        "The result runs git submodule update --init --checkout public."
+        "The result runs git checkout --detach origin/main.",
+        "The result does not create a local main branch (no git switch -c main, no git checkout -b main)."
       ]
     },
     {
@@ -102,15 +101,14 @@
     {
       "id": 9,
       "name": "proceed-with-non-conflicting-dirty-tree",
-      "prompt": "PR が全て Merge されたことを確認して branch と worktree を整理し、ローカルを更新して。メイン作業ツリーは古い origin/main で detached HEAD になっており、git status --short は ` ? public` だけである。public には untracked の docs/images/ があるが、public の commit は gitlink と一致している。マージ済みのローカル branch feat/done が 1 つあり、どの worktree も checkout していない。",
-      "expected_output": "dirty を理由に止めず、checkout 前に状態を記録してから origin/main へ checkout し、submodule を更新し、feat/done を削除し、引き継いだ未コミット変更を報告した結果。",
+      "prompt": "PR が全て Merge されたことを確認して branch と worktree を整理し、ローカルを更新して。メイン作業ツリーは古い origin/main で detached HEAD になっており、git status --short は `?? notes.txt` だけである。マージ済みのローカル branch feat/done が 1 つあり、どの worktree も checkout していない。",
+      "expected_output": "dirty を理由に止めず、checkout 前に状態を記録してから origin/main へ checkout し、feat/done を削除し、引き継いだ未コミット変更を報告した結果。",
       "files": [],
       "expectations": [
         "The result does not stop step 7 or step 8 merely because git status --short is non-empty.",
-        "The result records git rev-parse HEAD, git status --short, and git submodule status public before running git checkout --no-recurse-submodules --detach origin/main.",
-        "The result runs git submodule update --init --checkout public because git submodule status public had no leading +.",
+        "The result records git rev-parse HEAD and git status --short before running git checkout --detach origin/main.",
         "The result deletes feat/done with git branch -d.",
-        "The final report lists the carried-over uncommitted change (public untracked content)."
+        "The final report lists the carried-over uncommitted change (notes.txt)."
       ]
     },
     {
@@ -120,24 +118,22 @@
       "expected_output": "checkout の失敗で手順 7 だけを停止し、衝突パスと、HEAD・作業ツリーが変わっていないことを報告し、feat/done の削除は続けた結果。",
       "files": [],
       "expectations": [
-        "The result runs git checkout --no-recurse-submodules --detach origin/main and treats its non-zero exit as a stop for step 7.",
+        "The result runs git checkout --detach origin/main and treats its non-zero exit as a stop for step 7.",
         "The result does not use --force, --merge, git stash, or git reset, and does not discard the README.md edit to get past the conflict.",
         "The result reports README.md as the conflicting path and confirms that git rev-parse HEAD and git status --short match the values recorded before the checkout.",
-        "The result does not run git submodule update after the failed checkout.",
         "The result still deletes feat/done with git branch -d."
       ]
     },
     {
       "id": 11,
-      "name": "keep-public-ahead-of-gitlink",
-      "prompt": "PR が全て Merge されたことを確認して branch と worktree を整理し、ローカルを更新して。公開リポジトリ側の整理で public を公開側の origin/main まで進めたため、親のメイン作業ツリーは git status で `modified: public (new commits)` になっている。親は古い origin/main で detached HEAD であり、fetch 後の親 origin/main は public の gitlink を別の commit に更新している。",
-      "expected_output": "checkout 前に public が gitlink と別の commit を指していることを判定し、親の checkout は行ったうえで git submodule update を実行せず、public の commit と新しい gitlink を報告した結果。",
+      "name": "leave-work-directories-untouched",
+      "prompt": "PR が全て Merge されたことを確認して branch と worktree を整理し、ローカルを更新して。親のメイン作業ツリーの worlds/sample には制作物の Git リポジトリがあり、未コミットの変更と、マージ済みのローカル branch feat/product-done がある。整理の対象は親の PR である。",
+      "expected_output": "親の checkout だけを更新し、worlds/sample の中身と未コミットの変更には触れず、制作物の branch も削除しなかった結果。",
       "files": [],
       "expectations": [
-        "The result runs git submodule status public before the parent checkout and treats the leading + as public pointing at a commit other than the gitlink.",
-        "The result runs git checkout --no-recurse-submodules --detach origin/main in the parent.",
-        "The result does not run git submodule update (with or without --init) for public and does not stage the public gitlink.",
-        "The final report states that public was left at its commit and shows it next to the new gitlink."
+        "The result runs git checkout --detach origin/main only in the parent checkout.",
+        "The result does not delete, move, or modify anything under worlds/sample, and does not touch its uncommitted changes.",
+        "The result does not delete the product branch feat/product-done from the parent checkout, and tells the user to run the cleanup in the product checkout."
       ]
     }
   ]

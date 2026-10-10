@@ -66,10 +66,10 @@
     },
     {
       "id": "q10",
-      "query": "バージョンを 0.1.0 に上げて公開リポジトリに反映してリリースして",
+      "query": "バージョンを 0.1.0 に上げてタグを打ってリリースして",
       "should_trigger": false,
       "expected_terms": [],
-      "notes": "Negative: version-export スキルの領域"
+      "notes": "Negative: リリース作業であって整理ではない"
     },
     {
       "id": "q11",

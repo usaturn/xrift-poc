@@ -62,8 +62,8 @@ Git の root と作業する root を、解決したファイルシステム上�
 
 | タスク | 対象リポジトリ | 作業する root | `origin/main` の意味 |
 | --- | --- | --- | --- |
-| アプリケーション | `usaturn/maatlog` | `public/`、または公開リポジトリから作った worktree | 公開リポジトリの remote-tracking ref |
-| 開発環境 | `usaturn/maatlog-poc` | 親の checkout、または親リポジトリから作った worktree | 親リポジトリの remote-tracking ref |
+| 制作物 | 制作物の origin のリポジトリ | `items/<name>`・`worlds/<name>` の Git リポジトリ、またはその worktree | 制作物の remote-tracking ref |
+| 開発環境 | `usaturn/xrift-poc` | 親の checkout、または親から作った worktree | 親の remote-tracking ref |
 
 `--ref=origin/main` の場合は、route が一致した後でだけ、同じ cwd でその ref を解決する。
 
@@ -108,6 +108,6 @@ git rev-parse --verify 'origin/main^{commit}'
 
 ## 例
 
-- アプリケーション: 呼び出し元が、`/simplify-in-subagent --ref=origin/main` について、対象 `usaturn/maatlog` と、作業する root として公開側の worktree を宣言する。その worktree で root と origin を確かめ、そのリポジトリの `origin/main` を解決してから、diff に基づいて `src/foo.py` の 10〜18 行目を簡素化する。編集してよいのは、変更された行だけである。関係するテストを実行し、route と変更を報告する。
-- 開発環境: 呼び出し元が、`/simplify-in-subagent --ref=origin/main` について、対象 `usaturn/maatlog-poc` と親の worktree を宣言する。`tools/devenv/...` の変更行にそのリポジトリの `origin/main` を使う前に、その worktree で root と origin を確かめる。
-- route の誤り: 対象は `usaturn/maatlog` だが、現在の cwd は親の checkout で、依頼は `src/foo.py` と `--ref=origin/main` を指定している。事前確認で停止し、食い違いを報告し、意図した公開側の worktree で再実行するよう呼び出し元に求める。親の diff を読まず、フォールバックも使わない。ここで「呼び出し元に求める」とは、その指示を結果の報告に書いて返すことを指し、質問のツールは必要としない。
+- 制作物: 呼び出し元が、`/simplify-in-subagent --ref=origin/main` について、対象の制作物のリポジトリと、作業する root として `worlds/<name>` の worktree を宣言する。その worktree で root と origin を確かめ、そのリポジトリの `origin/main` を解決してから、diff に基づいて `src/foo.py` の 10〜18 行目を簡素化する。編集してよいのは、変更された行だけである。関係するテストを実行し、route と変更を報告する。
+- 開発環境: 呼び出し元が、`/simplify-in-subagent --ref=origin/main` について、対象 `usaturn/xrift-poc` と親の worktree を宣言する。`tools/devenv/...` の変更行にそのリポジトリの `origin/main` を使う前に、その worktree で root と origin を確かめる。
+- route の誤り: 対象は制作物のリポジトリだが、現在の cwd は親の checkout で、依頼は `src/foo.py` と `--ref=origin/main` を指定している。事前確認で停止し、食い違いを報告し、意図した制作物の worktree で再実行するよう呼び出し元に求める。親の diff を読まず、フォールバックも使わない。ここで「呼び出し元に求める」とは、その指示を結果の報告に書いて返すことを指し、質問のツールは必要としない。

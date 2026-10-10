@@ -6,7 +6,7 @@ Issue #333。AGENTS.md の「コミットしないファイルの置き場所」
 - ``mkdir <topic>``: ``<main worktree>/tmp/agents/<topic>.XXXXXX`` を作り、その絶対パスを出力する
 
 main worktree は呼び出し元の cwd ではなく、このスクリプト自身の置き場所から解決する。
-``public/`` submodule の worktree やリリース worktree から呼ばれても、親の main worktree を返す。
+制作物の worktree やほかの worktree から呼ばれても、親の main worktree を返す。
 """
 
 from __future__ import annotations

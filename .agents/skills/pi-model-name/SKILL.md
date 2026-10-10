@@ -69,14 +69,14 @@ pi の変数が揃っているときは pi を優先する。DSH のシェルか
 
 同梱スクリプトが strict 既定で表示する。pi はランタイム変数が揃い、現在のセッションファイルがある場合に、選択値と直近の応答記録を照合する。DSH はシェル呼び出しごとの事実なので照合対象が無く、`--session-file` / `--allow-session-history` は pi 専用である（DSH セッションで `--session-file` を明示すると exit 2）。履歴読みは情報表示の明示指定だけに使う。
 
-親 checkout の root にいるうちにスクリプトの絶対パスを取得する。同じシェルなら `public/` や公開側 worktree に移動した後も使える。
+親 checkout の root にいるうちにスクリプトの絶対パスを取得する。同じシェルなら制作物や worktree に移動した後も使える。
 
 ```bash
 # 親 checkout の root で実行
 PI_MODEL_SCRIPT="$(git rev-parse --show-toplevel)/.agents/skills/pi-model-name/scripts/print-pi-model.sh"
 
-# 公開側 checkout に移動した後も実行できる
-cd public
+# 制作物の checkout に移動した後も実行できる
+cd items/<name>
 
 # 既定: provider/model を表示。pi / DSH のどちらの事実も無ければ exit 2 で停止
 "$PI_MODEL_SCRIPT"

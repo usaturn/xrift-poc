@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 from typing import cast
 
@@ -20,12 +21,19 @@ RUNTIME_SKILL_DIRS = tuple(
 PENDING = frozenset[str]()
 
 
-def skill_names() -> list[str]:
-    return sorted(path.name for path in AGENTS_SKILLS.iterdir())
+def tracked_skill_names(root: Path = REPO_ROOT) -> list[str]:
+    """``root`` の Git が追跡している ``.agents/skills/<name>/`` の名前。"""
+    result = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "-z", "--", ".agents/skills"],
+        capture_output=True,
+        check=True,
+    )
+    paths = [Path(item.decode()) for item in result.stdout.split(b"\0") if item]
+    return sorted({path.parts[2] for path in paths if len(path.parts) > 3})
 
 
 def unified_names() -> list[str]:
-    return [name for name in skill_names() if name not in PENDING]
+    return [name for name in tracked_skill_names() if name not in PENDING]
 
 
 def frontmatter(skill_md: Path) -> dict[str, object]:
@@ -41,7 +49,7 @@ def frontmatter(skill_md: Path) -> dict[str, object]:
     return cast(dict[str, object], meta)
 
 
-@pytest.mark.parametrize("name", skill_names())
+@pytest.mark.parametrize("name", tracked_skill_names())
 def test_body_is_a_real_skill_directory(name: str) -> None:
     body = AGENTS_SKILLS / name
     assert not body.is_symlink(), f"{name}: 本体は .agents/skills に実体で置く"
@@ -74,3 +82,14 @@ def test_no_runtime_copies(name: str) -> None:
 def test_pending_skill_is_not_unified_yet(name: str) -> None:
     entry = CLAUDE_SKILLS / name
     assert entry.is_dir() and not entry.is_symlink(), f"{name} は一本化済み。PENDING から外す"
+
+
+def test_tracked_skill_names_ignore_untracked_skill_directories(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    for name in ("tracked", "xrift-world"):
+        skill = repo / ".agents" / "skills" / name
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", ".agents/skills/tracked/SKILL.md"], check=True)
+    assert tracked_skill_names(repo) == ["tracked"]
