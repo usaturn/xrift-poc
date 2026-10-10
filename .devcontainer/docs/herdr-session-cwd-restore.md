@@ -2,7 +2,7 @@
 
 ## 背景
 
-Dev Container を Reopen したあと、ターミナルの作業ディレクトリが `/workspaces/maatlog`
+Dev Container を Reopen したあと、ターミナルの作業ディレクトリが `/workspaces/xrift-poc`
 ではなく `/home/vscode` になる。`.devcontainer/zshrc.txt` の `herdrstart` は
 `cd -- "$workspace_dir"` を実行しているにもかかわらず、その結果がペインに反映されない。
 
@@ -14,7 +14,7 @@ herdr はセッション復元時、`~/.config/herdr/session.json` に保存済�
 サーバログ（`~/.config/herdr/herdr-server.log`）:
 
 ```
-herdr::server::headless: restored session already has workspaces; ignoring startup cwd cwd=/workspaces/maatlog
+herdr::server::headless: restored session already has workspaces; ignoring startup cwd cwd=/workspaces/xrift-poc
 ```
 
 `herdrstart` の `cd` が効くのは、herdr サーバが**新規**セッションを作る初回だけである
@@ -45,8 +45,8 @@ startup workspace が `/home/vscode` となり `session.json` を汚染する。
 
 | 保存されていた cwd | `new_cwd` | 復元後のペイン cwd |
 | --- | --- | --- |
-| `/home/vscode` | `/workspaces/maatlog` | `/home/vscode` |
-| `/workspaces/maatlog/.worktrees/maatlog-mvp` | `/workspaces/maatlog` | `/workspaces/maatlog/.worktrees/maatlog-mvp` |
+| `/home/vscode` | `/workspaces/xrift-poc` | `/home/vscode` |
+| `/workspaces/xrift-poc/.worktrees/xrift-mvp` | `/workspaces/xrift-poc` | `/workspaces/xrift-poc/.worktrees/xrift-mvp` |
 
 `new_cwd` が効くのは復元ではない新規ペイン・タブ・ワークスペース作成時のみで、目的を
 達成しない。
@@ -84,7 +84,7 @@ startup workspace が `/home/vscode` となり `session.json` を汚染する。
 各 workspace の `identity_cwd` と各 pane の `cwd` を検査する。
 
 - **保持**: `$HERDR_WORKSPACE_ROOT`（既定 `/workspaces`）配下に実在するディレクトリ。
-  `/workspaces/maatlog/.worktrees/...` はここで保持される
+  `/workspaces/xrift-poc/.worktrees/...` はここで保持される
 - **是正**: それ以外（`/home/vscode`、削除済み worktree など）は引数で受け取った
   ワークスペースディレクトリへ書き換える
 
@@ -158,7 +158,7 @@ status が厳密に `running: false` と確認できた場合だけ修復する�
 分離セッション（`herdr --session <name>` と `HERDR_CONFIG_PATH`）を使えば、稼働中の
 セッションを壊さずに検証できる。
 
-1. `session.json` に `/home/vscode` を仕込み、復元ペインが `/workspaces/maatlog` に
+1. `session.json` に `/home/vscode` を仕込み、復元ペインが `/workspaces/xrift-poc` に
    なること
 2. `session.json` に worktree パスを仕込み、**保持される**こと（退行防止）
 3. サーバ稼働中は `session.json` が書き換わらないこと

@@ -1,21 +1,71 @@
 # 個人開発環境
 
-このディレクトリとルートのエージェント設定は、private な親リポジトリで
-実ファイルとして管理する。環境構築に旧 `devenv` サブモジュールや
-`setup.sh` は使用しない。
+このディレクトリとルートのエージェント設定は、xrift-poc で実ファイルとして管理する。
+XRift のワールドとアイテムを作る開発環境であり、制作物（`items/<name>/`・`worlds/<name>/`）は
+管理しない。制作物は親の `.gitignore` で無視し、セットアップは作らず、clone もしない。
+開発環境は `usaturn/maatlog-poc` から移植した。移植元のコミットと変更点は、ルートの `PORTING.md` に記録する。
 
-公開用リポジトリは `public/` サブモジュールに置く。`public/` はアプリ本体の
-チェックアウトであり、`install_beforehand.bash` はこの checkout の locked な
-依存を使って Playwright を導入する。`public/` を通常の開発作業ツリーにはしない。
+`install_beforehand.bash` は、親の `tools/devenv` の locked な依存を使って Playwright を導入する。
 
 `postCreateCommand` は `/bin/bash .devcontainer/install_beforehand.bash` である。
 `.devcontainer/` を変更した場合は Dev Containers: Rebuild Container を実行する。
 Herdr の復元手順は `.devcontainer/docs/herdr-session-cwd-restore.md` を参照する。
 
+## ホームの bind mount と共有
+
+`devcontainer.json` は、ホストの次のディレクトリとファイルをコンテナにそのまま bind mount する。`initialize.bash` がホスト側で、無いものだけを作る（既存のものは変えない）。
+
+`~/.codex`・`~/.claude`・`~/.claude.json`・`~/.grok`・`~/.pi`・`~/.dsh`・`~/.local/share/devin`・`~/.config/devin`・`~/.local/share/cursor-agent`・`~/.config/gh`・`~/.cursor`・`~/.config/cursor`・`~/.config/gcloud`・`~/.xrift`
+
+- これらは maatlog-poc など、同じホームを mount する他のコンテナと共有になる。セットアップは共有のファイルを無条件に上書きしない（`models.json`・`agent-runner` の設定・Herdr の設定は無いときだけ置く。`~/.dsh/cordis.patch.yml` は管理ブロックが無いときだけ追記する）
+- `~/.dsh/cordis.patch.yml` の目印 `# BEGIN maatlog managed provider config` は、maatlog-poc と同じ文字列のまま使う。変えると、同じ provider のブロックが共有のファイルに 2 回追記される
+- `~/.xrift` は XRift CLI の認証情報（`config.json`）の保存先。`initialize.bash` が新しく作るときは権限を 700 にする。既にあるディレクトリの権限と中身は変えない。ディレクトリ以外のもの（シンボリックリンクを含む）がある場合は、理由を表示して止まる
+- `containerEnv` の `XRIFT_POC_ROOT` に、親の main checkout のパス（`${containerWorkspaceFolder}`）を設定する。`route_target.py`・`project_link.py`・`xrift-link` が使う
+
+## コンテナの権限と認証情報
+
+- `runArgs` の `--cap-add=SYS_ADMIN`・`seccomp=unconfined`・`apparmor=unconfined` は、Codex CLI の Linux sandbox（bubblewrap・user namespace）を Dev Container と WSL2 で動かすために付けている。コンテナに与える権限が増えることを理解したうえで使う
+- `ccd`・`cod`・`cur`・`dev` などのランチャーは、各エージェントの権限の確認を省略して起動する。移植元と同じ設定のまま移植した
+- bind mount したホームのファイルは、コンテナ内のどのプロセスからも読み書きできる。コンテナに入れただけでは認証情報は隔離されない
+- `userEnvProbe: loginShell` は、`~/.zshrc` の `herdrstart` が環境の取得中に Herdr を起動してハングし、Herdr の作業ディレクトリを汚すのを避けるために指定している
+
+## ポート
+
+| ポート | 用途 |
+|---|---|
+| 5173 | XRift のプレビュー（Vite）。`npm run dev -- --host 0.0.0.0` |
+| 5174〜5179 | 複数のプロジェクトを同時に動かすときの Vite（`--port 5174` など） |
+| 3000 | `xrift login` のコールバック（CLI が `localhost:3000/callback` に固定している）。`requireLocalPort` により、ホスト側で使われていると転送が失敗する。使っているプロセスを止めてからやり直す |
+| 3080 | DSH の web |
+
+## XRift の導入と作業ディレクトリ
+
+`install_beforehand.bash` は次を行う。再実行しても、既存の `items/`・`worlds/` の中身は変えない。
+
+- `items/` と `worlds/` を、無ければ作る。シンボリックリンクや通常のファイルがあるときは、理由を表示して止まる（Git の `/items/` は、ディレクトリにだけ一致するため）
+- XRift CLI（`@xrift/cli`）を 0.25.0 に固定して導入し、`xrift --version` が一致することを確かめる
+- `scripts/install_xrift_skills.bash` で、XRift 公式スキルを固定した版（`skills` CLI 1.7.2、`WebXR-JP/xrift-skills` のコミット 41d6504）で取得する。取得したスキルが固定したコミットと違う場合、または Git で無視されない場合は失敗する
+- `scripts/write_shell_block.py` で `zshrc.txt` を `~/.zshrc` に書く。書く範囲は `# >>> xrift-poc shell setup >>>` と `# <<< xrift-poc shell setup <<<` の間だけで、再実行しても 1 つのブロックのままになる。ブロックの外の利用者の設定は変えない
+- Playwright の chromium を、`tools/devenv` の locked な依存で導入する
+
+`zshrc.txt` が定義する主な補助は次のとおり。
+
+- `cod`: Codex を `project_root_markers=[".devcontainer"]` つきで起動し、制作物の中からでも親の `AGENTS.md` を読ませる
+- `xrift-link`: 独立した Git リポジトリの制作物に、親のスキルへのリンクを置く・外す（`xrift-link [link|unlink] [dir]`）
+- `xrift_poc_periodic_cleanup`: シェルの起動時に、`cleanup-workspace.bash` を 24 時間に 1 回の間隔で実行する。状態は `~/.cache/xrift-poc` に置く（`XRIFT_POC_CLEANUP_STATE_DIR` で変えられる）。`items/`・`worlds/` は片付けの対象にしない
+
+XRift 認証（`xrift login`）は利用者が手動で行う。ポートは前節を参照する。
+
+## 廃止した pi 拡張の警告
+
+共有の `~/.pi` に、廃止済みの拡張（`npm:pi-subagents`・`npm:pi-mcp-adapter`・`npm:pi-distill`・`npm:pi-extensions-tool-display`・`npm:pi-extensions-i18n`）が残っていると、`install_beforehand.bash` は警告を表示する。警告には削除のコマンド（`pi remove npm:<パッケージ名>`）を添える。セットアップはこれらを削除しない。`~/.pi` は他のコンテナと共有のため、削除は利用者が自分で行う。
+
+`npm:pi-subagents` が残っていると `@teelicht/pi-superagents` と `subagent` ツール名が衝突し、`pigo` などのランチャーが起動できない。また `~/.pi/agent/settings.json` の `extensions` に `-builtin:mcp` が残っている場合も、削除を促す警告を表示する。
+
 ## uv の Python 実行環境（#561）
 
 通常の開発・検証では、uv で使う・入れる Python を **3.14 以上**に揃える。
-`public/pyproject.toml` と `tools/devenv/pyproject.toml` の要件も
+`tools/devenv/pyproject.toml` の要件も
 `requires-python = ">=3.14"` である。PR レビュー helper は Python 3.14 の
 構文を使うため、旧版で起動すると処理を始める前に SyntaxError になる。
 
@@ -47,49 +97,6 @@ Dev Container 外の環境や CI の Python 選択は変えない。
 旧版を使う・入れる操作をしない。設定だけでは既存の旧版 venv も更新されない。
 uv の仕様は [Python versions](https://docs.astral.sh/uv/concepts/python-versions/) を参照する。
 
-### 既存コンテナの移行
-
-1. `uv python list --only-installed` と、利用中の venv の `pyvenv.cfg` にある
-   `home` / `version_info` を確認する。旧版に依存する処理を終了し、
-   旧版を参照するプロジェクトの venv があれば、要件に合う Python で作り直してから削除する。
-   他の作業者が利用中の interpreter は削除しない。
-2. 不要な uv 管理の 3.12 とキャッシュを整理する。
-
-   ```bash
-   uv python uninstall 3.12
-   uv cache prune
-   ```
-
-   他の 3.14 未満の版があれば、同じ確認をしてから個別に uninstall する。
-3. **人間が Dev Containers: Rebuild Container を実行する。**
-   `containerEnv` はコンテナ作成時に反映される。設定ファイルの保存、
-   installer の再実行、エージェントの再起動だけでは既存コンテナ全体に反映されない。
-   Rebuild 後に Herdr とエージェントを起動し直す。
-4. Herdr のペインで起動したエージェントのシェルでも、次を実行する。
-   上位に venv が無い一時ディレクトリで、通常実行は 3.14 以上、
-   未導入の 3.12 の明示指定は `No interpreter found` と
-   download が `manual` である旨を表示して失敗することを確認する。
-
-   ```bash
-   (
-       set -eu
-       CHECK_DIR="$(mktemp -d)"
-       trap 'rm -rf -- "${CHECK_DIR:?}"' EXIT
-       cd -- "$CHECK_DIR"
-       printf 'preference=%s downloads=%s\n' "${UV_PYTHON_PREFERENCE-}" "${UV_PYTHON_DOWNLOADS-}"
-       uv run --no-project python -c 'import sys; print(sys.version); assert sys.version_info >= (3, 14)'
-       if uv run --no-project --python 3.12 python -c 'import sys; print(sys.version)'; then
-           printf 'Unexpected: Python 3.12 is still available\n' >&2
-           exit 1
-       fi
-   )
-   ```
-
-   通常実行が旧版なら `UV_PYTHON`、`VIRTUAL_ENV`、PATH と venv の参照先を確認する。
-   3.12 の明示指定が成功するなら、まだ探索先に 3.12 がある。
-   なお、同じ環境変数を渡した子シェルでの検証は、実際の Rebuild と新しい
-   Herdr ペインでの確認の代わりにはならない。
-
 ### 3.14 未満で互換性を確認する場合
 
 必要な場合に限り、一意な一時ディレクトリへ interpreter とキャッシュを隔離する。
@@ -119,53 +126,6 @@ uv の仕様は [Python versions](https://docs.astral.sh/uv/concepts/python-vers
 これらの変数を通常のシェルへ export しない。互換性確認に使う旧版で
 リポジトリの helper を実行せず、確認が済んだら通常の 3.14 以上へ戻る。
 
-## `public/` checkout の検査と復旧
-
-`install_beforehand.bash` は初期化の早い段階で `public/` submodule を検査する。
-未初期化なら `git submodule update --init public` で親の gitlink が指すコミットを
-checkout し、clean であることと `pyproject.toml` / `uv.lock` の存在を確認する。
-clean な checkout の HEAD が gitlink と異なる場合は警告に留め、その checkout を
-そのまま使う（公開 `main` の方が進んでいる通常状態を許容するため）。
-
-`public/` が dirty な場合、または中身のある未初期化ディレクトリの場合は
-ERROR で停止し、既存の内容を上書きしない。次で利用者が状態を調べて解消する。
-
-```bash
-git -C public status --short
-```
-
-スクリプト側には force / reset / clean の経路を用意しない。
-
-この変更を含むコンテナの実 rebuild は `Dev Containers: Rebuild Container` で
-人間が行い、実施者・日時・結果は H の受け入れ証跡へ記録する。
-
-## npm への一本化（#147）と既存環境の移行
-
-リポジトリのタスクおよび Codex CLI の導入・更新は npm に一本化した
-（`npm install -g @openai/codex@latest`）。yarn は使わない。`devcontainer.json`
-の Node feature も `installYarnUsingApt` を既定の `false`（corepack 経由）に戻し、
-apt 経由での yarn 常駐インストールをやめた。`npm prefix -g` の `bin`（nvm feature が
-入れる Node の `bin`）は既定で PATH 上にあるため、Codex CLI 用に PATH を追加設定
-する必要はない。
-
-この変更は `$HOME` を再作成する Rebuild Container で完全に反映される
-(`$HOME` は `devcontainer.json` の `mounts` で明示している一部のディレクトリのみ
-ホスト側と共有し、それ以外は再作成のたびに作り直される)。**Rebuild していない
-既存のコンテナ**では、旧 `install_beforehand.bash` / `zshrc.txt` の内容が
-`~/.zshrc` に焼き込まれたままのため、以下のいずれかで手動移行する。
-
-1. 推奨: Dev Containers: Rebuild Container を実行する。
-2. リビルドしない場合は、次を手動で実行する。
-
-   ```bash
-   npm install -g @openai/codex@latest
-   rm -f ~/.yarn/bin/codex   # yarn 経由の古い codex シンボリックリンクを削除する
-   ```
-
-   合わせて `~/.zshrc` 内の yarn 関連 PATH 設定と `update()` 内の
-   `yarn global add @openai/codex@latest` を、最新の `.devcontainer/zshrc.txt`
-   の内容に置き換える（またはシェルを再作成する）。
-
 ## Codex で `CLAUDE.md` を指示ファイルとして読む
 
 Codex は標準では `CLAUDE.md` を自動で読まない。
@@ -180,28 +140,6 @@ project_doc_fallback_filenames = ["CLAUDE.md"]
 同じディレクトリに `AGENTS.override.md` または `AGENTS.md` がある場合はそちらが優先される。
 この設定は Dev Container に bind mount された `~/.codex` に保存される。
 詳しくは [Codex の指示ファイルの説明](https://learn.chatgpt.com/docs/agent-configuration/agents-md)を参照する。
-
-## Herdr サイドバーの設定移行
-
-`install_beforehand.bash` は `~/.config/herdr/config.toml` が存在しないときだけ
-`.devcontainer/herdr.toml` をコピーする。既に config を持っている環境では、
-`.devcontainer/herdr.toml` の変更は自動では反映されない。
-
-反映するには次を実行する。
-
-```bash
-cp ~/.config/herdr/config.toml ~/.config/herdr/config.toml.bak
-cp .devcontainer/herdr.toml ~/.config/herdr/config.toml
-herdr config check
-herdr server reload-config
-```
-
-`herdr config check` が `config: ok` を返さない場合は適用せず、バックアップへ戻す。
-個別に手を入れた設定がある場合は、`.devcontainer/herdr.toml` と既存 config の
-差分を既存 config へ移す。
-
-各エージェントは PATH 上の `herdr-agent-task` でタスク名を投稿する。
-使い方は `.agents/skills/herdr-agent-task/SKILL.md` を参照する。
 
 ## 汎用の非対話エージェント実行器（agent-runner）
 
@@ -303,40 +241,6 @@ worktree 内で作業する指示と、既存 checkout の内容の前後比較�
 停止未確認の領域を勝手に force で消さない。
 待ち方は [.agents/monitoring-runtimes.md](../.agents/monitoring-runtimes.md) を参照する。
 
-## herdr-pr-review からの移行（#571）
-
-旧 `herdr-pr-review`（Herdr のタブとペインを操作して PR レビューを起動する仕組み）は撤去した。
-`tools/herdr_pr_review/`、`herdr-pr-review` と `herdr-pr-review-launch` のラッパー、個人設定の雛形 `herdr-pr-review.toml` は、リポジトリにも導入処理にも無い。
-PR レビューは agent-runner と `pr-review`、修正ループは `pr-review-fix-loop` に移った。
-使い方は「汎用の非対話エージェント実行器（agent-runner）」の節と各スキルを参照する。ここには写さない。
-
-### 設定の対応
-
-旧個人設定 `~/.config/herdr-pr-review/config.toml` の値は、次のように新しい設定へ移す。
-値の自動変換はしない。旧設定の起動コマンドはペインのシェルに入力する文字列で、新しい agent 定義（`runtime`・`command`・`model`）と 1 対 1 に対応しないためである。
-
-| 旧個人設定 | 新しい設定 |
-|---|---|
-| `reviewers = [...]` | 個人設定 `~/.config/agent-runner/config.toml` の `[workflows.review.assignments.inspect]` の `agents`。実行ごとに変えるときは `--assign inspect=agent-a,agent-b` |
-| `planner = "..."` | `[workflows.fix.assignments.implement]` の `agents` |
-| `detect_timeout_seconds` / `review_timeout_seconds` | `[roles.<role>]` の `deadline_seconds` |
-| `[loop]` の `max_iterations` / `hold_action` | `pr-review-fix-loop` のオプション `--max-cycles` / `--hold-action` |
-| 起動コマンド（`ccdo`・`dev`・`piccd`・`pigs` など） | `[agents.<id>]`。雛形に `claude-opus`・`devin-swe`・`pi-deepseek`・`pi-gpt` などが定義済み |
-
-### 移行の手順
-
-1. 新しい個人設定を用意する。`install_beforehand.bash` は `~/.config/agent-runner/config.toml` が無いときだけ、雛形 `.devcontainer/agent-runner.toml` をコピーする。既にあれば更新しない。既定の構成のままでよければ、書くものは無い。
-2. 旧個人設定のレビュアーの構成を引き継ぎたいときは、上の表に従って新しい個人設定の該当する節を書く。同じ役割には同じ `model` の agent を並べられない。詳しくは「レビュアーの選び方」を参照する。
-3. 新しい設定で足りることを確かめる。`uv run --project tools/devenv python -m tools.agent_runner check` が成功し、`list` で使う agent が見える。
-4. 旧個人設定のディレクトリ `~/.config/herdr-pr-review/` は、導入処理も移行手順も上書きも削除もしない。不要になったら自分で消す。
-5. 旧ラッパーの symlink は、導入処理が作らなくなっただけで、既存のものは消えない。リンク先が無くなっているので、不要なら次で消す。
-
-   ```bash
-   rm -- ~/bin/herdr-pr-review ~/bin/herdr-pr-review-launch
-   ```
-
-6. 旧ループの実行中の残り（`<親の main worktree>/.git/herdr-pr-review/locks/`、`tmp/agents/herdr-pr-review-*`、`/tmp/xrift-poc-pr-loop-*` のうち旧 run のもの）は自動では消えない。実行中の旧 run が無いことを確かめてから、中身を確認して手で片付ける。
-
 ## エージェント向けツールの導入
 
 `install_beforehand.bash` は Claude Code のプラグインと Playwright chromium を
@@ -348,7 +252,7 @@ Dev Container を使わないローカル環境のみ、以下を手動で順に
 2. `claude plugin install example-skills@anthropic-agent-skills`
 3. `claude plugin install web-quality-skills@addy-web-quality-skills`
 4. `claude plugin install ripgrep@alberto-marketplace`
-5. `cd public && uv run --locked playwright install --with-deps chromium`
+5. `uv run --project tools/devenv --locked playwright install --with-deps chromium`
 6. `mkdir -p ~/.pi/agent && cp .devcontainer/pi-models.json ~/.pi/agent/models.json`
 7. `mkdir -p ~/.local/bin && install -m 0755 .devcontainer/pigo ~/.local/bin/pigo`
 8. `install -m 0755 .devcontainer/pigod ~/.local/bin/pigod`
@@ -664,26 +568,6 @@ zsh scripts/setup_pi_superagents.zsh --if-absent
 `--if-absent` は共有 config と既存ランチャーの tier を保持し、新規 tier を配置する。
 新規ランチャーの tier を後からリポジトリの定義に揃えたい場合は、下の更新手順を使う。
 
-### pi-distill の撤去（#508）
-
-pi-distill（ツール出力の Distillation）は廃止した。インストール対象から外す
-だけでは bind mount 側の登録が残るため、`install_beforehand.bash` はリビルド時に
-`pi remove npm:pi-distill` で既存環境の登録と pi 管理の npm マニフェストも
-掃除する。`pi-extensions-tool-display` / `pi-extensions-i18n` が単独登録されて
-いる環境でも同じステップで外す。
-
-リビルドしない既存環境では、次を実行して登録を消し、`~/.zshrc` に残った
-`PI_DISTILL_*` と `PI_EXTENSIONS_LOCALE` の export を手で取り除く。
-
-```bash
-pi remove npm:pi-distill
-```
-
-`~/.pi/agent/extensions/pi-distill/` と `~/.pi/agent/extensions/pi-tool-display/`
-の設定ディレクトリ、および `~/.pi/agent/models.json` の `deepinfra-distill`
-ブロックは、参照されなくなった不活性な残骸として残る。消す場合は利用者側で
-削除する。手動選択用の `deepinfra` provider は残してある。
-
 ### setup スクリプトを使う場面
 
 `scripts/setup_pi.zsh`（deepinfra）、`scripts/setup_pi_opencode_go.zsh`
@@ -832,7 +716,7 @@ pi update npm:@teelicht/pi-superagents
 その場合は `pi install npm:@teelicht/pi-superagents@1.14.3` で確認済み基準版へ
 指定を変更できる。既に v1.14.3 以降なら下げる必要はない。更新後に同じ版確認を行う。
 
-次に、#408 の撤去変更を含むリポジトリのセットアップへ更新してから、下の任意整理に進む。
+次に、最新のセットアップへ更新してから、下の任意整理に進む。
 新しい `scripts/setup_pi_superagents.zsh` は `~/.pi/agent/settings.json` を
 作成・変更しない。旧セットアップを残したままエントリだけ削除すると、再実行で追加される。
 
@@ -846,7 +730,7 @@ v1.14.3 の隔離検証では、自動探索と同じ絶対パスに解決され
 
 ##### 検証範囲
 
-[隔離検証 #409](https://github.com/usaturn/maatlog-poc/issues/409#issuecomment-5773449902)では、
+移植元 maatlog-poc の[隔離検証 #409](https://github.com/usaturn/maatlog-poc/issues/409#issuecomment-5773449902)では、
 pi-superagents 1.14.3 / Pi loader 0.85.1 / Superpowers 6.4.1 について、
 旧エントリあり・なしと `includeProject` true・false の4条件で、
 `using-superpowers`、`brainstorming`、`writing-plans`、
