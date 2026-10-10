@@ -6,6 +6,8 @@ readonly GITLEAKS_VERSION="8.30.1"
 readonly GITLEAKS_ARCHIVE_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
 # DeepSeek Harness は Developer Preview のため、Issue #282 指定の版に固定する。
 readonly DSH_VERSION="0.2.0-rc.2"
+# 2026-10-10 に npm の latest で確認した版。更新は README の手順で確かめてから変える。
+readonly XRIFT_CLI_VERSION="0.25.0"
 readonly DSH_PI_TUI_VERSION="0.5.0"
 readonly DSH_COMMANDCODE_PROVIDER_VERSION="0.12.2"
 readonly DSH_NATIVE_SCRIPT_ALLOWLIST="@deepseek-ai/dsh-subprocess-local,koffi,node-pty"
@@ -18,7 +20,7 @@ readonly DSH_MANAGED_BLOCK_END="# END maatlog managed provider config"
 # 打ち切る（2026-09-13 のリビルド中断インシデント）。継続してよい処理
 # （workspace cleanup）だけを明示的に続行させるため、スクリプト全体には set -e を
 # 付けない。
-readonly STEP_TOTAL=29
+readonly STEP_TOTAL=31
 STEP_NUMBER=0
 
 step() {
@@ -646,6 +648,33 @@ if ! npx -y skills add herdrdev/herdr --skill herdr -g -y -a claude-code -a pi -
 fi
 if ! npx -y skills add vercel-labs/skills@find-skills -g -y -a claude-code -a pi -a grok; then
     fail "Failed to install the find-skills skill."
+fi
+
+# XRift CLI は版を固定して導入する。zsh の update() では更新しない（README の更新手順を参照）。
+install_xrift_cli() {
+    local version
+    if ! npm install -g "@xrift/cli@${XRIFT_CLI_VERSION}"; then
+        echo "npm install -g @xrift/cli@${XRIFT_CLI_VERSION} failed." >&2
+        return 1
+    fi
+    if ! command -v xrift >/dev/null 2>&1; then
+        echo "xrift is not on PATH after the install." >&2
+        return 1
+    fi
+    version="$(xrift --version)" || return 1
+    if [ "${version//[[:space:]]/}" != "${XRIFT_CLI_VERSION}" ]; then
+        echo "Unexpected xrift version: ${version} (expected ${XRIFT_CLI_VERSION})." >&2
+        return 1
+    fi
+}
+step "Installing the XRift CLI"
+if ! install_xrift_cli; then
+    fail "XRift CLI installation failed."
+fi
+
+step "Installing the XRift skills"
+if ! bash scripts/install_xrift_skills.bash; then
+    fail "XRift skills installation failed."
 fi
 
 step "Installing uv"

@@ -23,3 +23,8 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
+
+# セットアップで取得する XRift 公式スキル（scripts/install_xrift_skills.bash）
+/.agents/skills/xrift-*/
+/.claude/skills/xrift-*
+/skills-lock.json

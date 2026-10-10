@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from tools.test_support.xrift import SKILLS_NPX_FAKE
+
 DEVCONTAINER_DIR = Path(__file__).resolve().parents[3] / ".devcontainer"
 REPO_ROOT = DEVCONTAINER_DIR.parent
 INSTALL_SCRIPT = DEVCONTAINER_DIR / "install_beforehand.bash"
@@ -144,7 +146,7 @@ exit 0
 """
 )
 
-NPX = "#!/bin/bash\n" + FAIL_HOOK + "exit 0\n"
+NPX = "#!/bin/bash\n" + FAIL_HOOK + SKILLS_NPX_FAKE.removeprefix("#!/bin/bash\n")
 
 ZSH = "#!/bin/bash\n" + FAIL_HOOK + "exit 0\n"
 
@@ -171,6 +173,20 @@ printf 'uv cwd=%s args=%s\\n' "$PWD" "$*" >> "${FAKE_CALLS}"
 exit 0
 """
 )
+
+XRIFT = """\
+#!/bin/bash
+printf 'xrift %s\\n' "$*" >> "${FAKE_CALLS}"
+for arg in "$@"; do
+    case "${arg}" in
+    --version)
+        printf '%s\\n' "${FAKE_XRIFT_VERSION}"
+        exit 0
+        ;;
+    esac
+done
+exit 0
+"""
 
 DSH = """\
 #!/bin/bash
@@ -299,6 +315,7 @@ def _run_installer(
         ("npm", NPM),
         ("pi", PI),
         ("dsh", DSH),
+        ("xrift", XRIFT),
         ("cp", CP),
         ("python3", PYTHON3),
     ):
@@ -317,6 +334,9 @@ def _run_installer(
     dsh_version = re.search(r'(?m)^readonly DSH_VERSION="([^"]+)"$', _install_text())
     assert dsh_version is not None, "DSH_VERSION must be declared"
 
+    xrift_version = re.search(r'(?m)^readonly XRIFT_CLI_VERSION="([^"]+)"$', _install_text())
+    assert xrift_version is not None, "XRIFT_CLI_VERSION must be declared"
+
     env = {
         **os.environ,
         "HOME": str(home),
@@ -329,6 +349,7 @@ def _run_installer(
         "FAKE_CALLS": str(tmp_path / "calls.log"),
         "FAKE_STUB_DIR": str(stub_dir),
         "FAKE_DSH_VERSION": dsh_version.group(1),
+        "FAKE_XRIFT_VERSION": xrift_version.group(1),
         "FAKE_DSH_DUMP_CONFIG": str(dump_config),
         # workspace cleanup は dry-run に固定し、テストから実ファイルを消させない。
         "XRIFT_POC_CLEANUP_TMP_ROOT": str(tmp_path / "cleanup"),
@@ -412,6 +433,8 @@ FAIL_LOUD_INJECTIONS = (
     "zsh scripts/setup_pi_superagents.zsh --if-absent",
     "herdrdev/herdr",
     "vercel-labs/skills@find-skills",
+    "npm install -g @xrift/cli",
+    "https://github.com/WebXR-JP/xrift-skills/tree/",
     "https://astral.sh/",
     "https://starship.rs/",
     "cp .devcontainer/starship.toml",
