@@ -216,7 +216,7 @@ def _worktrees(target: Path) -> list[Path]:
 
 
 def _live_entries(target: Path, source: Path) -> list[str]:
-    """いずれかの worktree に実在する、``source`` 配下のスキルへのリンクの除外行。"""
+    """実在する管理リンクを除外し、同名の実ディレクトリは再び含める行の対。"""
     entries: set[str] = set()
     for worktree in _worktrees(target):
         for link_dir in LINK_DIRS:
@@ -225,17 +225,21 @@ def _live_entries(target: Path, source: Path) -> list[str]:
             for path in (worktree / link_dir).iterdir():
                 if path.is_symlink() and Path(os.readlink(path)) == source / path.name:
                     entries.add(f"/{(link_dir / path.name).as_posix()}")
-    return sorted(entries)
+    # info/exclude は共有される。末尾 / の否定は実ディレクトリだけに一致し、リンクは無視したままにする。
+    return [line for entry in sorted(entries) for line in (entry, f"!{entry}/")]
 
 
 def _hidden_notes(target: Path, entries: list[str], source: Path) -> list[str]:
     """除外行が残っているために、この worktree の利用者のものが Git から隠れている場合の注意。"""
     notes: list[str] = []
     for entry in entries:
-        relative = Path(entry.removeprefix("/"))
+        relative = _managed_relative(entry)
+        if relative is None:
+            continue
         path = target / relative
         ours = path.is_symlink() and Path(os.readlink(path)) == source / relative.name
-        if (path.exists() or path.is_symlink()) and not ours:
+        directory = path.is_dir() and not path.is_symlink()
+        if (path.exists() or path.is_symlink()) and not ours and not directory:
             notes.append(
                 f"{relative.as_posix()}: 他の worktree のリンクのため除外されており、git status に表示されない"
             )
@@ -289,6 +293,9 @@ def unlink(directory: Path, env_root: Path) -> Report:
     if outside:
         raise LinkError(EXIT_ERROR, _outside_message(outside, exclude))
     for entry in entries:
+        if entry.startswith("!/") and entry.endswith("/") and _managed_relative(entry[1:-1]) is not None:
+            # ディレクトリの否定行は削除対象ではない。
+            continue
         relative = _managed_relative(entry)
         if relative is None:
             report.kept.append(f"{entry}: 管理ブロックの行として想定していない")

@@ -227,17 +227,136 @@ def test_replaced_link_is_no_longer_excluded_after_relink(env: EnvRepo) -> None:
     assert "alpha/SKILL.md" in git(project, "status", "--porcelain", "-uall")
 
 
-def test_relink_reports_user_files_hidden_by_another_worktrees_link(env: EnvRepo) -> None:
+@pytest.mark.parametrize("parent", [".agents/skills", ".claude/skills"])
+@pytest.mark.parametrize("timing", ["before-link", "after-link", "new-worktree"])
+def test_user_skill_directory_stays_visible_across_worktrees(env: EnvRepo, parent: str, timing: str) -> None:
+    # 除外を実行時の状態だけで決めると、後から作ったディレクトリや worktree を保護できない。
     project = create_product(env.root, "worlds", "my-world", origin_url=ORIGIN)
-    worktree = create_owned_worktree(project, project / ".worktrees", name="feature")
-    own = worktree / ".agents" / "skills" / "alpha"
-    own.mkdir(parents=True)
-    (own / "SKILL.md").write_text("own\n", encoding="utf-8")
-    project_link.link(project, env.root)
+    if timing == "new-worktree":
+        project_link.link(project, env.root)
+    worktree = create_owned_worktree(project, project / ".worktrees", name="利用者 worktree")
+    if timing == "after-link":
+        project_link.link(project, env.root)
+    own = worktree / parent / "alpha" / "SKILL.md"
+    own.parent.mkdir(parents=True)
+    own.write_text("利用者のスキル\n", encoding="utf-8")
+    other = worktree / parent / "other" / "SKILL.md"
+    other.parent.mkdir()
+    other.write_text("別名のスキル\n", encoding="utf-8")
+    if timing == "before-link":
+        project_link.link(project, env.root)
+
+    status = git(worktree, "status", "--porcelain", "-uall", "-z")
+    assert f"?? {parent}/alpha/SKILL.md\0" in status
+    assert f"?? {parent}/other/SKILL.md\0" in status
+    assert git(project, "check-ignore", f"{parent}/alpha").strip() == f"{parent}/alpha"
+    git(worktree, "add", "-A")
+    staged = set(git(worktree, "diff", "--cached", "--name-only", "-z").split("\0")) - {""}
+    assert staged == {f"{parent}/alpha/SKILL.md", f"{parent}/other/SKILL.md"}
+    assert own.read_text(encoding="utf-8") == "利用者のスキル\n"
 
     report = project_link.link(worktree, env.root)
+    assert not any("git status" in note and f"{parent}/alpha" in note for note in report.kept)
+    assert own.read_text(encoding="utf-8") == "利用者のスキル\n"
 
-    assert any(".agents/skills/alpha" in note and "他の worktree" in note for note in report.kept)
+
+@pytest.mark.parametrize("parent", [".agents/skills", ".claude/skills"])
+def test_user_skill_directory_blocks_worktree_removal(env: EnvRepo, parent: str) -> None:
+    project = create_product(env.root, "worlds", "my-world", origin_url=ORIGIN)
+    project_link.link(project, env.root)
+    worktree = create_owned_worktree(project, project / ".worktrees", name="feature")
+    own = worktree / parent / "alpha" / "SKILL.md"
+    own.parent.mkdir(parents=True)
+    own.write_text("own\n", encoding="utf-8")
+
+    result = subprocess.run(
+        ["git", "-C", str(project), "worktree", "remove", str(worktree)], capture_output=True, text=True, check=False
+    )
+
+    assert result.returncode != 0, "利用者の未追跡スキルを含む worktree を削除してはいけない"
+    assert own.read_text(encoding="utf-8") == "own\n"
+    assert str(worktree) in git(project, "worktree", "list", "--porcelain")
+
+
+@pytest.mark.parametrize("parent", [".agents/skills", ".claude/skills"])
+def test_user_skill_directory_blocks_switch(env: EnvRepo, parent: str) -> None:
+    project = create_product(env.root, "worlds", "my-world", origin_url=ORIGIN)
+    git(project, "switch", "-c", "with-skill")
+    tracked = project / parent / "alpha" / "SKILL.md"
+    tracked.parent.mkdir(parents=True)
+    tracked.write_text("tracked\n", encoding="utf-8")
+    git(project, "add", f"{parent}/alpha/SKILL.md")
+    git(project, "commit", "-qm", "tracked skill")
+    git(project, "switch", "main")
+    project_link.link(project, env.root)
+    worktree = create_owned_worktree(project, project / ".worktrees", name="feature")
+    own = worktree / parent / "alpha" / "SKILL.md"
+    own.parent.mkdir(parents=True)
+    own.write_text("own\n", encoding="utf-8")
+    head = git(worktree, "rev-parse", "HEAD")
+
+    result = subprocess.run(
+        ["git", "-C", str(worktree), "switch", "with-skill"], capture_output=True, text=True, check=False
+    )
+
+    assert result.returncode != 0, "利用者の未追跡スキルをブランチの内容で上書きしてはいけない"
+    assert own.read_text(encoding="utf-8") == "own\n"
+    assert git(worktree, "rev-parse", "HEAD") == head
+
+
+@pytest.mark.parametrize("action", ["link", "unlink"])
+def test_legacy_excludes_migrate_without_hiding_user_directories(env: EnvRepo, action: str) -> None:
+    project = create_product(env.root, "worlds", "my-world", origin_url=ORIGIN)
+    user = create_owned_worktree(project, project / ".worktrees", name="user")
+    keeper = create_owned_worktree(project, project / ".worktrees", name="keeper")
+    own = user / ".agents" / "skills" / "alpha" / "SKILL.md"
+    own.parent.mkdir(parents=True)
+    own.write_text("own\n", encoding="utf-8")
+    project_link.link(project, env.root)
+    project_link.link(keeper, env.root)
+    exclude = Path(git(project, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude").strip())
+    # 実際の旧形式を入力として与え、生成された行の照合ではなく Git で移行結果を確認する。
+    old_entries = [f"/{parent}/{name}" for parent in (".agents/skills", ".claude/skills") for name in SKILLS]
+    exclude.write_text(
+        "\n".join(["/notes/", project_link.BLOCK_BEGIN, *old_entries, project_link.BLOCK_END, "/scratch/"]) + "\n",
+        encoding="utf-8",
+    )
+
+    getattr(project_link, action)(project, env.root)
+
+    assert "?? .agents/skills/alpha/SKILL.md\0" in git(user, "status", "--porcelain", "-uall", "-z")
+    assert own.read_text(encoding="utf-8") == "own\n"
+    assert git(keeper, "status", "--porcelain", "--", ".agents", ".claude") == ""
+    assert git(project, "check-ignore", "notes/file", "scratch/file").splitlines() == ["notes/file", "scratch/file"]
+
+
+def test_unlink_accepts_directory_reinclude_entries(env: EnvRepo) -> None:
+    project = create_product(env.root, "worlds", "my-world", origin_url=ORIGIN)
+    project_link.link(project, env.root)
+
+    report = project_link.unlink(project, env.root)
+
+    assert report.kept == []
+    assert links(project) == {}
+
+
+@pytest.mark.parametrize("parent", [".agents/skills", ".claude/skills"])
+def test_directory_protection_does_not_override_user_gitignore(env: EnvRepo, parent: str) -> None:
+    project = create_product(env.root, "worlds", "my-world", origin_url=ORIGIN)
+    worktree = create_owned_worktree(project, project / ".worktrees", name="feature")
+    ignore = worktree / ".gitignore"
+    setting = f"/{Path(parent).parts[0]}/\n"
+    ignore.write_text(setting, encoding="utf-8")
+    own = worktree / parent / "alpha" / "SKILL.md"
+    own.parent.mkdir(parents=True)
+    own.write_text("own\n", encoding="utf-8")
+
+    project_link.link(project, env.root)
+
+    assert git(worktree, "status", "--porcelain", "-uall", "--", parent) == ""
+    assert git(worktree, "check-ignore", f"{parent}/alpha/SKILL.md").strip() == f"{parent}/alpha/SKILL.md"
+    assert ignore.read_text(encoding="utf-8") == setting
+    assert own.read_text(encoding="utf-8") == "own\n"
 
 
 @pytest.mark.parametrize("component", [".agents", ".claude", ".agents/skills", ".claude/skills"])
