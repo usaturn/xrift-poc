@@ -12,7 +12,8 @@ Claude Code・pi・Codex は、独立した Git リポジトリの中から起�
   たどった先が同じリポジトリの別の worktree の中なら、そのリンクは消さずに残す。どの worktree の中でもない
   （共有ディレクトリなど）リンクを消すことになる場合は、何も変えずに止まる（usaturn/xrift-poc#4）
 - 管理ブロックの行は ``info/exclude`` が制作物のすべての worktree で共有されるため、link・unlink のたびに
-  「いずれかの worktree に実在する、ルートのスキルへのリンク」から作り直す。空になったときだけブロックを外す
+  「いずれかの worktree に実在する、ルートのスキルへのリンク」から作り直す。各除外行の直後にディレクトリだけを
+  再び含める否定行を置き、別 worktree の同名の利用者ディレクトリを隠さない。空になったときだけブロックを外す
 
 ``dir`` は ``<root>/items/<name>``・``<root>/worlds/<name>`` の配下にある Git の作業ツリーのルート
 （制作物のリポジトリか、その中に作った worktree）に限る。
@@ -230,19 +231,18 @@ def _live_entries(target: Path, source: Path) -> list[str]:
 
 
 def _hidden_notes(target: Path, entries: list[str], source: Path) -> list[str]:
-    """除外行が残っているために、この worktree の利用者のものが Git から隠れている場合の注意。"""
+    """共有の除外で隠れる利用者のファイル・リンクを、worktree の場所付きで報告する。"""
     notes: list[str] = []
-    for entry in entries:
-        relative = _managed_relative(entry)
-        if relative is None:
-            continue
-        path = target / relative
-        ours = path.is_symlink() and Path(os.readlink(path)) == source / relative.name
-        directory = path.is_dir() and not path.is_symlink()
-        if (path.exists() or path.is_symlink()) and not ours and not directory:
-            notes.append(
-                f"{relative.as_posix()}: 他の worktree のリンクのため除外されており、git status に表示されない"
-            )
+    for worktree in _worktrees(target):
+        for entry in entries:
+            relative = _managed_relative(entry)
+            if relative is None:
+                continue
+            path = worktree / relative
+            ours = path.is_symlink() and Path(os.readlink(path)) == source / relative.name
+            directory = path.is_dir() and not path.is_symlink()
+            if (path.exists() or path.is_symlink()) and not ours and not directory:
+                notes.append(f"{path}: 他の worktree のリンクのため除外されており、git status に表示されない")
     return notes
 
 

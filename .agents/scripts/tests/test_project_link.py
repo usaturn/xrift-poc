@@ -359,6 +359,64 @@ def test_directory_protection_does_not_override_user_gitignore(env: EnvRepo, par
     assert own.read_text(encoding="utf-8") == "own\n"
 
 
+@pytest.mark.parametrize("parent", [".agents/skills", ".claude/skills"])
+@pytest.mark.parametrize("action", ["link", "unlink"])
+@pytest.mark.parametrize("kind", ["file", "symlink-dir", "broken-symlink"])
+@pytest.mark.parametrize("operation", ["main", "sibling"])
+def test_hidden_user_entries_are_reported_from_every_worktree(
+    env: EnvRepo, parent: str, action: str, kind: str, operation: str
+) -> None:
+    project = create_product(env.root, "worlds", "my-world", origin_url=ORIGIN)
+    sibling = create_owned_worktree(project, project / ".worktrees", name="sibling")
+    user = create_owned_worktree(project, project / ".worktrees", name="利用者 worktree")
+    project_link.link(project, env.root)
+    project_link.link(sibling, env.root)
+    own = user / parent / "alpha"
+    own.parent.mkdir(parents=True)
+    destination = Path("../..") / ("my-skill" if kind == "symlink-dir" else "missing")
+    if kind == "file":
+        own.write_text("利用者のファイル\n", encoding="utf-8")
+    else:
+        if kind == "symlink-dir":
+            (user / "my-skill").mkdir()
+            (user / "my-skill" / "SKILL.md").write_text("利用者のスキル\n", encoding="utf-8")
+        own.symlink_to(destination, target_is_directory=True)
+    directory = user / parent / "xrift-world" / "SKILL.md"
+    directory.parent.mkdir()
+    directory.write_text("own directory\n", encoding="utf-8")
+    target = project if operation == "main" else sibling
+
+    report = getattr(project_link, action)(target, env.root)
+
+    assert any(str(user) in note and f"{parent}/alpha" in note for note in report.kept)
+    assert not any(str(user) in note and f"{parent}/xrift-world" in note for note in report.kept)
+    assert git(user, "check-ignore", f"{parent}/alpha").strip() == f"{parent}/alpha"
+    if kind == "file":
+        assert own.read_text(encoding="utf-8") == "利用者のファイル\n"
+    else:
+        assert os.readlink(own) == str(destination)
+        if kind == "symlink-dir":
+            assert (own / "SKILL.md").read_text(encoding="utf-8") == "利用者のスキル\n"
+    assert directory.read_text(encoding="utf-8") == "own directory\n"
+    keeper = sibling if operation == "main" else project
+    assert git(keeper, "status", "--porcelain", "--", ".agents", ".claude") == ""
+
+
+def test_unlink_does_not_report_removed_exclusions(env: EnvRepo) -> None:
+    project = create_product(env.root, "worlds", "my-world", origin_url=ORIGIN)
+    worktree = create_owned_worktree(project, project / ".worktrees", name="feature")
+    project_link.link(project, env.root)
+    own = worktree / ".agents" / "skills" / "alpha"
+    own.parent.mkdir(parents=True)
+    own.write_text("own\n", encoding="utf-8")
+
+    report = project_link.unlink(project, env.root)
+
+    assert report.kept == []
+    assert "?? .agents/skills/alpha\0" in git(worktree, "status", "--porcelain", "-uall", "-z")
+    assert own.read_text(encoding="utf-8") == "own\n"
+
+
 @pytest.mark.parametrize("component", [".agents", ".claude", ".agents/skills", ".claude/skills"])
 def test_unlink_stops_without_change_when_its_link_resolves_outside(
     env: EnvRepo, tmp_path: Path, component: str
