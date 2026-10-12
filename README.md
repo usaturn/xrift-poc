@@ -99,6 +99,7 @@ xrift check item --build
 - Git 未初期化の制作物では、そのまま Claude Code・pi・Codex が親の共通の指示と XRift スキルを読みます
 - 独立した Git リポジトリの制作物では、最初に一度 `xrift-link`（`project_link.py link`）を実行します。親のスキルへのリンクを制作物の `.agents/skills`・`.claude/skills` に置きます。制作物の既存のファイル・スキル・設定は上書きしません。リンクは制作物の `.git/info/exclude` で無視されるので、制作物の Git の状態は変わりません。外すときは `xrift-link unlink` です。制作物の `.agents`・`.claude` などをシンボリックリンクにしている場合、リンク先が制作物の別の worktree の中なら、`xrift-link unlink` はそこにあるリンクを残します。制作物のどの worktree の中でもない場所（共有ディレクトリなど）のリンクを消すことになる場合は、何も変えずに止まり、手で外す方法を表示します
 - 制作物の worktree は、制作物のディレクトリの中（例: `worlds/<name>/.worktrees/<branch>`）に作り、そこでも `xrift-link` を実行します。親の外に作った worktree は、親の指示とスキルを読めません
+- `info/exclude` はすべての worktree で共有されます。`xrift-link` はリンクを無視しつつ、同名の利用者の実ディレクトリは無視しない否定行を置きます。別 worktree やリンク後に作ったスキルディレクトリも `git status` に表示され、未追跡の内容を消す `git worktree remove`（`--force` なし）や、同じパスを上書きする `git switch` は拒否されます。同名の通常ファイル・利用者のシンボリックリンク（壊れたリンクを含む）は無視されたままなので、`link`・`unlink` は全 worktree の該当する場所を報告します。これらは Git による削除・上書きからの保護対象ではありません。制作物自身の `.gitignore` などがスキルの上位ディレクトリを無視している場合も、その設定を優先し変更しません。以前の否定行の無い管理ブロックは、その制作物で次に `link`・`unlink` を実行したときに更新されます
 - Codex は `cod` で起動します。独立した Git リポジトリの制作物から起動しても、親の `AGENTS.md` を読むよう `project_root_markers=[".devcontainer"]` を指定しています。この指定は codex-cli 0.162.1 で確かめました。将来の版で `project_root_markers` の意味が変わると、親の `AGENTS.md` を読めなくなるおそれがあるので、Codex を更新したら制作物から起動して確かめ直します。制作物が自前の `.devcontainer` を持つ場合は、その制作物のディレクトリがルートになり、親の `AGENTS.md` を読めません
 - Cursor CLI・Grok Build・DSH の読み込みは確かめていません。手動で確かめる手順は [PORTING.md](PORTING.md) の「未実施」にあります
 
