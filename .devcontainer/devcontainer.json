@@ -25,6 +25,8 @@
     "userEnvProbe": "loginShell",
     "containerEnv": {
         "SHELL": "/usr/bin/zsh",
+        "PLANNOTATOR_REMOTE": "1",
+        "PLANNOTATOR_PORT": "19432-19441",
         // #561: cwd に依存せず system Python を優先し、旧版の暗黙 download を止める。
         "UV_PYTHON_PREFERENCE": "system",
         "UV_PYTHON_DOWNLOADS": "manual",
@@ -64,7 +66,11 @@
 	// 3000: xrift login のコールバック（CLI が localhost:3000/callback に固定している）。
 	//       ホスト側で使われていたら別のポートへ振り替えずに失敗させる（requireLocalPort）。
 	// 3080: DSH の web（#282）。
-	"forwardPorts": [5173, 3000, 3080],
+	// 19432-19441: Pi / Superpowers の Plannotator レビュー用。空きポートを選ぶ。
+	"forwardPorts": [
+		5173, 3000, 3080,
+		19432, 19433, 19434, 19435, 19436, 19437, 19438, 19439, 19440, 19441
+	],
 	"portsAttributes": {
 		"5173": { "label": "XRift preview (Vite)" },
 		"5174-5179": { "label": "XRift preview (Vite, additional projects)" },

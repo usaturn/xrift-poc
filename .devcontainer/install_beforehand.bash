@@ -440,6 +440,7 @@ step "Installing the pi extensions"
 for extension in \
     npm:@jc4649/notify \
     npm:@upstash/context7-pi \
+    npm:@plannotator/pi-extension \
     npm:pi-safe-search \
     npm:pi-diet-ripgrep \
     git:github.com/obra/superpowers \

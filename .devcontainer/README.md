@@ -22,7 +22,7 @@ Herdr の復元手順は `.devcontainer/docs/herdr-session-cwd-restore.md` を�
   - 導入・更新する（再実行のたびに実行し、共有のディレクトリを書き換える）:
     - Claude Code のマーケットプレイス `dashed/claude-marketplace` の追加と、プラグイン 3 種（`example-skills`・`web-quality-skills`・`ripgrep`）の導入（`~/.claude`）
     - `npx skills add ... -g` による `herdr`・`find-skills` のグローバルスキルの導入（`~/.claude`・`~/.pi`・`~/.grok`）。XRift スキルは `-g` を付けず、親のリポジトリ内（`.agents/skills`・`.claude/skills`）に導入するので、共有のディレクトリは書き換えない
-    - pi の拡張の導入（`@teelicht/pi-superagents` と、`git:github.com/obra/superpowers` を含む 8 種。`~/.pi`）
+    - pi の拡張の導入（`@teelicht/pi-superagents` と、`git:github.com/obra/superpowers`・`npm:@plannotator/pi-extension` など。`~/.pi`）
     - Devin のプラグイン `obra/superpowers` の導入（ログイン済みのときだけ。`~/.local/share/devin`・`~/.config/devin`）
     - DSH のプラグインの追加（`web` プロファイルと pi-tui プロファイルに `@mars-sea/dsh-commandcode-provider`、pi-tui プロファイルに `@xmoon76/dsh-pi-tui`。`~/.dsh`）
     - Claude Code・Grok Build・Cursor CLI・Devin CLI・Codex CLI のインストーラの実行（各ツールの本体や設定が、mount 先に書かれることがある）
@@ -626,6 +626,69 @@ commandcode の 2 つのランチャを `setup_pi_commandcode_goat.zsh` が同�
   読む。未設定でも Dev Container の起動と `./scripts/ci/verify-devenv.sh` は成功し、
   client は通信せずに `no_key` を返す。キーの取得（waitlist・early access）は人間が行う。
   取得手順と疎通確認は `tools/review_triage/access.rst` に書いてある
+
+### Plannotator のブラウザーレビュー
+
+[Plannotator](https://plannotator.ai/) は、Pi / Superpowers の Markdown の Plan を
+ブラウザーで確認・注釈し、承認／修正要求を Pi へ返すために使う。
+[agent-workspace の PR #641](https://github.com/usaturn/agent-workspace/pull/641) と同じく、
+`install_beforehand.bash` の既存の Pi 拡張導入処理で `npm:@plannotator/pi-extension` を登録する。
+既存の Node.js 24 で動くため、Plannotator CLI や Bun の追加導入は不要である。
+
+`devcontainer.json` は `PLANNOTATOR_REMOTE=1` と `PLANNOTATOR_PORT=19432-19441` を設定し、
+19432〜19441 の 10 ポートを個別に転送する。拡張は範囲内の空きポートを選ぶ。
+既存の XRift プレビュー（5173）、ログインのコールバック（3000）、DSH web（3080）、
+`~/.pi` の bind mount とランチャー別 model tier の設定は変更しない。
+
+#### 既存コンテナへの反映
+
+反映作業は利用者が行う。推奨手順は **Dev Containers: Rebuild Container** を実行し、
+Pi（使っているランチャー）を起動し直すことである。
+設定ファイルの保存や Pi の再起動だけでは、既存コンテナ全体に `containerEnv` は反映されない。
+
+リビルドしない場合は、起動済みの Pi を終了し、次を実行する。
+環境変数はこの起動だけに渡す。普段のランチャーを使う場合は、末尾の `pi` を
+その実行ファイル名（例: `pigs`）に置き換える。既存の認証・モデル設定は置き換えない。
+
+```bash
+pi install --approve npm:@plannotator/pi-extension
+env PLANNOTATOR_REMOTE=1 PLANNOTATOR_PORT=19432-19441 pi
+```
+
+#### ホストのブラウザーでレビューする
+
+1. Spec のレビューは `/sp-brainstorm`、Plan のレビューは `/sp-plan` で依頼する。
+   pi-superagents は、コマンドごとの設定 `superagents.commands.<コマンド>.usePlannotator` が
+   `true` のときに Plannotator を使う。この 2 つのコマンドでは拡張の既定が `true` である。
+   このリポジトリが配置するランチャー別 config は model tier だけを指定し、この設定を上書きしないため、
+   有効にするための設定の追加は不要である。config で `false` を指定している場合は、その指定が優先される。
+   レビューの受付は承認ではない。
+2. Pi の端末に表示されたレビュー URL から、実際に使われたポートを確認する。
+   リビルドしない場合は、VS Code の **Ports** 画面でそのポートを追加転送する。
+3. Windows ホストのブラウザーで、Ports 画面の **Local Address** を開く。
+   レビュー URL にパスやクエリがある場合は、その部分も付ける。
+   ホスト側のポートが変わった場合は、コンテナ側の番号ではなく転送先の番号を使う。
+4. ブラウザーで Plan を確認し、承認または注釈付きの修正要求を返す。
+   Pi 側へ結果が戻ったことまで確認する。
+
+`Plannotator review-result did not arrive before timeout` は、レビューが開始された後に
+承認／修正要求が戻らなかったことを示す。pi-superagents 1.14.4 の待機時間は 10 分である。
+URL の転送先を確認してその時間内に判断を返す。タイムアウト後は古いタブで承認しても
+元の待機には戻らないため、Pi 側でレビューを依頼し直す。
+この設定はブラウザーからの到達経路を用意するもので、待機時間を延長するものではない。
+
+`Plannotator did not respond to plan-review request before timeout` は、結果待ちではなく
+レビュー開始の受付に応答がなかったことを示す。`pi list` に拡張が登録されているか、
+導入後に Pi を起動し直したかを確認する。レビュー機能が無効なら、共有 config と実際に使う
+`~/.pi/agent/extensions/subagent.d/<launcher>/config.json` の `usePlannotator` の上書きを確認する。
+設定を変更する場合も、既存の model tier や他のキーは残す。
+19432〜19441 がすべて使用中なら新しいレビューを開始できない。
+自分の不要なレビューを終了して空きを作る。無制限の同時レビューには対応しない。
+
+remote mode はコンテナ内で `0.0.0.0` に bind する。この構成は VS Code のローカル転送を使い、
+Docker の公開ポートや外部共有・トンネルは追加しない。レビュー URL を外部へ共有しない。
+ブラウザーの自動起動は保証しないため、Windows の実ブラウザーと VS Code 転送を通した
+承認／修正要求の往復は利用者が手動で確認する。
 
 ### pi の TUI モードと Herdr のスクロール履歴
 
