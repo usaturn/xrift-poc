@@ -657,7 +657,11 @@ env PLANNOTATOR_REMOTE=1 PLANNOTATOR_PORT=19432-19441 pi
 
 #### ホストのブラウザーでレビューする
 
-1. Superpowers の Plan レビューを依頼する。pi-superagents では `usePlannotatorReview: true` を使う。
+1. Spec のレビューは `/sp-brainstorm`、Plan のレビューは `/sp-plan` で依頼する。
+   pi-superagents は、コマンドごとの設定 `superagents.commands.<コマンド>.usePlannotator` が
+   `true` のときに Plannotator を使う。この 2 つのコマンドでは拡張の既定が `true` である。
+   このリポジトリが配置するランチャー別 config は model tier だけを指定し、この設定を上書きしないため、
+   有効にするための設定の追加は不要である。config で `false` を指定している場合は、その指定が優先される。
    レビューの受付は承認ではない。
 2. Pi の端末に表示されたレビュー URL から、実際に使われたポートを確認する。
    リビルドしない場合は、VS Code の **Ports** 画面でそのポートを追加転送する。
