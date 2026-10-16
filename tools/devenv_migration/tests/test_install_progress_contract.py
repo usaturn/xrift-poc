@@ -600,3 +600,22 @@ def test_retired_pi_check_expands_a_tilde_agent_dir(tmp_path: Path) -> None:
     result, _ = _run_installer(tmp_path, pi_agent_dir="~/.pi/agent")
     assert result.returncode == 0, result.stderr
     assert "pi remove npm:pi-subagents" in result.stderr
+
+
+def test_rerun_on_a_shared_pi_does_not_report_extensions_the_setup_installed(tmp_path: Path) -> None:
+    # 共有の ~/.pi では、前回のセットアップが入れた拡張が次のセットアップの `pi list` に載る。
+    # 自分で入れる拡張を廃止扱いにしていると、作り直すたびに再登録と警告を繰り返す（usaturn/xrift-poc#16）。
+    root = _make_root(tmp_path)
+    home = tmp_path / "home"
+    first = tmp_path / "first"
+    first.mkdir()
+    result, _ = _run_installer(first, root=root, home=home)
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    installed = re.findall(r"(?m)^pi install --approve (\S+)$", (first / "calls.log").read_text(encoding="utf-8"))
+    assert installed
+
+    second = tmp_path / "second"
+    second.mkdir()
+    result, _ = _run_installer(second, root=root, home=home, pi_list="".join(f"{name}\n" for name in installed))
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "Retired pi extension" not in result.stderr

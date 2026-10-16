@@ -387,7 +387,7 @@ PYEOF
         warn "pi list failed; skipping the retired pi extension check."
         return 0
     fi
-    for package in pi-subagents pi-mcp-adapter pi-distill pi-extensions-tool-display pi-extensions-i18n; do
+    for package in pi-subagents pi-mcp-adapter pi-distill pi-extensions-tool-display pi-extensions-i18n pi-lens; do
         manifests="$(grep -l -e "\"${package}\"" -e "\"node_modules/${package}\"" \
             "${agent_dir}/npm/package.json" "${agent_dir}/npm/package-lock.json" 2>/dev/null || true)"
         case "${listed}" in
@@ -444,7 +444,6 @@ for extension in \
     npm:pi-safe-search \
     npm:pi-diet-ripgrep \
     git:github.com/obra/superpowers \
-    npm:pi-lens \
     npm:pi-simplify \
     npm:@howaboua/pi-skill-skill-creator; do
     if ! pi install --approve "${extension}"; then
