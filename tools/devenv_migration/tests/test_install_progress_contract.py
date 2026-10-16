@@ -586,10 +586,26 @@ def test_retired_pi_extensions_are_reported_but_not_removed(tmp_path: Path) -> N
     assert "pi remove npm:pi-subagents" in result.stderr
     assert "pi remove npm:pi-distill" in result.stderr
     assert "-builtin:mcp" in result.stderr
+    assert result.stderr.count("conflicts with @teelicht/pi-superagents") == 1
     calls = (tmp_path / "calls.log").read_text(encoding="utf-8")
     assert "pi remove" not in calls
     assert manifest.read_text(encoding="utf-8") == '{"dependencies": {"pi-distill": "^1.9.2"}}\n'
     assert settings.read_text(encoding="utf-8") == '{"extensions":["-builtin:mcp"]}\n'
+
+
+def test_pigo_conflict_note_is_only_for_pi_subagents(tmp_path: Path) -> None:
+    # pigo が起動できなくなるのは pi-subagents の衝突だけ。ほかの廃止した拡張や -builtin:mcp だけでは注記を出さない。
+    agent_dir = tmp_path / "home" / ".pi" / "agent"
+    (agent_dir / "npm").mkdir(parents=True)
+    (agent_dir / "npm" / "package.json").write_text('{"dependencies": {"pi-distill": "^1.9.2"}}\n', encoding="utf-8")
+    (agent_dir / "settings.json").write_text('{"extensions":["-builtin:mcp"]}\n', encoding="utf-8")
+
+    result, _ = _run_installer(tmp_path)
+
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "pi remove npm:pi-distill" in result.stderr
+    assert "-builtin:mcp" in result.stderr
+    assert "conflicts with @teelicht/pi-superagents" not in result.stderr
 
 
 def test_retired_pi_check_expands_a_tilde_agent_dir(tmp_path: Path) -> None:

@@ -372,7 +372,7 @@ fi
 # npm:pi-subagents が残っていると、@teelicht/pi-superagents と subagent ツール名が衝突し、
 # pigo などのランチャーが起動できない。
 warn_retired_pi_extensions() {
-    local agent_dir listed manifests package found=0
+    local agent_dir listed manifests package
     if ! agent_dir="$(python3 - <<'PYEOF'
 import os
 from pathlib import Path
@@ -394,15 +394,13 @@ PYEOF
         *"npm:${package}"*) ;;
         *) [ -n "${manifests}" ] || continue ;;
         esac
-        found=1
         warn "Retired pi extension npm:${package} remains under ${agent_dir}. Remove it with: pi remove npm:${package}"
+        if [ "${package}" = pi-subagents ]; then
+            warn "Launchers such as pigo fail while npm:pi-subagents remains, because it conflicts with @teelicht/pi-superagents."
+        fi
     done
     if [ -f "${agent_dir}/settings.json" ] && grep -qF -- '"-builtin:mcp"' "${agent_dir}/settings.json"; then
-        found=1
         warn "${agent_dir}/settings.json disables the built-in MCP extension. Remove \"-builtin:mcp\" from \"extensions\"."
-    fi
-    if [ "${found}" -eq 1 ]; then
-        warn "Launchers such as pigo fail while npm:pi-subagents remains, because it conflicts with @teelicht/pi-superagents."
     fi
     return 0
 }
