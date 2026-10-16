@@ -587,6 +587,11 @@ def test_retired_pi_extensions_are_reported_but_not_removed(tmp_path: Path) -> N
     assert "pi remove npm:pi-distill" in result.stderr
     assert "-builtin:mcp" in result.stderr
     assert result.stderr.count("conflicts with @teelicht/pi-superagents") == 1
+    # 共有の ~/.pi から消すと、ほかのコンテナで動いている pi からも拡張のファイルが消える。
+    # 削除の案内には、先に止めることを必ず添える。
+    removal_hints = [line for line in result.stderr.splitlines() if "pi remove npm:" in line]
+    assert removal_hints
+    assert all("stopping pi in the other containers" in line for line in removal_hints), removal_hints
     calls = (tmp_path / "calls.log").read_text(encoding="utf-8")
     assert "pi remove" not in calls
     assert manifest.read_text(encoding="utf-8") == '{"dependencies": {"pi-distill": "^1.9.2"}}\n'

@@ -395,7 +395,7 @@ PYEOF
         *"npm:${package}"*) ;;
         *) [ -n "${manifests}" ] || continue ;;
         esac
-        warn "Retired pi extension npm:${package} remains under ${agent_dir}. Remove it with: pi remove npm:${package}"
+        warn "Retired pi extension npm:${package} remains under ${agent_dir}. After stopping pi in the other containers that share it, remove it with: pi remove npm:${package}"
         if [ "${package}" = pi-subagents ]; then
             warn "Launchers such as pigo fail while npm:pi-subagents remains, because it conflicts with @teelicht/pi-superagents."
         fi
