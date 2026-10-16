@@ -367,8 +367,9 @@ if ! npm install -g --ignore-scripts @earendil-works/pi-coding-agent; then
     fail "pi installation failed."
 fi
 
-# 廃止済みの pi 拡張が共有の ~/.pi に残っていないかを確かめる。撤去は maatlog-poc 側の
-# セットアップか利用者が行い、ここでは削除の手順を警告として表示するだけにする（usaturn/xrift-poc#1）。
+# 廃止済みの pi 拡張が共有の ~/.pi に残っていないかを確かめる。撤去は ~/.pi を共有するほかの
+# リポジトリ（maatlog-poc・agent-workspace）のセットアップか利用者が行い、ここでは削除の手順を
+# 警告として表示するだけにする（usaturn/xrift-poc#1、#16）。
 # npm:pi-subagents が残っていると、@teelicht/pi-superagents と subagent ツール名が衝突し、
 # pigo などのランチャーが起動できない。
 warn_retired_pi_extensions() {

@@ -70,7 +70,7 @@ XRift 認証（`xrift login`）は利用者が手動で行う。ポートは前�
 
 ## 廃止した pi 拡張の警告
 
-共有の `~/.pi` に、廃止済みの拡張（`npm:pi-subagents`・`npm:pi-mcp-adapter`・`npm:pi-distill`・`npm:pi-extensions-tool-display`・`npm:pi-extensions-i18n`）が残っていると、`install_beforehand.bash` は警告を表示する。警告には削除のコマンド（`pi remove npm:<パッケージ名>`）を添える。セットアップはこれらを削除しない。`~/.pi` は他のコンテナと共有のため、削除は利用者が自分で行う。
+共有の `~/.pi` に、廃止済みの拡張（`npm:pi-subagents`・`npm:pi-mcp-adapter`・`npm:pi-distill`・`npm:pi-extensions-tool-display`・`npm:pi-extensions-i18n`・`npm:pi-lens`）が残っていると、`install_beforehand.bash` は警告を表示する。警告には削除のコマンド（`pi remove npm:<パッケージ名>`）を添える。セットアップはこれらを削除しない。`~/.pi` は他のコンテナと共有のため、削除は利用者が自分で行う。
 
 `npm:pi-subagents` が残っていると `@teelicht/pi-superagents` と `subagent` ツール名が衝突し、`pigo` などのランチャーが起動できない。また `~/.pi/agent/settings.json` の `extensions` に `-builtin:mcp` が残っている場合も、削除を促す警告を表示する。
 

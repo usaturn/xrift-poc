@@ -14,7 +14,7 @@
 | `scripts/` | 検証の入口（`ci/verify-devenv.sh`）、pi のセットアップ、Claude Code のオンボーディングの補助 |
 | `tools/` | `devenv`（検証用の project）、`devenv_migration`（Dev Container のテスト。名前は移植元とそろえた）、`agent_runner`、`review_triage`、`test_support` |
 | `.agents/` | 共通スキル 14 個、補助スクリプト、レビューの記録の形式 |
-| `.claude/`・`.pi/`・`.cursor/rules/`・`.mcp.json`・`.pi-lens.json`・`.github/workflows/ci.yml` | 各エージェントの設定と CI |
+| `.claude/`・`.pi/`・`.cursor/rules/`・`.mcp.json`・`.github/workflows/ci.yml` | 各エージェントの設定と CI |
 
 ## 移植しなかったもの
 
