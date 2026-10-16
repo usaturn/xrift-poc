@@ -586,10 +586,31 @@ def test_retired_pi_extensions_are_reported_but_not_removed(tmp_path: Path) -> N
     assert "pi remove npm:pi-subagents" in result.stderr
     assert "pi remove npm:pi-distill" in result.stderr
     assert "-builtin:mcp" in result.stderr
+    assert result.stderr.count("conflicts with @teelicht/pi-superagents") == 1
+    # 共有の ~/.pi から消すと、ほかのコンテナで動いている pi からも拡張のファイルが消える。
+    # 削除の案内には、先に止めることを必ず添える。
+    removal_hints = [line for line in result.stderr.splitlines() if "pi remove npm:" in line]
+    assert removal_hints
+    assert all("stopping pi in the other containers" in line for line in removal_hints), removal_hints
     calls = (tmp_path / "calls.log").read_text(encoding="utf-8")
     assert "pi remove" not in calls
     assert manifest.read_text(encoding="utf-8") == '{"dependencies": {"pi-distill": "^1.9.2"}}\n'
     assert settings.read_text(encoding="utf-8") == '{"extensions":["-builtin:mcp"]}\n'
+
+
+def test_pigo_conflict_note_is_only_for_pi_subagents(tmp_path: Path) -> None:
+    # pigo が起動できなくなるのは pi-subagents の衝突だけ。ほかの廃止した拡張や -builtin:mcp だけでは注記を出さない。
+    agent_dir = tmp_path / "home" / ".pi" / "agent"
+    (agent_dir / "npm").mkdir(parents=True)
+    (agent_dir / "npm" / "package.json").write_text('{"dependencies": {"pi-distill": "^1.9.2"}}\n', encoding="utf-8")
+    (agent_dir / "settings.json").write_text('{"extensions":["-builtin:mcp"]}\n', encoding="utf-8")
+
+    result, _ = _run_installer(tmp_path)
+
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "pi remove npm:pi-distill" in result.stderr
+    assert "-builtin:mcp" in result.stderr
+    assert "conflicts with @teelicht/pi-superagents" not in result.stderr
 
 
 def test_retired_pi_check_expands_a_tilde_agent_dir(tmp_path: Path) -> None:
@@ -600,3 +621,22 @@ def test_retired_pi_check_expands_a_tilde_agent_dir(tmp_path: Path) -> None:
     result, _ = _run_installer(tmp_path, pi_agent_dir="~/.pi/agent")
     assert result.returncode == 0, result.stderr
     assert "pi remove npm:pi-subagents" in result.stderr
+
+
+def test_rerun_on_a_shared_pi_does_not_report_extensions_the_setup_installed(tmp_path: Path) -> None:
+    # 共有の ~/.pi では、前回のセットアップが入れた拡張が次のセットアップの `pi list` に載る。
+    # 自分で入れる拡張を廃止扱いにしていると、作り直すたびに再登録と警告を繰り返す（usaturn/xrift-poc#16）。
+    root = _make_root(tmp_path)
+    home = tmp_path / "home"
+    first = tmp_path / "first"
+    first.mkdir()
+    result, _ = _run_installer(first, root=root, home=home)
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    installed = re.findall(r"(?m)^pi install --approve (\S+)$", (first / "calls.log").read_text(encoding="utf-8"))
+    assert installed
+
+    second = tmp_path / "second"
+    second.mkdir()
+    result, _ = _run_installer(second, root=root, home=home, pi_list="".join(f"{name}\n" for name in installed))
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "Retired pi extension" not in result.stderr

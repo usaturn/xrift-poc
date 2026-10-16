@@ -367,12 +367,13 @@ if ! npm install -g --ignore-scripts @earendil-works/pi-coding-agent; then
     fail "pi installation failed."
 fi
 
-# 廃止済みの pi 拡張が共有の ~/.pi に残っていないかを確かめる。撤去は maatlog-poc 側の
-# セットアップか利用者が行い、ここでは削除の手順を警告として表示するだけにする（usaturn/xrift-poc#1）。
+# 廃止済みの pi 拡張が共有の ~/.pi に残っていないかを確かめる。撤去は ~/.pi を共有するほかの
+# リポジトリ（maatlog-poc・agent-workspace）のセットアップか利用者が行い、ここでは削除の手順を
+# 警告として表示するだけにする（usaturn/xrift-poc#1、#16）。
 # npm:pi-subagents が残っていると、@teelicht/pi-superagents と subagent ツール名が衝突し、
 # pigo などのランチャーが起動できない。
 warn_retired_pi_extensions() {
-    local agent_dir listed manifests package found=0
+    local agent_dir listed manifests package
     if ! agent_dir="$(python3 - <<'PYEOF'
 import os
 from pathlib import Path
@@ -387,22 +388,20 @@ PYEOF
         warn "pi list failed; skipping the retired pi extension check."
         return 0
     fi
-    for package in pi-subagents pi-mcp-adapter pi-distill pi-extensions-tool-display pi-extensions-i18n; do
+    for package in pi-subagents pi-mcp-adapter pi-distill pi-extensions-tool-display pi-extensions-i18n pi-lens; do
         manifests="$(grep -l -e "\"${package}\"" -e "\"node_modules/${package}\"" \
             "${agent_dir}/npm/package.json" "${agent_dir}/npm/package-lock.json" 2>/dev/null || true)"
         case "${listed}" in
         *"npm:${package}"*) ;;
         *) [ -n "${manifests}" ] || continue ;;
         esac
-        found=1
-        warn "Retired pi extension npm:${package} remains under ${agent_dir}. Remove it with: pi remove npm:${package}"
+        warn "Retired pi extension npm:${package} remains under ${agent_dir}. After stopping pi in the other containers that share it, remove it with: pi remove npm:${package}"
+        if [ "${package}" = pi-subagents ]; then
+            warn "Launchers such as pigo fail while npm:pi-subagents remains, because it conflicts with @teelicht/pi-superagents."
+        fi
     done
     if [ -f "${agent_dir}/settings.json" ] && grep -qF -- '"-builtin:mcp"' "${agent_dir}/settings.json"; then
-        found=1
         warn "${agent_dir}/settings.json disables the built-in MCP extension. Remove \"-builtin:mcp\" from \"extensions\"."
-    fi
-    if [ "${found}" -eq 1 ]; then
-        warn "Launchers such as pigo fail while npm:pi-subagents remains, because it conflicts with @teelicht/pi-superagents."
     fi
     return 0
 }
@@ -444,7 +443,6 @@ for extension in \
     npm:pi-safe-search \
     npm:pi-diet-ripgrep \
     git:github.com/obra/superpowers \
-    npm:pi-lens \
     npm:pi-simplify \
     npm:@howaboua/pi-skill-skill-creator; do
     if ! pi install --approve "${extension}"; then
