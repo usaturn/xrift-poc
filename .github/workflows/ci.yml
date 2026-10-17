@@ -34,4 +34,19 @@ jobs:
           pi --version
       # bubblewrap は非特権 user namespace を使う。ubuntu-latest は AppArmor で制限しているため解除する。
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # repository-ownership の scan_before_push のテストは実物の Gitleaks を使う。
+      # Dev Container と同じ固定版を、install_beforehand.bash の定数から読んで入れる。
+      - run: |
+          script=.devcontainer/install_beforehand.bash
+          version="$(sed -n 's/^readonly GITLEAKS_VERSION="\([^"]*\)"$/\1/p' "$script")"
+          sha256="$(sed -n 's/^readonly GITLEAKS_ARCHIVE_SHA256="\([0-9a-f]*\)"$/\1/p' "$script")"
+          test -n "$version" && test -n "$sha256"
+          echo "Gitleaks ${version} (sha256 ${sha256})"
+          archive="$RUNNER_TEMP/gitleaks.tar.gz"
+          curl -fsSL -o "$archive" "https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_linux_x64.tar.gz"
+          printf '%s  %s\n' "$sha256" "$archive" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/gitleaks"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/gitleaks" gitleaks
+          echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/gitleaks/gitleaks" version
       - run: ./scripts/ci/verify-devenv.sh
