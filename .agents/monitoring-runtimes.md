@@ -32,6 +32,21 @@ done
 | pi | 単発サブエージェントは `async: false` の同期起動のみ（`.pi/APPEND_SYSTEM.md`）。バックグラウンド起動と停止ができない | 起動条件を満たせず常時省略 |
 | Cursor | TBD | TBD |
 
+## task_watch による途中の判断と停止
+
+`monitoring-long-tasks` の「事前宣言した打ち切り」の対象は、同スキルの `scripts/task_watch.py run` で起動する。判定と停止は watcher が行うので、controller が同期の呼び出しで待っている間も、宣言した期限・無進捗・予約枠・失敗の条件で止まる。controller は watcher の終了（完了通知・同期の戻り）を待ち、途中では `status` の短い JSON だけを読む。
+
+| ランタイム | 起動と完了 | 途中の確認 | 方針を変えるとき（宣言どおりの停止） |
+| --- | --- | --- | --- |
+| Claude Code | `run` を Bash の `run_in_background: true` で起動する。watcher の終了が終了コード付きの完了通知になる | `status` を Bash で実行する | `stop` を Bash で実行する |
+| Devin | `run` をバックグラウンド `exec`（`timeout: 0`）で起動し、`get_output` で待つ | `status` を `exec` で実行する | `stop` を `exec` で実行する |
+| pi | `run` を bash ツールの foreground で実行する。controller は戻るまで待つが、watcher が宣言どおりに判定・停止する。これが同期のみのランタイムでの代替策である | 途中では確認できない。戻った後に標準出力の JSON か `final.json` を読む | 途中ではできない。起動前に宣言した条件（期限・無進捗・予約枠・失敗）が代わりに働くので、止める条件は起動前に決めておく |
+| Cursor | TBD | TBD | TBD |
+
+- `run` の終了コードは 0 = `completed`、1 = 完了していない、2 = 入力の誤り、3 = `hold`（停止を確認できない、終了後も同じ group にプロセスが残っている、または `--stop none` の watcher に `stop` を送った）。3 のときは `final.json` の `residual_pids` と `paths` を報告し、依存する作業を始めない
+- `--stop none` の watcher は停止の条件を満たしても止めず、対象が自分で終わるまで動き続ける。pi の行の「宣言した条件が代わりに働く」は `INT`・`TERM` を宣言した場合に限る
+- agent_runner を包むときは `--stop INT` にし、`--escalate-kill` を付けない。下の節の「中断」と同じ経路で runner が子孫を止め、結果を保存する
+
 ## agent-runner の同期実行と停止確認
 
 `uv run --project tools/devenv python -m tools.agent_runner run ...` は、
