@@ -109,9 +109,12 @@ def _classify(events: list[dict[str, object]], shape: str) -> tuple[ReceiptStatu
         if event.get("type") == "error":
             return _diagnostic(str(event.get("code", "")) + " " + str(event.get("message", ""))), None
         if event.get("type") == "tool_result" and event.get("status") == "error":
-            hint = _diagnostic(str(event.get("result", "")))
-            if hint != "response_failed":
-                return hint, None
+            # Tool errors are free text the agent can recover from (paths, line counts);
+            # only an approval rejection ends the attempt. Authentication is read from
+            # error events, the turn_end reason and, when the stream only reads as
+            # response_failed, stderr.
+            if _APPROVAL.search(str(event.get("result", ""))):
+                return "awaiting_approval", None
         if event.get("type") == "status" and event.get("phase") == "turn_end":
             reason = event.get("reason")
             if not isinstance(reason, dict):

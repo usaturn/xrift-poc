@@ -304,6 +304,37 @@ def test_approval_error_in_tool_result_is_not_success(context: AdapterContext, d
     assert _status(context, events) == "awaiting_approval"
 
 
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        'Error: cannot read "src/pages/Unauthorized.tsx": not found',
+        'Error: offset 410 is out of range for "tools/x.py" (403 lines)',
+        'Error: cannot read "docs/errors/401.md": not found',
+        "HTTP 403 Forbidden",
+        "invalid api key",
+        'Error: cannot read "資料/unauthorized メモ.md": not found\n詳細',
+    ],
+)
+def test_recovered_tool_error_does_not_mark_completed_turn_as_authentication(
+    context: AdapterContext, diagnostic: str
+) -> None:
+    # DSH's tool errors carry only free text; a completed turn with a valid final is the answer.
+    events = _stream()
+    events.insert(
+        2,
+        {
+            "type": "tool_result",
+            "callId": "call",
+            "status": "error",
+            "result": diagnostic,
+        },
+    )
+    outcome = _collect(context, events)
+    assert outcome.receipt is not None
+    assert outcome.receipt.status == "success"
+    assert outcome.receipt.payload == {"ok": True}
+
+
 def test_startup_error_without_final_is_classified(context: AdapterContext) -> None:
     outcome = _collect(context, [{"type": "error", "message": "MISSING_CREDENTIAL"}])
     assert outcome.receipt is not None

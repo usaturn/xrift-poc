@@ -263,6 +263,10 @@ DSH を読み取り専用にする sandbox の保証ではない。
 
 JSONL の `turn_end`、`final`、CLI の終了コードと既存 runner の停止確認を照合する。
 キー無しで空の `final` が出ても `awaiting_authentication` とし、成功扱いしない。
+ファイル名や行数に 401・403 を含むツールのエラーから回復して完了した試行を捨てないよう、
+ツールのエラー（`status` が `error` の `tool_result`）の文面からは承認の拒否だけを読み、
+認証待ちは `error` event・`turn_end` の reason と、events だけでは失敗の理由が分からないとき
+（`response_failed`）の stderr で判定する。
 JSON の payload は、最終応答の全文、または本文中の `` ```json `` フェンスを
 この順に読み、最初に object として読めたものにする（pi・Claude Code・Devin の adapter と同じ候補順）。
 空の object、重複したキーや `NaN` を含む JSON、フェンスに入っていない前置き付きの JSON は成功にしない。
