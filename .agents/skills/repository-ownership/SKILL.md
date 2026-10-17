@@ -73,7 +73,8 @@ uv run --no-project python "$XRIFT_POC_ROOT/.agents/scripts/route_target.py" "${
 - **止まる場所:** 親の main checkout、Git の root ではない場所（subdirectory）、`stop`、`repository` が null の制作物。`repository` が null なら、origin を GitHub の URL にしてから実行する
 - **base:** 親は `origin/main`、制作物は origin の既定ブランチ。どちらも fetch してから決める。origin にブランチが 1 つも無い制作物（GitHub で作ったばかりの空のリポジトリへの初めての push）では、HEAD から辿れる commit がすべて未 push なので、すべてを検査する。ブランチがあるのに既定ブランチを読めないときは止まる
 - **設定:** base の commit の `.gitleaks.toml`、無ければ Gitleaks の既定の規則（`[extend]` の `useDefault = true`）を使う。作業ツリーの `.gitleaks.toml`、環境変数 `GITLEAKS_CONFIG`・`GITLEAKS_CONFIG_TOML`、inline の `gitleaks:allow` で検査を緩めない。`.gitleaksignore` があれば（壊れたシンボリックリンクを含む）止まる
-- **出力:** 成功したときだけ、検査した commit の SHA を stdout に 1 行出す。ログは stderr に出る。検出・設定の取得・scanner の失敗を成功扱いしない
+- **git の設定と属性:** Gitleaks が読む `git log -p` の出力をオプションで固定し、利用者の git 設定（`color.ui`・`log.diffMerges`・`log.showRoot`・`core.bigFileThreshold` など）や属性（`-diff`・`binary`・textconv）で中身が消えないようにする。バイナリ扱いのファイルもテキストとして検査するので、大きなアセットを含む commit では時間がかかる
+- **出力:** 成功したときだけ、検査した commit の SHA を stdout に 1 行出す。ログは stderr に出る。検出・設定の取得・scanner の失敗を成功扱いしない。Gitleaks は内部の `git log` が失敗しても成功を返すため、同じ `git log` を先に実行し、失敗したら止まる
 - Gitleaks は Dev Container が入れる approved pin（`.devcontainer/install_beforehand.bash`）を使う。`jq` も使う
 
 シェルの状態は Bash の呼び出しをまたいで残らない。関数の定義・`XRIFT_POC_ROOT`・push は同じ呼び出しで実行する。
@@ -140,10 +141,14 @@ scan_before_push() (
             git cat-file blob "${base_sha}:.gitleaks.toml" > "$scan_dir/config.toml" || return 1
         fi
     fi
-    # マージ commit も各親との差分として検査する。利用者の log.diffMerges（off など）に左右されない
+    # Gitleaks が読む git log -p の出力を、利用者の git 設定と属性に左右されないように固定する。
+    # マージ commit は各親との差分、root commit も出し、色・外部 diff・textconv を使わず、バイナリ扱いのファイルもテキストで出す
+    log_opts=(--diff-merges=separate --root --no-color --no-ext-diff --no-textconv --text)
+    # Gitleaks は内部の git log が失敗しても成功を返すので、同じ git log を先に実行し、失敗したら止まる
+    git log -p -U0 "${log_opts[@]}" "$range" > /dev/null || return 1
     env -u GITLEAKS_CONFIG -u GITLEAKS_CONFIG_TOML \
         gitleaks git --redact --ignore-gitleaks-allow --config "$scan_dir/config.toml" \
-        --gitleaks-ignore-path "$scan_dir/ignore" --log-opts="--diff-merges=separate ${range}" . >&2 || return 1
+        --gitleaks-ignore-path "$scan_dir/ignore" --log-opts="${log_opts[*]} ${range}" . >&2 || return 1
     printf '%s\n' "$scanned_sha"
 )
 ```

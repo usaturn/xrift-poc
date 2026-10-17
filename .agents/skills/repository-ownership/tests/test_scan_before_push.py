@@ -175,9 +175,12 @@ def run(
     )
 
 
-def log_opts(record: dict[str, list[str]]) -> list[str]:
+def scanned_range(record: dict[str, list[str]]) -> str:
+    """--log-opts の中の、オプションではない唯一のトークン（検査する範囲）。"""
     value = next(arg for arg in record["args"] if arg.startswith("--log-opts="))
-    return value.removeprefix("--log-opts=").split()
+    revisions = [token for token in value.removeprefix("--log-opts=").split() if not token.startswith("-")]
+    assert len(revisions) == 1, value
+    return revisions[0]
 
 
 @pytest.mark.parametrize("where", ["feature", "product", "product-worktree"])
@@ -192,7 +195,7 @@ def test_scan_uses_base_rules_and_reports_the_scanned_commit(tmp_path: Path, whe
     record = json.loads(log.read_text(encoding="utf-8"))
     assert record["config"] == TRUSTED_RULES
     assert record["env"] == {"GITLEAKS_CONFIG": None, "GITLEAKS_CONFIG_TOML": None}
-    assert log_opts(record) == ["--diff-merges=separate", f"{base}..{sha}"]
+    assert scanned_range(record) == f"{base}..{sha}"
     assert "--redact" in record["args"]
     assert "--ignore-gitleaks-allow" in record["args"]
     assert not Path(record["path"]).exists()
@@ -216,8 +219,7 @@ def test_scan_uses_the_product_default_branch(tmp_path: Path) -> None:
     sha = git(cwd, "rev-parse", "HEAD")
     result = run(layout, cwd, "scan_before_push", env)
     assert result.returncode == 0, result.stderr
-    opts = log_opts(json.loads(log.read_text(encoding="utf-8")))
-    assert opts == ["--diff-merges=separate", f"{trunk}..{sha}"]
+    assert scanned_range(json.loads(log.read_text(encoding="utf-8"))) == f"{trunk}..{sha}"
     assert stale != trunk
 
 
@@ -230,7 +232,7 @@ def test_scan_checks_whole_history_for_empty_product_remote(tmp_path: Path) -> N
     assert result.returncode == 0, result.stderr
     assert result.stdout == f"{sha}\n"
     record = json.loads(log.read_text(encoding="utf-8"))
-    assert log_opts(record) == ["--diff-merges=separate", sha]
+    assert scanned_range(record) == sha
     assert record["config"] == DEFAULT_RULES
 
 
@@ -299,13 +301,16 @@ def secret_like_token() -> str:
     return "ghp_" + "".join(rng.choice(string.ascii_letters + string.digits) for _ in range(36))
 
 
-def real_gitleaks_env(diff_merges: str | None = None) -> dict[str, str]:
+def real_gitleaks_env(*settings: str) -> dict[str, str]:
+    """実物の Gitleaks を使う env。``settings`` は利用者の git 設定（``key=value``）として渡す。"""
     if shutil.which("gitleaks") is None:
         pytest.fail("the Dev Container and CI install the approved Gitleaks pin; this test needs it on PATH")
-    if diff_merges is None:
-        return {}
-    # git log -m がマージ commit に何を出すかは、利用者の git 設定で変わる。
-    return {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "log.diffMerges", "GIT_CONFIG_VALUE_0": diff_merges}
+    env = {"GIT_CONFIG_COUNT": str(len(settings))}
+    for index, setting in enumerate(settings):
+        key, value = setting.split("=", 1)
+        env[f"GIT_CONFIG_KEY_{index}"] = key
+        env[f"GIT_CONFIG_VALUE_{index}"] = value
+    return env
 
 
 def leaks_found(stderr: str) -> int:
@@ -346,16 +351,17 @@ def prepare_merge(layout: Layout, *, resolution: str, added: str | None) -> Path
     return working
 
 
-@pytest.mark.parametrize("diff_merges", [None, "off"])
+# git log -p がマージ commit に何を出すか、色を付けるかは、利用者の git 設定で変わる。
+@pytest.mark.parametrize("setting", [None, "log.diffMerges=off", "color.ui=always", "color.diff=always"])
 @pytest.mark.parametrize("entry", ["conflict", "added"])
-def test_scan_detects_secret_introduced_by_merge(tmp_path: Path, entry: str, diff_merges: str | None) -> None:
+def test_scan_detects_secret_introduced_by_merge(tmp_path: Path, entry: str, setting: str | None) -> None:
     layout = make_layout(tmp_path / SPACED)
     token = secret_like_token()
     if entry == "conflict":
         working = prepare_merge(layout, resolution=f'line = "{token}"\n', added=None)
     else:
         working = prepare_merge(layout, resolution='line = "resolved"\n', added=f'token = "{token}"\n')
-    result = run(layout, working, "scan_before_push", real_gitleaks_env(diff_merges))
+    result = run(layout, working, "scan_before_push", real_gitleaks_env(*filter(None, [setting])))
     assert result.returncode != 0
     assert result.stdout == ""
     assert leaks_found(result.stderr) >= 1
@@ -379,6 +385,70 @@ def test_scan_ignores_weakened_branch_settings(tmp_path: Path) -> None:
     assert result.stdout == ""
     assert leaks_found(result.stderr) >= 1
     assert token not in result.stderr
+
+
+def git_path(cwd: Path, name: str) -> Path:
+    return Path(git(cwd, "rev-parse", "--path-format=absolute", "--git-path", name))
+
+
+# 属性・textconv・大きなファイルの閾値で、ファイルの中身が git log -p から消えても検出する。
+@pytest.mark.parametrize("case", ["committed-diff-attr", "info-binary-attr", "textconv", "big-file-threshold"])
+def test_scan_sees_through_attributes_and_settings_that_hide_content(tmp_path: Path, case: str) -> None:
+    layout = make_layout(tmp_path / SPACED)
+    working = layout.product_worktree
+    settings: list[str] = []
+    if case == "committed-diff-attr":
+        commit_file(working, ".gitattributes", "secret.txt -diff\n", "hide secret.txt from diffs")
+    elif case == "info-binary-attr":
+        attributes = git_path(working, "info/attributes")
+        attributes.parent.mkdir(parents=True, exist_ok=True)
+        attributes.write_text("* binary\n", encoding="utf-8")
+    elif case == "textconv":
+        attributes = git_path(working, "info/attributes")
+        attributes.parent.mkdir(parents=True, exist_ok=True)
+        attributes.write_text("secret.txt diff=hide\n", encoding="utf-8")
+        settings = ["diff.hide.textconv=true"]
+    else:
+        settings = ["core.bigFileThreshold=1"]
+    token = secret_like_token()
+    commit_file(working, "secret.txt", f'token = "{token}"\n', "leak")
+    result = run(layout, working, "scan_before_push", real_gitleaks_env(*settings))
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert leaks_found(result.stderr) >= 1
+    assert token not in result.stderr
+
+
+def test_scan_checks_the_root_commit_of_a_first_push(tmp_path: Path) -> None:
+    # log.showRoot=false でも、空のリモートへの初めての push の root commit を検査する。
+    layout = make_layout(tmp_path / SPACED, push_product=False)
+    token = secret_like_token()
+    (layout.product / ".env").write_text(f'TOKEN="{token}"\n', encoding="utf-8")
+    git(layout.product, "add", ".env")
+    git(layout.product, "commit", "-q", "--amend", "--no-edit")
+    assert git(layout.product, "rev-list", "--count", "HEAD") == "1"
+    result = run(layout, layout.product, "scan_before_push", real_gitleaks_env("log.showRoot=false"))
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert leaks_found(result.stderr) >= 1
+
+
+# Gitleaks 8.30.1 は、内部の git log が失敗しても「no leaks found」で 0 を返す。
+@pytest.mark.parametrize("case", ["broken-diff-setting", "missing-object"])
+def test_scan_stops_when_git_log_fails(tmp_path: Path, case: str) -> None:
+    layout = make_layout(tmp_path / SPACED)
+    working = layout.feature
+    commit_file(working, "app.txt", "change\n", "change")
+    settings: list[str] = []
+    if case == "broken-diff-setting":
+        settings = ["diff.algorithm=bogus"]
+    else:
+        blob = git(working, "rev-parse", "HEAD:app.txt")
+        objects = git_path(working, "objects")
+        (objects / blob[:2] / blob[2:]).unlink()
+    result = run(layout, working, "scan_before_push", real_gitleaks_env(*settings))
+    assert result.returncode != 0
+    assert result.stdout == ""
 
 
 def test_scan_stops_on_broken_base_config(tmp_path: Path) -> None:
