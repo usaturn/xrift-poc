@@ -157,9 +157,9 @@ after_run = [[
 # workflow の割り当て既定値（#565）。
 # review の inspect（レビュアー）は固定しない。依頼ごとに --assign inspect=agent-a,agent-b で選ぶ。
 # いつも使う構成は、個人設定のこの節の agents を書き換える。
-# 下の 4 人は指定が無いときの既定値で、#616 で利用者が個人設定で使っている構成に合わせた。性能の順位ではない。
+# 下の 5 人は指定が無いときの既定値で、移植元（agent-workspace #657）と同じ構成にした。性能の順位ではない。
 [workflows.review.assignments.inspect]
-agents = ["pi-gemf", "devin-swe", "pi-deepseek", "pi-go-glmf"]
+agents = ["pi-gpt", "devin-swe", "dsh-ccd", "claude-opus", "pixg"]
 
 [workflows.fix.assignments.implement]
 agents = ["claude-opus"]

@@ -219,10 +219,11 @@ DSH `0.2.0-rc.2` の `dsh --profile headless --patch <file> --json -` を使う
 `dsh-go`（OpenCode Go）である。個人設定に定義した workflow の
 `[workflows.<name>.assignments.<role>]` の `agents` に書くか、
 その workflow の `run` に `--assign <role>=dsh-ccd` を付けて選ぶ。
-既存の `dshccd` / `dshgo`、pi agent、workflow の既定割り当ては変更しない。
+既存の `dshccd` / `dshgo` と pi agent は変更しない。
 
-PR レビュー（workflow `review` の `inspect`）では、個人設定に次を指定すれば
-通常の PR 修正ループから利用できる。追加の `--assign` や手動 DSH 起動は不要。
+PR レビュー（workflow `review` の `inspect`）では、雛形の既定の構成に `dsh-ccd` が入っており、
+通常の PR 修正ループから利用できる。DSH だけにするときは、個人設定に次を指定する。
+追加の `--assign` や手動 DSH 起動は不要。
 
 ```toml
 [workflows.review.assignments.inspect]
