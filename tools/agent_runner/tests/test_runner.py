@@ -23,6 +23,7 @@ from tools.agent_runner.config import ConfigError
 from tools.agent_runner.models import Agent, Assignment, Config, Identity, Receipt, Role, State, Workflow
 from tools.agent_runner.process import ProcessResult
 from tools.agent_runner.runner import RunnerError, run_workflow
+from tools.agent_runner.tests.test_process import alive
 
 pytest_plugins = ("tools.test_support.plugin",)
 # Only fake agents are launched here; drop AGENT_RUNNER_DEPTH inside each test so a runner agent can run them
@@ -128,6 +129,36 @@ def set_when(event: threading.Event, ready: Callable[[], bool]) -> Generator[Non
 def written(paths: Iterable[Path]) -> int:
     """Count files whose content has been written (a single small write)."""
     return sum(path.stat().st_size > 0 for path in paths)
+
+
+@contextlib.contextmanager
+def exit_times(pids: Callable[[], Iterable[int]]) -> Generator[dict[int, float]]:
+    """Record when each pid from pids() is first seen not alive inside the with block.
+
+    A stop is observed from outside rather than recorded by the stopped process:
+    work a process does after SIGTERM must finish within the runner's fixed grace
+    before SIGKILL, which a loaded host stretches (#694). A last sweep after the
+    block records processes that stopped just before it ended.
+    """
+    times: dict[int, float] = {}
+    finished = threading.Event()
+
+    def watch() -> None:
+        while True:
+            done = finished.wait(0.01)
+            for pid in pids():
+                if pid not in times and not alive(pid):
+                    times[pid] = time.monotonic()
+            if done:
+                return
+
+    watcher = threading.Thread(target=watch)
+    watcher.start()
+    try:
+        yield times
+    finally:
+        finished.set()
+        watcher.join()
 
 
 @pytest.fixture
@@ -715,17 +746,13 @@ def test_checkout_preparation_is_supervised(
         "import os,signal,time; os.setsid(); signal.signal(signal.SIGTERM,signal.SIG_IGN); "
         f"open({str(markers)!r} + '/child-' + str(os.getpid()),'w').write(str(time.monotonic())); time.sleep(60)"
     )
-    # The hook records when the runner stops it. The runner decides timed_out or
-    # interrupted before it signals, so a stop marker is past the deadline.
+    # The hook records its pid; exit_times observes when the runner stops it. The
+    # runner decides timed_out or interrupted before it signals, so an observed
+    # stop is past the deadline.
     hook.write_text(
         f"#!{sys.executable}\n"
-        "import os,signal,subprocess,sys,time\n"
+        "import os,subprocess,sys,time\n"
         f"open({str(markers)!r} + '/hook-' + str(os.getpid()),'w').close()\n"
-        "def stopped(*_):\n"
-        f"    with open({str(markers)!r} + '/term-' + str(os.getpid()),'w') as marker:\n"
-        "        marker.write(str(time.monotonic()))\n"
-        "    os._exit(1)\n"
-        "signal.signal(signal.SIGTERM, stopped)\n"
         "time.sleep(0.3)\n"
         f"subprocess.Popen([sys.executable,'-c',{child_code!r}], "
         "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
@@ -756,31 +783,35 @@ def test_checkout_preparation_is_supervised(
         },
     )
     cancel = threading.Event()
-    # cancel: once both helpers run; late_cancel: once the runner stopped both hooks.
-    trigger = {"cancel": "child-*", "late_cancel": "term-*"}.get(interruption)
     agent_markers = {name: tmp_path / f"agent-{name}" for name in ("a", "b")}
     try:
-        with set_when(cancel, lambda: trigger is not None and written(markers.glob(trigger)) == 2):
-            batch = run_workflow(
-                # Deadlines far above unloaded preparation (0.2 s) plus the delays above.
-                configuration(["a", "b"], ["c"], deadline=60 if interruption == "cancel" else 3),
-                "audit",
-                "prompt",
-                repository,
-                cancel=cancel,
-                concurrency=2,
-                output_dir=tmp_path / "run",
-                adapter_loader=lambda _: FakeAdapter(
-                    {name: {"marker": str(path)} for name, path in agent_markers.items()}
-                ),
-            )
+        with exit_times(lambda: [int(path.name.removeprefix("hook-")) for path in markers.glob("hook-*")]) as stopped:
+            # cancel: once both helpers run; late_cancel: once the runner stopped both hooks.
+            ready = {
+                "cancel": lambda: written(markers.glob("child-*")) == 2,
+                "late_cancel": lambda: len(stopped) == 2,
+            }.get(interruption, lambda: False)
+            with set_when(cancel, ready):
+                batch = run_workflow(
+                    # Deadlines far above unloaded preparation (0.2 s) plus the delays above.
+                    configuration(["a", "b"], ["c"], deadline=60 if interruption == "cancel" else 3),
+                    "audit",
+                    "prompt",
+                    repository,
+                    cancel=cancel,
+                    concurrency=2,
+                    output_dir=tmp_path / "run",
+                    adapter_loader=lambda _: FakeAdapter(
+                        {name: {"marker": str(path)} for name, path in agent_markers.items()}
+                    ),
+                )
         expected = "interrupted" if interruption == "cancel" else "timed_out"
         assert [result.state for result in batch.results] == [expected, expected]
-        assert cancel.is_set() == (trigger is not None)
+        assert cancel.is_set() == (interruption != "none")
         # Well below the 60 s hook, helper, and cancel-case deadline: stopping waits for none of them.
         assert batch.elapsed_seconds < 30
         starts = sorted(float(path.read_text()) for path in markers.glob("child-*"))
-        stops = sorted(float(path.read_text()) for path in markers.glob("term-*"))
+        stops = sorted(stopped.values())
         assert len(starts) == 2 and len(stops) == 2
         # Preparations progress together: both helpers start before either hook is stopped.
         assert starts[-1] < stops[0]
