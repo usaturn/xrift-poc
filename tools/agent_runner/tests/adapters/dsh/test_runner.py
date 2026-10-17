@@ -14,6 +14,7 @@ from tools.agent_runner import environ, runner
 from tools.agent_runner.models import Agent, Assignment, Config, Role, Workflow
 from tools.agent_runner.process import ProcessResult
 from tools.agent_runner.runner import run_workflow
+from tools.agent_runner.tests.test_runner import set_when, written
 from tools.test_support.repos import create_env_repo
 
 pytest_plugins = ("tools.test_support.plugin",)
@@ -310,17 +311,12 @@ def test_timeout_and_cancellation_stop_descendants(
     config: Config, repository: Path, tmp_path: Path, interrupt: bool
 ) -> None:
     config.agents["a"].command[-1] = "hang"
-    config.roles["inspect"].deadline_seconds = 2.0
+    # Cancel once the runtime wrote its last file, not on a clock started before
+    # the run; the timeout covers checkout and startup (unloaded 0.17 s) (#694).
+    config.roles["inspect"].deadline_seconds = 60.0 if interrupt else 3.0
     cancel = threading.Event()
-    timer = threading.Timer(1.0, cancel.set)
-    if interrupt:
-        timer.start()
-    try:
+    with set_when(cancel, lambda: interrupt and written(tmp_path.glob("run/*/attempt-1/worktree/child.pid")) == 1):
         result = run_workflow(config, "test", "respond", repository, output_dir=tmp_path / "run", cancel=cancel)
-    finally:
-        timer.cancel()
-        if interrupt:
-            timer.join()
     attempt = result.results[0].attempts[0]
     assert attempt.state == ("interrupted" if interrupt else "timed_out")
     assert attempt.stop_confirmed
