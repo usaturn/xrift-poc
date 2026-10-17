@@ -276,7 +276,8 @@ Dev Container を使わないローカル環境のみ、以下を手動で順に
 14. `install -m 0755 .devcontainer/pixg ~/.local/bin/pixg`
 15. `install -m 0755 .devcontainer/pigemf ~/.local/bin/pigemf`
 16. `install -m 0755 .devcontainer/pigemp ~/.local/bin/pigemp`
-17. `zsh scripts/setup_pi_superagents.zsh`
+17. `install -m 0755 .devcontainer/pigema ~/.local/bin/pigema`
+18. `zsh scripts/setup_pi_superagents.zsh`
 
 `--with-deps` は sudo を使うため、エージェントではなく人間が実行する。
 OS 依存を省くと `libglib-2.0.so.0` が見つからず起動に失敗する
@@ -306,7 +307,7 @@ models.json だけが bind mount の内側で、他が外側にあるためで�
 - `.devcontainer/piccd` → `~/.local/bin/piccd`。pigo と同じ理由で毎回上書き
 - `.devcontainer/piga`・`pigs`・`pigl` → `~/.local/bin/`。同様に毎回上書き
 - `.devcontainer/pixg` → `~/.local/bin/pixg`。同様に毎回上書き
-- `.devcontainer/pigemf`・`pigemp` → `~/.local/bin/`。同様に毎回上書き
+- `.devcontainer/pigemf`・`pigemp`・`pigema` → `~/.local/bin/`。同様に毎回上書き
 - `.devcontainer/pi-superagents/<launcher>.json` → `~/.pi/agent/extensions/subagent.d/<launcher>/config.json`、
   `.devcontainer/pi-superagents-exec.zsh` → `~/.local/bin/pi-superagents-exec.zsh`。
   `install_beforehand.bash` は `setup_pi_superagents.zsh` を呼んでこの 2 種を配置する
@@ -485,20 +486,33 @@ Grok 4.7 の thinking level は `low` / `medium` / `high` / `xhigh` で、
 `opencode-go/deepseek-v4.1-flash` の `max`、`max` が `xai/grok-4.7` の
 `xhigh` を使う。未認証時に別モデルへ自動フォールバックはしない。
 
-### Vertex AI の Gemini ランチャー（#578）
+### Vertex AI の Gemini ランチャー（#578・#680）
 
 | launcher | Provider / Model | thinking |
 |---|---|---|
 | `pigemf` | `google-vertex/gemini-3.8-flash` | `high` |
 | `pigemp` | `google-vertex/gemini-3.1-pro-preview` | `high` |
+| `pigema` | `google-vertex/gemini-4-argon` | `high` |
 
-両ランチャーは Pi の native Google Vertex AI adapter と Application Default
+3 ランチャーとも Pi の native Google Vertex AI adapter と Application Default
 Credentials（ADC）を使う。Gemini API 用の `google` provider ではない。
-両モデルはインストール済みの Pi 1.0.4 の bundled catalog にあり、独自のモデル
-定義は追加しない。Google の公式
-[Flex PayGo 対応モデル一覧](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/flex-paygo)
-では、両 ID が `global` endpoint の対象である。location を変更する場合は、
-利用するモデルの対応先を確認する。
+3 モデルとも Pi 1.3.0 の bundled catalog にあり、独自のモデル定義は追加しない。
+thinking level はどれも `low` / `medium` / `high` で、`high` が実際の最大値である。
+
+対応する location と課金の方式はモデルによって異なる（Google の公式情報、2026-10-15 更新）。
+
+- `gemini-3.8-flash`・`gemini-3.1-pro-preview`:
+  [Flex PayGo 対応モデル一覧](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/flex-paygo)
+  で `global` endpoint の対象
+- `gemini-4-argon`:
+  [モデルのページ](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/4-argon)
+  で GA。location は `global` と multi-region の `us`・`eu`、課金の方式は
+  Standard PayGo・Priority PayGo・Provisioned Throughput。Flex PayGo の一覧には載っていない
+
+location を変更する場合は、利用するモデルの対応先を確認する。
+`gemini-4-argon` の単価は、Pi 1.3.0 の catalog で 1M トークンあたり input $2・output $10 と、
+`gemini-3.8-flash`（input $0.75・output $3.75）より高い。Pi のシステムプロンプトだけで
+入力が約 1 万トークンあるため、#680 の起票時の実測では 1 回の呼び出しで約 $0.02 かかった。
 
 起動時の環境変数は次の順で決める（空文字も未設定として扱う）。
 
@@ -526,10 +540,11 @@ export GOOGLE_CLOUD_LOCATION=global
 export GOOGLE_APPLICATION_CREDENTIALS=/path/to/credentials.json
 pigemf
 pigemp --session 'session with spaces.jsonl'
+pigema
 ```
 
 環境変数の API key を外すだけでは、Pi が優先する `auth.json` の保存済み key や
-`models.json` の `apiKey` が使われ得る。そのため、この 2 ランチャーだけは、
+`models.json` の `apiKey` が使われ得る。そのため、この 3 ランチャーだけは、
 起動時に `auth.json` を設定として解析し、全 provider の `type: "oauth"` の entry を
 除外する。他 provider の非 OAuth entry は保持し、`google-vertex` を
 `{type: "api_key", key: "gcp-vertex-credentials"}` に置き換えた読み取り専用の overlay を、
@@ -551,7 +566,7 @@ mode `0600` で作る。同時起動時も既存ファイルは置き換えず�
 **読み取り専用 overlay の注意:** Pi は起動時やモデル切替時にも OAuth を更新する。
 読み取り専用の snapshot では更新後の token を保存できず、refresh token が差し替わると
 元の認証が使えなくなる可能性があるため、期限内の OAuth entry も含めて除外する。
-この 2 ランチャー内では保存済み OAuth credential を使えない。それを使う provider は
+この 3 ランチャー内では保存済み OAuth credential を使えない。それを使う provider は
 素の `pi` または既存の対応ランチャーで利用する。`auth.json` は全 provider で読み取り専用
 なので、`/login`・`/logout` も素の `pi` で行う。
 重ねるのは `auth.json` だけで、settings・sessions とそれらの lock は通常の保存先を使う。
@@ -566,6 +581,13 @@ availability API は認証を確認するため、このガードでは使わな
 配置変更、必要な ID の欠落では起動を止め、fuzzy match や別モデルのメタデータを
 複製するフォールバックを防ぐ。catalog の cache や独自定義で欠落を補わず、Pi 本体を
 更新する。dry-run は argv だけを表示し、auth の読み取りや作成を行わない。
+確かめる ID は、親 Pi のモデルと、そのランチャーの tier が使う Vertex のモデルである
+（例: `pigema` は `gemini-4-argon` と `cheap` の `gemini-3.8-flash`）。
+
+Vertex ランチャーの一覧と確かめる ID は、`pi-superagents-exec.zsh` の
+`pi_google_vertex_models` だけで定義する。auth の overlay・catalog の確認・ADC の受け渡しは、
+この一覧に載ったランチャーにだけ適用される。Vertex ランチャーを足すときは、ランチャー本体と
+tier の設定に加えてこの一覧に登録し、確かめる ID を tier に合わせる。
 
 コンテナ作成／リビルド時は実行ファイルを毎回配置する。リビルドしない既存環境では、
 更新済みの親リポジトリのルートで次を実行する。認証設定やモデル定義は変更しない。
@@ -574,6 +596,7 @@ availability API は認証を確認するため、このガードでは使わな
 mkdir -p ~/.local/bin
 install -m 0755 .devcontainer/pigemf ~/.local/bin/pigemf
 install -m 0755 .devcontainer/pigemp ~/.local/bin/pigemp
+install -m 0755 .devcontainer/pigema ~/.local/bin/pigema
 zsh scripts/setup_pi_superagents.zsh --if-absent
 ```
 
@@ -697,7 +720,7 @@ Pi 1.0.0 から、対話 TUI の既定モードは `fullscreen` になった。�
 過去の出力が残らず、コピーモードでさかのぼれない。
 
 このリポジトリが管理する `pigo`・`pigod`・`piccg`・`piccd`・`piga`・
-`pigs`・`pigl`・`pixg`・`pigemf`・`pigemp` は、共通ヘルパ `pi-superagents-exec.zsh` から
+`pigs`・`pigl`・`pixg`・`pigemf`・`pigemp`・`pigema` は、共通ヘルパ `pi-superagents-exec.zsh` から
 `pi --tui-mode regular` を起動する。regular は通常画面と端末のスクロール履歴を
 使うため、画面高を超えた出力も Herdr のコピーモードで読める。
 ユーザー／プロジェクトの `settings.json` は書き換えず、起動引数で指定する。
@@ -744,12 +767,14 @@ zsh scripts/setup_pi_superagents.zsh --if-absent
 | `pixg` | `opencode-go/deepseek-v4.1-flash` | `opencode-go/deepseek-v4.1-flash` | `xai/grok-4.7` |
 | `pigemf` | `google-vertex/gemini-3.8-flash` | `google-vertex/gemini-3.8-flash` | `google-vertex/gemini-3.8-flash` |
 | `pigemp` | `google-vertex/gemini-3.8-flash` | `google-vertex/gemini-3.1-pro-preview` | `google-vertex/gemini-3.1-pro-preview` |
+| `pigema` | `google-vertex/gemini-3.8-flash` | `google-vertex/gemini-4-argon` | `google-vertex/gemini-4-argon` |
 
 `piga` の子 Pi は `cheap` / `balanced` が `xhigh`、`max` が `max`。
 `pigs` の子 Pi は `cheap` が `max`、`balanced` が `xhigh`、`max` が `max`。
 `pigl` の子 Pi は全 tier が `xhigh`。`pixg` の子 Pi は DeepSeek の
 `cheap` / `balanced` が `max`、Grok の `max` が `xhigh`。
-`pigemf`・`pigemp` は全 tier が `high`。
+`pigemf`・`pigemp`・`pigema` は全 tier が `high`。`pigema` は Gemini 4 Argon の単価が高いため、
+軽い子タスクの `cheap` だけを Gemini 3.8 Flash にしている。
 tier を変更するときは、リポジトリの `.devcontainer/pi-superagents/<launcher>.json` を編集してから次を実行する。`install_beforehand.bash` は既存の設定を保持するため、rebuild だけでは反映されない。
 
 ```bash

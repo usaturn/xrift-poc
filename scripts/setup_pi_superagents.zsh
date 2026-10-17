@@ -36,7 +36,7 @@ readonly SHARED_DIR="${EXT_DIR}/subagent"
 readonly LAUNCHER_ROOT="${EXT_DIR}/subagent.d"
 readonly BIN_DIR="${HOME}/.local/bin"
 
-readonly LAUNCHERS=(pigo pigod piccg piccd piga pigs pigl pixg pigemf pigemp)
+readonly LAUNCHERS=(pigo pigod piccg piccd piga pigs pigl pixg pigemf pigemp pigema)
 
 typeset if_absent=0
 if [[ "${1:-}" == "--if-absent" ]]; then

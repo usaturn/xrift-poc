@@ -1,0 +1,9 @@
+{
+  "superagents": {
+    "modelTiers": {
+      "cheap": { "model": "google-vertex/gemini-3.8-flash", "thinking": "high" },
+      "balanced": { "model": "google-vertex/gemini-4-argon", "thinking": "high" },
+      "max": { "model": "google-vertex/gemini-4-argon", "thinking": "high" }
+    }
+  }
+}

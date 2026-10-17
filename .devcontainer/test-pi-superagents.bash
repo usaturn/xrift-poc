@@ -434,6 +434,30 @@ PY
     done
 }
 
+# Pi に google-vertex を渡すランチャーだけが auth.json の読み取り専用 overlay を重ねる。
+# helper の Vertex ランチャーの一覧へ登録し忘れると、保存済みの Vertex key や OAuth が
+# overlay なしで Pi に渡る。bwrap 側の引数（"pi" の行より前）だけを見る。
+test_only_vertex_launchers_overlay_auth() {
+    local launcher home out provider overlay
+    local -a own
+    for launcher in "${LAUNCHERS[@]}"; do
+        home="$(make_home "$launcher" with-config)"
+        write_oauth_auth "$home"
+        out="$(run_launcher "$home" "$launcher")"
+        mapfile -t own < <(pi_args_of "$out")
+        provider="$(option_value --provider "${own[@]}")" || provider=""
+        overlay=0
+        if printf '%s\n' "$out" | awk '$0 == "pi" { exit } $0 == "--ro-bind-data" { found = 1 } END { exit !found }'; then
+            overlay=1
+        fi
+        if [ "$provider" = google-vertex ]; then
+            assert_eq "$overlay" 1 "${launcher} passes google-vertex to Pi and must overlay auth.json"
+        else
+            assert_eq "$overlay" 0 "${launcher} does not use google-vertex and must not overlay auth.json"
+        fi
+    done
+}
+
 test_pixg_oauth_guidance() {
     local home status out
     # 専用の home を使う。先行テストが ${TEST_ROOT}/pixg に置いた auth.json が
@@ -1028,6 +1052,7 @@ test_configs_are_minimal_partial_configs
 test_launcher_files_are_executable
 test_launchers_wrap_pi_with_their_own_config
 test_launchers_select_regular_and_forward_user_arguments
+test_only_vertex_launchers_overlay_auth
 test_pigs_opencode_key_reaches_child_process
 test_pixg_oauth_guidance
 test_commandcode_key_check_runs_before_launch
