@@ -85,6 +85,9 @@ uv run --no-project python "$XRIFT_POC_ROOT/.agents/scripts/route_target.py" "${
 # zsh では "$VAR:r" などが修飾子になるため、: の前の変数は ${VAR} で区切る。path・status を変数名に使わない
 scan_before_push() (
     set -euo pipefail
+    # 呼び出し元の IFS を引き継ぐと "${log_opts[*]}" の区切りが変わり、Gitleaks の内部の git log だけが失敗して成功を返す。
+    # 本体はサブシェルなので、既定の値に戻しても呼び出し元へ漏れない
+    IFS=$' \t\n'
     : "${XRIFT_POC_ROOT:?XRIFT_POC_ROOT を xrift-poc の main checkout のパスに設定する}"
     here="$(pwd -P)" || return 1
     # stop と、判定の前提が壊れているときは、route_target.py が 0 以外で終わる

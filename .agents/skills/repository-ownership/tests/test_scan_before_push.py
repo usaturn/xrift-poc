@@ -451,6 +451,33 @@ def test_scan_stops_when_git_log_fails(tmp_path: Path, case: str) -> None:
     assert result.stdout == ""
 
 
+# 関数は呼び出し元のシェルの IFS を引き継ぐ。--log-opts の連結が IFS に左右されると、
+# Gitleaks の内部の git log だけが失敗し、0 commits scanned のまま成功を返していた。
+@pytest.mark.parametrize(
+    ("shell", "ifs"), [("bash", ","), ("bash", "''"), ("bash", "$'\\n'"), ("zsh", ","), ("zsh", "$'\\n'")]
+)
+def test_scan_does_not_depend_on_the_caller_ifs(tmp_path: Path, shell: str, ifs: str) -> None:
+    layout = make_layout(tmp_path / SPACED)
+    working = layout.feature
+    token = secret_like_token()
+    commit_file(working, "secret.txt", f'token = "{token}"\n', "leak")
+    result = run(layout, working, f"IFS={ifs}\nscan_before_push", real_gitleaks_env(), shell=shell)
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert leaks_found(result.stderr) >= 1
+    assert token not in result.stderr
+
+
+@pytest.mark.parametrize("shell", ["bash", "zsh"])
+def test_scan_accepts_a_clean_commit_with_a_changed_ifs(tmp_path: Path, shell: str) -> None:
+    layout = make_layout(tmp_path / SPACED)
+    working = layout.feature
+    sha = commit_file(working, "app.txt", "change\n", "change")
+    result = run(layout, working, "IFS=$'\\n'\nscan_before_push", real_gitleaks_env(), shell=shell)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == f"{sha}\n"
+
+
 def test_scan_stops_on_broken_base_config(tmp_path: Path) -> None:
     layout = make_layout(tmp_path / SPACED)
     working = layout.feature
