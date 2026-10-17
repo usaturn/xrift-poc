@@ -135,7 +135,7 @@ def test_large_tmpdir_spill_is_kept_in_runtime_tree_and_redacted(
     assert list(ambient_tmp.iterdir()) == []
 
 
-@pytest.mark.parametrize("mode", ["symlink", "fifo", "tmp-symlink", "tmp-fifo"])
+@pytest.mark.parametrize("mode", ["symlink", "fifo"])
 def test_unsafe_runtime_files_are_reported_not_followed(
     config: Config, repository: Path, tmp_path: Path, mode: str
 ) -> None:
@@ -147,13 +147,73 @@ def test_unsafe_runtime_files_are_reported_not_followed(
     assert attempt.sensitive_paths
     assert attempt.work_dir is not None and attempt.request_path is not None
     assert (attempt.work_dir / "README.md").read_text() == "# fixture xrift-poc\n"
-    managed = attempt.request_path.parent / "dsh" / ("tmp" if mode.startswith("tmp-") else "state")
+    # Retained records keep the strict policy: links and FIFOs are reported, never removed.
+    managed = attempt.request_path.parent / "dsh" / "state"
     assert all(path.is_relative_to(managed) for path in attempt.sensitive_paths)
-    if mode.endswith("symlink"):
+    assert os.path.lexists(attempt.sensitive_paths[0])
+    if mode == "symlink":
         assert attempt.sensitive_paths[0].is_symlink()
 
 
-@pytest.mark.parametrize("mode,replaced", [("home-link", "dsh/home"), ("root-link", "dsh")])
+@pytest.mark.parametrize("mode,name", [("tmp-symlink", "foreign-link"), ("tmp-fifo", "spill.fifo")])
+def test_scratch_links_and_fifos_are_unlinked_not_followed(
+    config: Config, repository: Path, tmp_path: Path, mode: str, name: str
+) -> None:
+    config.agents["a"].command[-1] = mode
+    result = run_workflow(config, "test", "respond", repository, output_dir=tmp_path / "run")
+    attempt = result.results[0].attempts[0]
+    assert attempt.state == "success" and attempt.stop_confirmed
+    assert attempt.sensitive_paths == []
+    assert attempt.work_dir is not None and attempt.request_path is not None
+    assert not os.path.lexists(attempt.request_path.parent / "dsh" / "tmp" / name)
+    assert (attempt.work_dir / "README.md").read_text() == "# fixture xrift-poc\n"
+
+
+@pytest.mark.parametrize("mode", ["pytest", "pytest-fixtures"])
+def test_real_pytest_scratch_is_accepted(config: Config, repository: Path, tmp_path: Path, mode: str) -> None:
+    config.agents["a"].command[-1] = mode
+    result = run_workflow(config, "test", "respond", repository, output_dir=tmp_path / "run")
+    attempt = result.results[0].attempts[0]
+    assert attempt.request_path is not None and attempt.work_dir is not None
+    root = attempt.request_path.parent / "dsh"
+    capture = json.loads((root / "state" / "capture.json").read_text())
+    assert capture["pytest"]["exit"] == 0 and "1 passed" in capture["pytest"]["summary"][0]
+    assert attempt.state == "success" and attempt.stop_confirmed
+    assert attempt.sensitive_paths == []
+    assert result.outside_changes == []
+    leftovers = [
+        path for path in (root / "tmp").rglob("*") if path.is_symlink() or not (path.is_dir() or path.is_file())
+    ]
+    assert leftovers == []
+    # Regular files written by the test stay for diagnosis.
+    assert [path.read_text() for path in (root / "tmp").rglob("clean.txt")] == ["synthetic clean fixture\n"]
+    assert (attempt.work_dir / "README.md").read_text() == "# fixture xrift-poc\n"
+    if mode == "pytest-fixtures":
+        # outside-dir pointed at the checkout; its own link was not reached through it.
+        assert (attempt.work_dir / "sentinel-link").is_symlink()
+
+
+def test_scratch_unlink_failure_is_reported_not_success(
+    config: Config, repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = os.unlink
+
+    def failing(path: Any, *, dir_fd: int | None = None) -> None:
+        if path == "spill.fifo":
+            raise PermissionError("injected unlink failure")
+        original(path, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "unlink", failing)
+    config.agents["a"].command[-1] = "tmp-fifo"
+    result = run_workflow(config, "test", "respond", repository, output_dir=tmp_path / "run")
+    attempt = result.results[0].attempts[0]
+    assert attempt.state == "response_failed" and attempt.stop_confirmed
+    assert attempt.request_path is not None
+    fifo = attempt.request_path.parent / "dsh" / "tmp" / "spill.fifo"
+    assert attempt.sensitive_paths == [fifo]
+
+
+@pytest.mark.parametrize("mode,replaced", [("home-link", "dsh/home"), ("root-link", "dsh"), ("tmp-link", "dsh/tmp")])
 def test_replaced_home_or_root_link_is_reported_and_target_kept(
     config: Config, repository: Path, tmp_path: Path, mode: str, replaced: str
 ) -> None:
@@ -168,6 +228,10 @@ def test_replaced_home_or_root_link_is_reported_and_target_kept(
     assert (attempt.work_dir / ".git").exists()
     if mode == "root-link":
         assert (attempt.work_dir / "home" / "keep.txt").read_text() == "keep\n"
+    # Links behind a replaced root or TMPDIR are outside the scratch and stay.
+    target = {"root-link": "tmp", "tmp-link": "scratch"}.get(mode)
+    if target is not None:
+        assert (attempt.work_dir / target / "keep-link").is_symlink()
 
 
 def test_home_removal_failure_is_reported_not_success(
@@ -232,6 +296,7 @@ def test_unconfirmed_stop_reports_runtime_root(
     config: Config, repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async def unconfirmed(*args: Any, **kwargs: Any) -> ProcessResult:
+        (Path(kwargs["env"]["TMPDIR"]) / "live-link").symlink_to(kwargs["cwd"] / "README.md")
         return ProcessResult(None, 0, False, 0.0)
 
     monkeypatch.setattr(runner, "execute", unconfirmed)
@@ -239,6 +304,8 @@ def test_unconfirmed_stop_reports_runtime_root(
     attempt = result.results[0].attempts[0]
     assert attempt.state == "response_failed" and not attempt.stop_confirmed
     assert attempt.request_path is not None
-    assert attempt.request_path.parent / "dsh" in attempt.sensitive_paths
-    # Without stop evidence a live writer may still use HOME; it is neither removed nor read.
-    assert (attempt.request_path.parent / "dsh" / "home").is_dir()
+    root = attempt.request_path.parent / "dsh"
+    assert root in attempt.sensitive_paths
+    # Without stop evidence a live writer may still use HOME and TMPDIR; neither is removed nor read.
+    assert (root / "home").is_dir()
+    assert (root / "tmp" / "live-link").is_symlink()

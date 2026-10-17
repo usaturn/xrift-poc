@@ -3,8 +3,9 @@
 The CLI owns profile initialization; no plugin install or subprocess runs here.
 Only sessionId is observable in its JSONL projection. Exit and descendant stop
 status are independently enforced by the runner, not inferred from ``final``.
-HOME is a disposable cache the runner removes after stop; state, the patch and
-a private TMPDIR (DSH spills large command output there) are retained redacted.
+HOME is a disposable cache the runner removes after stop. State, the patch and
+regular files in a private TMPDIR (DSH spills large command output there) are
+retained redacted; links and special files tools leave in TMPDIR are unlinked.
 """
 
 import json

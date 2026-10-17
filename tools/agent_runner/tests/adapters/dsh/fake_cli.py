@@ -28,6 +28,56 @@ def _home_cache(home: Path) -> None:
     module.parent.chmod(0o555)
 
 
+_PYTEST_CASE = '''"""Synthetic passing test; no credentials or external files are read."""
+
+import os
+from pathlib import Path
+
+
+def test_tmp_path(tmp_path: Path) -> None:
+    (tmp_path / "clean.txt").write_text("synthetic clean fixture\\n")
+    if os.environ["FAKE_PYTEST_FIXTURES"] == "1":
+        # Like the repository's safety fixtures: links out of tmp_path and a FIFO.
+        outside = Path(os.environ["FAKE_OUTSIDE"])
+        (tmp_path / "outside-file").symlink_to(outside / "README.md")
+        (tmp_path / "outside-dir").symlink_to(outside)
+        os.mkfifo(tmp_path / "fixture.fifo")
+    assert (tmp_path / "clean.txt").is_file()
+'''
+
+
+def _run_pytest(fixtures: bool) -> dict[str, object]:
+    # Real pytest with its default retention: pytest-current and <test>current links stay in TMPDIR.
+    case = Path(tempfile.mkdtemp(prefix="pytest-input-"))
+    (case / "pytest.ini").write_text("[pytest]\n")
+    (case / "probe_case.py").write_text(_PYTEST_CASE)
+    if fixtures:
+        (Path.cwd() / "sentinel-link").symlink_to(Path.cwd() / "README.md")
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-c",
+            str(case / "pytest.ini"),
+            "-p",
+            "no:cacheprovider",
+            str(case / "probe_case.py"),
+        ],
+        env={
+            **os.environ,
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+            "FAKE_PYTEST_FIXTURES": "1" if fixtures else "0",
+            "FAKE_OUTSIDE": str(Path.cwd()),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return {"exit": completed.returncode, "summary": completed.stdout.strip().splitlines()[-1:]}
+
+
 def main() -> int:
     mode = sys.argv[1]
     args = sys.argv[2:]
@@ -55,6 +105,8 @@ def main() -> int:
         spill = Path(tempfile.mkdtemp(prefix="dsh-subprocess-")) / "output.log"
         spill.write_text("env dump\n" + "x" * 70000 + f"\nAPI_KEY={key}\n")
         capture["spill"] = str(spill)
+    if mode in {"pytest", "pytest-fixtures"}:
+        capture["pytest"] = _run_pytest(mode == "pytest-fixtures")
     (state / "capture.json").write_text(json.dumps(capture, ensure_ascii=False))
     if mode == "home-link":
         home.rmdir()
@@ -71,10 +123,20 @@ def main() -> int:
         (Path(os.environ["TMPDIR"]) / "foreign-link").symlink_to(Path.cwd() / "README.md")
     elif mode == "tmp-fifo":
         os.mkfifo(Path(os.environ["TMPDIR"]) / "spill.fifo")
+    elif mode == "tmp-link":
+        # TMPDIR itself now resolves into the checkout, which holds a link of its own.
+        scratch = Path(os.environ["TMPDIR"])
+        target = Path.cwd() / "scratch"
+        target.mkdir()
+        (target / "keep-link").symlink_to(Path.cwd() / "README.md")
+        scratch.rmdir()
+        scratch.symlink_to(target)
     elif mode == "root-link":
-        # The whole runtime root now resolves into the checkout, which has its own home/.
+        # The whole runtime root now resolves into the checkout, which has its own home/ and tmp/.
         (Path.cwd() / "home").mkdir()
         (Path.cwd() / "home" / "keep.txt").write_text("keep\n")
+        (Path.cwd() / "tmp").mkdir()
+        (Path.cwd() / "tmp" / "keep-link").symlink_to(Path.cwd() / "README.md")
         home.parent.rename(home.parent.with_name("dsh-moved"))
         home.parent.symlink_to(Path.cwd())
     else:
