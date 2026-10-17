@@ -1,14 +1,16 @@
 """Workflow behavior against real disposable Git checkouts and fake Python CLIs."""
 
 import asyncio
+import contextlib
 import json
 import os
 import signal
 import subprocess
 import sys
 import threading
+import time
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Generator, Iterable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -95,6 +97,37 @@ class FakeAdapter:
             Receipt.model_validate_json(context.receipt_path.read_bytes()) if context.receipt_path.exists() else None
         )
         return AdapterOutcome(receipt, self.identity, self.outcome_state)
+
+
+@contextlib.contextmanager
+def set_when(event: threading.Event, ready: Callable[[], bool]) -> Generator[None]:
+    """Set event from a watcher thread once ready() holds inside the with block.
+
+    Interruption tests key cancellation to an observed point of the run, not to
+    a timer started before run_workflow: preparation before the slot and inside
+    the role deadline both stretch on a loaded host (#694). The event is never
+    set if ready() does not hold before the block ends.
+    """
+    finished = threading.Event()
+
+    def watch() -> None:
+        while not finished.wait(0.01):
+            if ready():
+                event.set()
+                return
+
+    watcher = threading.Thread(target=watch)
+    watcher.start()
+    try:
+        yield
+    finally:
+        finished.set()
+        watcher.join()
+
+
+def written(paths: Iterable[Path]) -> int:
+    """Count files whose content has been written (a single small write)."""
+    return sum(path.stat().st_size > 0 for path in paths)
 
 
 @pytest.fixture
@@ -427,21 +460,18 @@ def test_workflow_preserves_literal_environment(
     assert batch.results[0].attempts[-1].payload == expected
 
 
-def test_cancel_during_run_prevents_fallback(repository: Path) -> None:
+def test_cancel_during_run_prevents_fallback(repository: Path, tmp_path: Path) -> None:
     cancel = threading.Event()
-    timer = threading.Timer(0.2, cancel.set)
-    timer.start()
-    try:
+    started = tmp_path / "a-started"
+    with set_when(cancel, lambda: written(tmp_path.glob(started.name)) == 1):
         batch = run_workflow(
             configuration(fallback=["b"]),
             "audit",
             "prompt",
             repository,
             cancel=cancel,
-            adapter_loader=lambda _: FakeAdapter({"a": {"sleep": 2}}),
+            adapter_loader=lambda _: FakeAdapter({"a": {"sleep": 60, "marker": str(started)}}),
         )
-    finally:
-        timer.join()
     assert batch.results[0].state == "interrupted"
     assert len(batch.results[0].attempts) == 1
     assert batch.results[0].attempts[0].stop_confirmed
@@ -668,6 +698,9 @@ def test_unproven_capability_is_unsupported(repository: Path) -> None:
 
 # Real checkout hooks block synchronous Git; supervising preparation must keep
 # other assignments progressing, bound cancellation, and stop escaped helpers.
+# Cancellation follows observed events, never a timer started before
+# run_workflow, and every case runs with slow preparation before the slot and
+# inside the role deadline, as on a loaded host (#694).
 @pytest.mark.parametrize("interruption", ["none", "cancel", "late_cancel"])
 def test_checkout_preparation_is_supervised(
     repository: Path,
@@ -682,16 +715,32 @@ def test_checkout_preparation_is_supervised(
         "import os,signal,time; os.setsid(); signal.signal(signal.SIGTERM,signal.SIG_IGN); "
         f"open({str(markers)!r} + '/child-' + str(os.getpid()),'w').write(str(time.monotonic())); time.sleep(60)"
     )
+    # The hook records when the runner stops it. The runner decides timed_out or
+    # interrupted before it signals, so a stop marker is past the deadline.
     hook.write_text(
         f"#!{sys.executable}\n"
-        "import os,subprocess,sys,time\n"
+        "import os,signal,subprocess,sys,time\n"
+        f"open({str(markers)!r} + '/hook-' + str(os.getpid()),'w').close()\n"
+        "def stopped(*_):\n"
+        f"    with open({str(markers)!r} + '/term-' + str(os.getpid()),'w') as marker:\n"
+        "        marker.write(str(time.monotonic()))\n"
+        "    os._exit(1)\n"
+        "signal.signal(signal.SIGTERM, stopped)\n"
+        "time.sleep(0.3)\n"
         f"subprocess.Popen([sys.executable,'-c',{child_code!r}], "
         "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
         "print(os.environ['SERVICE_TOKEN'], flush=True)\n"
         "print(os.environ['UNCONFIGURED_SECRET'], file=sys.stderr, flush=True)\n"
-        "time.sleep(0.7)\n"
+        "time.sleep(60)\n"
     )
     hook.chmod(0o755)
+    real_snapshot = runner.snapshot_checkouts
+
+    def slow_snapshot(repository: Path) -> dict[str, str | None]:
+        time.sleep(0.3)
+        return real_snapshot(repository)
+
+    monkeypatch.setattr(runner, "snapshot_checkouts", slow_snapshot)
     monkeypatch.setenv("SERVICE_TOKEN", "prep-token-value")
     monkeypatch.setenv("UNCONFIGURED_SECRET", "ambient-prep-value")
     monkeypatch.setenv("GIT_DIR", "/bogus-ambient-git")
@@ -707,29 +756,34 @@ def test_checkout_preparation_is_supervised(
         },
     )
     cancel = threading.Event()
-    timer = threading.Timer(0.2 if interruption == "cancel" else 0.4, cancel.set)
-    if interruption != "none":
-        timer.start()
+    # cancel: once both helpers run; late_cancel: once the runner stopped both hooks.
+    trigger = {"cancel": "child-*", "late_cancel": "term-*"}.get(interruption)
     agent_markers = {name: tmp_path / f"agent-{name}" for name in ("a", "b")}
     try:
-        batch = run_workflow(
-            configuration(["a", "b"], ["c"], deadline=5 if interruption == "cancel" else 0.3),
-            "audit",
-            "prompt",
-            repository,
-            cancel=cancel,
-            concurrency=2,
-            output_dir=tmp_path / "run",
-            adapter_loader=lambda _: FakeAdapter(
-                {name: {"marker": str(path)} for name, path in agent_markers.items()}
-            ),
-        )
+        with set_when(cancel, lambda: trigger is not None and written(markers.glob(trigger)) == 2):
+            batch = run_workflow(
+                # Deadlines far above unloaded preparation (0.2 s) plus the delays above.
+                configuration(["a", "b"], ["c"], deadline=60 if interruption == "cancel" else 3),
+                "audit",
+                "prompt",
+                repository,
+                cancel=cancel,
+                concurrency=2,
+                output_dir=tmp_path / "run",
+                adapter_loader=lambda _: FakeAdapter(
+                    {name: {"marker": str(path)} for name, path in agent_markers.items()}
+                ),
+            )
         expected = "interrupted" if interruption == "cancel" else "timed_out"
         assert [result.state for result in batch.results] == [expected, expected]
-        assert batch.elapsed_seconds < 1.1
+        assert cancel.is_set() == (trigger is not None)
+        # Well below the 60 s hook, helper, and cancel-case deadline: stopping waits for none of them.
+        assert batch.elapsed_seconds < 30
         starts = sorted(float(path.read_text()) for path in markers.glob("child-*"))
-        assert len(starts) == 2
-        assert starts[1] - starts[0] < 0.15
+        stops = sorted(float(path.read_text()) for path in markers.glob("term-*"))
+        assert len(starts) == 2 and len(stops) == 2
+        # Preparations progress together: both helpers start before either hook is stopped.
+        assert starts[-1] < stops[0]
         assert not any(path.exists() for path in agent_markers.values())
         for result in batch.results:
             assert len(result.attempts) == 1
@@ -748,11 +802,9 @@ def test_checkout_preparation_is_supervised(
             record = Path(f"/proc/{pid}/stat")
             assert not record.exists() or record.read_bytes().rsplit(b")", 1)[1].split()[0] in (b"Z", b"X")
     finally:
-        if interruption != "none":
-            timer.join()
-        for marker in markers.glob("child-*"):
+        for marker in [*markers.glob("child-*"), *markers.glob("hook-*")]:
             try:
-                os.kill(int(marker.name.removeprefix("child-")), signal.SIGKILL)
+                os.kill(int(marker.name.split("-", 1)[1]), signal.SIGKILL)
             except ProcessLookupError:
                 pass
 
@@ -878,7 +930,9 @@ def test_devin_retained_export_is_redacted_after_timeout(
     repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _literal_env(monkeypatch, "synthetic-token-3456")
-    config = _as_devin(configuration(deadline=1.0))
+    # The deadline also covers checkout and CLI startup before the export exists;
+    # keep it far above their unloaded 0.2 s (#694).
+    config = _as_devin(configuration(deadline=3.0))
     config.agents["a"].env = ["SERVICE_TOKEN"]
     batch = run_workflow(
         config,
@@ -886,7 +940,7 @@ def test_devin_retained_export_is_redacted_after_timeout(
         "prompt",
         repository,
         output_dir=tmp_path / "run",
-        adapter_loader=lambda _: FakeAdapter({"a": {"sleep": 3, "devin_export": _devin_configurable_export()}}),
+        adapter_loader=lambda _: FakeAdapter({"a": {"sleep": 60, "devin_export": _devin_configurable_export()}}),
     )
     attempt = batch.results[0].attempts[0]
     assert attempt.state == "timed_out" and attempt.stop_confirmed
@@ -924,9 +978,7 @@ def test_devin_retained_export_is_redacted_after_interruption(
     config = _as_devin(configuration(deadline=6.0))
     config.agents["a"].env = ["SERVICE_TOKEN"]
     cancel = threading.Event()
-    timer = threading.Timer(0.3, cancel.set)
-    timer.start()
-    try:
+    with set_when(cancel, lambda: written((tmp_path / "run").glob("*/attempt-1/export.json")) == 1):
         batch = run_workflow(
             config,
             "audit",
@@ -934,10 +986,8 @@ def test_devin_retained_export_is_redacted_after_interruption(
             repository,
             output_dir=tmp_path / "run",
             cancel=cancel,
-            adapter_loader=lambda _: FakeAdapter({"a": {"sleep": 2, "devin_export": _devin_configurable_export()}}),
+            adapter_loader=lambda _: FakeAdapter({"a": {"sleep": 60, "devin_export": _devin_configurable_export()}}),
         )
-    finally:
-        timer.join()
     attempt = batch.results[0].attempts[0]
     assert attempt.state == "interrupted" and attempt.stop_confirmed
     assert attempt.request_path is not None
