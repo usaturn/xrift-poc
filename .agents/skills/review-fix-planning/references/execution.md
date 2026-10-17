@@ -71,6 +71,13 @@ uv run --project "$TOPLEVEL/tools/devenv" --locked python \
 
 任意: `--template <path>`、`--config <path>`、`--assign self-review=<agent|self>`、`--assign fix-check=<agent|self>`。役割は各1担当で明示fallbackだけ。review rolesのwrites=False/result_shape=jsonは必須。境界を保って投影できない設定はエラーで、同モデル除外を捨てたりfallbackを追加したりしない。
 
+self-review・fix-checkには、runtimeが `dsh` の担当（`dsh-ccd`・`dsh-go` など）を一次担当にもfallbackにも割り当てられない。一次担当がselfでもfallbackを見る。loopはDSHのレビュアーに親側の準備をするが、run_rolesはしないので、DSHの担当は完了できずに1回枠だけを消費する。
+
+- DSHの子はHOMEを隔離していてGitHubの資格情報を持たない。pr-reviewの `--runtime dsh` は、親が事前に取ったPRの情報とGitのbundleの記述子（`parent_pr_data`。`pr-review/scripts/review_run.py` の `prepare_parent` が作り、loopが呼ぶ）をpromptに入れたrequestを必須にし、completeは保存せずに `staged` を返す。保存は停止確認後に親が行う（同じファイルの `finalize_parent_batch`。loopが呼ぶ）
+- 承認なしのDSHはbubblewrapの中で動き、書けるのは隔離したHOME・TMPDIR、runnerのworktree、`sandbox_write_paths` だけ。保存先・保存ロック（loopの `review_write_paths`）も、fix-checkが隔離したworktreeを作るときの共有の `.git` へのworktreeの登録も許可されない
+
+run_rolesは投影の直後、requestの検査とGitの照会より前にexit 2で止まり、planningの予約、`--output-dir`、起動のどれも行わない（stderrに理由を出す）。DSHをself-review・fix-checkに使うには、run_rolesにloopと同じ親側の準備（prepare_parent・書き込みの許可・stagedの保存）を足す別の変更が要る。implementは対象外（runnerのworktreeの中に書く役割で、pr-reviewのDSHの手順を使わない）。
+
 ### 回数と受け取り
 
 - PLANNING_JSONは司令塔が起動前に作る仮のv2 planning（SKILL.md 5節の手順5）。形は `.agents/review-findings.md` 6章のv2例と同じで、`outcome` は仮の `stopped`、`comment_id` はnull、`activities` に `pre_push_review` を入れない。共有定義の「サイクルの最後に書く」は、最後に同じファイルを更新することで満たす（共有定義は変えない）。
