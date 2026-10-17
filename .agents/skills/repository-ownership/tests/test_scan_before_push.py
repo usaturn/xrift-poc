@@ -405,3 +405,70 @@ def test_scan_accepts_nothing_to_push(tmp_path: Path) -> None:
     result = run(layout, layout.feature, "scan_before_push", real_gitleaks_env())
     assert result.returncode == 0, result.stderr
     assert result.stdout == f"{git(layout.feature, 'rev-parse', 'origin/main')}\n"
+
+
+SCANNED_BRANCH = "feat/issue-22-scanned"
+
+
+def scanned_push(branch: str = SCANNED_BRANCH) -> str:
+    return block("scanned push").replace("<branch>", branch)
+
+
+def pushed(bare: Path, branch: str = SCANNED_BRANCH) -> str | None:
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+        cwd=bare,
+        env={**os.environ, **ISOLATED_GIT},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip() or None
+
+
+# Claude Code の Bash ツールは zsh で動く。zsh では "$VAR:r" などが修飾子になり、refspec を壊す。
+@pytest.mark.parametrize("shell", ["bash", "zsh"])
+@pytest.mark.parametrize("where", ["feature", "product-worktree"])
+def test_scanned_push_sends_the_scanned_commit(tmp_path: Path, shell: str, where: str) -> None:
+    layout = make_layout(tmp_path / SPACED)
+    cwd, env, _ = prepare_scan(layout, where, tmp_path)
+    sha = git(cwd, "rev-parse", "HEAD")
+    result = run(layout, cwd, scanned_push(), env, shell=shell)
+    assert result.returncode == 0, result.stderr
+    bare = layout.env_bare if where == "feature" else layout.product_bare
+    assert pushed(bare) == sha
+
+
+@pytest.mark.parametrize("shell", ["bash", "zsh"])
+def test_scanned_push_ignores_head_moved_after_scan(tmp_path: Path, shell: str) -> None:
+    layout = make_layout(tmp_path / SPACED)
+    cwd, env, _ = prepare_scan(layout, "feature", tmp_path)
+    sha = git(cwd, "rev-parse", "HEAD")
+    env["SCAN_THEN_COMMIT"] = "1"
+    result = run(layout, cwd, scanned_push(), env, shell=shell)
+    assert result.returncode == 0, result.stderr
+    assert git(cwd, "rev-parse", "HEAD") != sha
+    assert pushed(layout.env_bare) == sha
+
+
+@pytest.mark.parametrize("shell", ["bash", "zsh"])
+@pytest.mark.parametrize("case", ["scan-failure", "empty-output"])
+@pytest.mark.parametrize("existing", [False, True], ids=["new-branch", "existing-branch"])
+def test_scanned_push_does_not_push_without_a_scanned_commit(
+    tmp_path: Path, shell: str, case: str, existing: bool
+) -> None:
+    layout = make_layout(tmp_path / SPACED)
+    cwd, env, _ = prepare_scan(layout, "feature", tmp_path)
+    before = None
+    if existing:
+        # 空の送り元の refspec は、先に push した branch を消してしまう。消えずに残ることを確かめる。
+        before = git(cwd, "rev-parse", "origin/main")
+        git(cwd, "push", "-q", "origin", f"{before}:refs/heads/{SCANNED_BRANCH}")
+    invocation = scanned_push()
+    if case == "scan-failure":
+        env["SCAN_EXIT"] = "1"
+    else:
+        invocation = f"scan_before_push() {{ :; }}\n{invocation}"
+    result = run(layout, cwd, invocation, env, shell=shell)
+    assert result.returncode != 0
+    assert pushed(layout.env_bare) == before

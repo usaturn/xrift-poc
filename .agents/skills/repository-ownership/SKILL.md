@@ -39,6 +39,7 @@ uv run --no-project python "$XRIFT_POC_ROOT/.agents/scripts/route_target.py" "${
   ```
 
 - **Issue と PR:** `gh --repo usaturn/xrift-poc ...`。`--repo` を毎回付ける
+- **push:** commit の後、feature worktree の root で「公開前の秘密検査」の手順を実行し、検査した SHA を push する
 - **検証:** worktree の root で `./scripts/ci/verify-devenv.sh`。PR は CI の green を確かめる
 - **stage:** パスを明示して stage する。`items/`・`worlds/` を `git add -f` しない
 
@@ -48,6 +49,7 @@ uv run --no-project python "$XRIFT_POC_ROOT/.agents/scripts/route_target.py" "${
 - **Git の操作:** `git_root` で行う。制作物の既定ブランチから branch を作る
 - **worktree:** 制作物のディレクトリの中（例: `worlds/<name>/.worktrees/<branch>`）に作り、`.worktrees/` を制作物の `.git/info/exclude` に加える。親の外に作ると、共通の指示とスキルを読めない。worktree でも `xrift-link` でスキルへのリンクを置く
 - **Issue と PR:** `gh --repo <repository> ...`。`repository` が null なら GitHub の操作をしない。`code` が `product_without_origin`（origin が無い）なら `git remote add origin <URL>`、`product_origin_not_github`（origin を GitHub の URL として読めない。SSH のホスト別名など）なら、GitHub で管理しているときに `git remote set-url origin https://github.com/<owner>/<repo>.git` が必要なことを説明する
+- **push:** commit の後、制作物の Git の root（main checkout か、制作物の中の worktree）で「公開前の秘密検査」の手順を実行し、検査した SHA を push する。`repository` が null の制作物では `scan_before_push` が止まる。origin を GitHub の URL にしてから実行する
 - **検証:** 制作物の `package.json` のスクリプトと `xrift check world --build`・`xrift check item --build`。`xrift upload` は利用者が明示的に指示したときだけ実行する
 - 制作物の中の `public/` は XRift のアセットディレクトリであり、特別に扱わない
 
@@ -145,6 +147,18 @@ scan_before_push() (
     printf '%s\n' "$scanned_sha"
 )
 ```
+
+検査した SHA をそのまま push する。`<branch>` は自分が作った feature branch にする。
+
+```bash
+# repository-ownership scanned push
+SCANNED_SHA="$(scan_before_push)" && [[ -n "$SCANNED_SHA" ]] \
+  && git push origin "${SCANNED_SHA}:refs/heads/<branch>"
+```
+
+- 検査の後に HEAD が動いても、検査した SHA を push する。動いた HEAD を検査せずに push しない
+- `[[ -n ]]` は、空の SHA で `:refs/heads/<branch>`（リモートの branch の削除）を送らないための確認である
+- 送り元が SHA なので、上流ブランチは設定されない（`-u` を付けても設定されない）。PR は `gh pr create --repo <repository> --head <branch>` で作る
 
 ## 振り分けを誤ったときの症状
 
