@@ -40,6 +40,8 @@ uv run --project "$TOOL_ROOT/tools/devenv" --locked python \
 - `--max-cycles N`: サイクルの上限（1〜10、既定 3）。
 - `--hold-action skip|fix`: 利用者が指定したときだけ渡す。新規起動で未指定なら helper が `skip` を適用する。明示した `skip`・`fix` はそのまま適用する。
 - `--assign ROLE=AGENT[,AGENT]`（複数可）: `inspect`（レビュアー、複数可）と、`implement`・`self-review`・`fix-check`（各 1 つ。review-fix-planning の `run_roles.py` に渡す）。agent は agent-runner の設定に定義された名前。
+  - `self-review`・`fix-check` には、runtime が `dsh` の担当（`dsh-ccd`・`dsh-go` など）を一次担当にも fallback にも割り当てられない（理由は `.agents/skills/review-fix-planning/references/execution.md` の 2 章）。`inspect` と `implement` には割り当てられる。
+  - `start` は、`run_roles.py` が設定だけで拒否する fix の割り当て（上の DSH の担当のほか、一次担当が 2 つ以上、`self-review`・`fix-check` の `writes = true` など。個人設定で決まるものを含む）を、run を作る前に終了コード 2（`config`）で止める。`reason` を利用者に伝えて止まる。別の担当や `self` に自分で切り替えない。
 - `--template`・`--config`: agent-runner の雛形と個人設定。既定は雛形 `.devcontainer/agent-runner.toml` と既存の個人設定。
 - `--fresh-review`: 現在の HEAD のレビューの成果があっても、レビュアーを起動する。
 - 対象は `usaturn` 配下の open な PR だけ（review-fix-planning と同じ）。

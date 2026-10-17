@@ -82,6 +82,7 @@ target = _load("pr_review_fix_loop_review_target", ROOT / ".agents/scripts/revie
 records = _load("pr_review_fix_loop_review_records", ROOT / ".agents/scripts/review_records.py")
 findings = _load("pr_review_fix_loop_review_findings", ROOT / ".agents/scripts/review_findings.py")
 review_entry = _load("pr_review_fix_loop_review_run", ROOT / ".agents/skills/pr-review/scripts/review_run.py")
+run_roles = _load("pr_review_fix_loop_run_roles", ROOT / ".agents/skills/review-fix-planning/scripts/run_roles.py")
 
 
 class LoopError(Exception):
@@ -647,7 +648,11 @@ def load_review_config(run: RunRecord) -> Config:
 def load_assignments(
     template: Path, config: Path | None, assign: Mapping[str, list[str]]
 ) -> dict[str, dict[str, Any]]:
-    """雛形 < 個人設定 < --assign で読み込み、review の inspect と fix の各役割の有効な割り当てを返す。"""
+    """雛形 < 個人設定 < --assign で読み込み、review の inspect と fix の各役割の有効な割り当てを返す。
+
+    run_roles.py が設定だけで拒否する fix の割り当て（DSH の self-review・fix-check など）は、レビューや implement の
+    後の run_roles の呼び出しを待たずにここで止める（#675）。判定と理由は run_roles の関数を使い、規則を写さない。
+    """
     personal = personal_config(config)
     inspect = {role: agents for role, agents in assign.items() if role == "inspect"}
     fix = {role: agents for role, agents in assign.items() if role in FIX_ROLES}
@@ -663,6 +668,16 @@ def load_assignments(
     missing = [role for role in FIX_ROLES if role not in fix_assignments]
     if missing:
         raise LoopError(2, "config", f"workflows.fix に {', '.join(missing)} の割り当てが無い")
+    try:
+        run_roles.project(fix_config, "implement")
+        run_roles.reject_dsh_review_agents(run_roles.project(fix_config, "self-review"))
+    except (ConfigError, run_roles.RoleInputError) as error:
+        raise LoopError(
+            2,
+            "config",
+            f"run_roles.py が拒否する fix の割り当て（{run_roles.failure_reason(error)}）。"
+            "--assign か、個人設定の workflows.fix・roles を直す",
+        ) from error
     return {
         "review": {"inspect": review_assignments["inspect"].model_dump(mode="json")},
         "fix": {role: fix_assignments[role].model_dump(mode="json") for role in FIX_ROLES},

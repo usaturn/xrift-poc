@@ -371,6 +371,14 @@ def run(
     return batch
 
 
+def failure_reason(error: Exception) -> str:
+    """stderrに出す失敗の理由。RoleInputErrorは固定の文、それ以外は分類だけ。
+
+    loopのstartも、ここで拒否する設定を同じ理由で止める（#675）。
+    """
+    return str(error) if isinstance(error, RoleInputError) else verifier.failure_category(error)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--phase", choices=("implement", "self-review"), required=True)
@@ -421,7 +429,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     except (ConfigError, RunnerError, OSError, ValueError, findings.FindingsError) as error:
-        reason = str(error) if isinstance(error, RoleInputError) else verifier.failure_category(error)
+        reason = failure_reason(error)
         print(
             f"planning roles: input/config/run failed ({reason}); no verification success implied",
             file=sys.stderr,
