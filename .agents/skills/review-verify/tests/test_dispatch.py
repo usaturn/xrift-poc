@@ -21,6 +21,10 @@ from tools.agent_runner import Config, ConfigError
 from tools.agent_runner.adapters import AdapterContext, AdapterOutcome, Capabilities, LaunchSpec
 from tools.agent_runner.models import Identity
 
+pytest_plugins = ("tools.test_support.plugin",)
+# 偽の担当だけを起動するので、runner の担当（AGENT_RUNNER_DEPTH=1）の中でもテストの中だけ depth を外す
+pytestmark = pytest.mark.usefixtures("outside_runner")
+
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/dispatch.py"
 
 

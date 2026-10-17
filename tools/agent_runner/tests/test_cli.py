@@ -1,7 +1,6 @@
 """Machine CLI behavior without invoking any installed agent runtime."""
 
 import json
-import os
 import signal
 import subprocess
 import sys
@@ -21,6 +20,10 @@ from tools.agent_runner.adapters import (
     runtime_supported,
 )
 from tools.agent_runner.models import BatchResult, BatchState, Config, Result, Runtime
+
+pytest_plugins = ("tools.test_support.plugin",)
+# Only fake agents are launched here; drop AGENT_RUNNER_DEPTH inside each test so a runner agent can run them
+pytestmark = pytest.mark.usefixtures("outside_runner")
 
 _TEMPLATE = """schema_version = 1
 [agents.a]
@@ -43,7 +46,6 @@ fallback = ["b"]
 
 @pytest.fixture
 def template(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.delenv("AGENT_RUNNER_DEPTH", raising=False)
     monkeypatch.setenv("AGENT_RUNNER_CONFIG", str(tmp_path / "absent-personal.toml"))
     path = tmp_path / "template.toml"
     path.write_text(_TEMPLATE)
@@ -51,11 +53,8 @@ def template(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def command(template: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    env = dict(os.environ)
-    env.pop("AGENT_RUNNER_DEPTH", None)
     return subprocess.run(
         [sys.executable, "-m", "tools.agent_runner", "--template", str(template), *args],
-        env=env,
         text=True,
         capture_output=True,
         check=False,
@@ -346,7 +345,6 @@ def test_unsupported_run_persists_result(
 def test_shipped_template_passes_check(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.delenv("AGENT_RUNNER_DEPTH", raising=False)
     monkeypatch.setenv("AGENT_RUNNER_CONFIG", str(tmp_path / "absent-personal.toml"))
     assert cli.main(["check"]) == 0
     agents = cast(list[dict[str, object]], document(capsys.readouterr().out)["agents"])

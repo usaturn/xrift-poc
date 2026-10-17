@@ -194,7 +194,10 @@ def test_buffered_original_exit_survives_anchor_reap(tmp_path: Path, monkeypatch
 
     monkeypatch.setattr(process, "_command_outcome", held_outcome)
     monkeypatch.setattr(process, "_stop", release_after_stop)
-    result = run(tmp_path, launch("raise SystemExit(7)"), deadline=0.2)
+    # The deadline only has to fall after the command exits on its own; its
+    # length is not the property. It includes supervisor and command startup
+    # (unloaded 0.06 s), which a loaded host stretches past 0.2 s (#705).
+    result = run(tmp_path, launch("raise SystemExit(7)"), deadline=3)
     assert result.state == "timed_out"
     assert result.exit_code == 7
     assert result.stop_confirmed
@@ -415,14 +418,17 @@ def test_deadline_kills_term_resistant_leader(tmp_path: Path, blocked_stdin: boo
         "open('leader.pid','w').write(str(os.getpid())); time.sleep(60)",
         b"p" * 2_000_000 if blocked_stdin else b"",
     )
-    result = run(tmp_path, spec, deadline=0.4)
+    # The deadline includes supervisor and leader startup up to SIG_IGN and
+    # leader.pid, which a loaded host stretches (#705); its length is not the
+    # property. A deadline that skips stdin or drains waits for the 60 s sleep.
+    result = run(tmp_path, spec, deadline=3)
     pid = int((tmp_path / "leader.pid").read_text())
     try:
         assert result.state == "timed_out"
         assert result.stop_confirmed
         assert result.exit_code == -signal.SIGKILL
         assert not alive(pid)
-        assert result.elapsed_seconds < 2
+        assert result.elapsed_seconds < 30
     finally:
         if alive(pid):
             os.kill(pid, signal.SIGKILL)

@@ -17,6 +17,10 @@ from tools.agent_runner.runner import run_workflow
 from tools.agent_runner.tests.test_process import alive
 from tools.agent_runner.tests.test_runner import FakeAdapter, configuration
 
+pytest_plugins = ("tools.test_support.plugin",)
+# Only fake agents are launched here; drop AGENT_RUNNER_DEPTH inside each test so a runner agent can run them
+pytestmark = pytest.mark.usefixtures("outside_runner")
+
 
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
@@ -113,7 +117,10 @@ def test_success_receipt_survives_cli_immediate_exit_with_child(
     monkeypatch.setenv("SERVICE_TOKEN", secret)
     # The exec environment, not os.environ, is what commands may inherit.
     monkeypatch.setattr(environ, "_literal", environ.literal_environ() | {"SERVICE_TOKEN": secret})
-    cfg = configuration(deadline=1)
+    # The deadline covers checkout, CLI startup, and receipt collection, which a
+    # loaded host stretches (#694); its length is not the property. A runner that
+    # waits for the 60 s child still fails here by timing out.
+    cfg = configuration(deadline=10)
     cfg.agents["a"].env = ["SERVICE_TOKEN"]
     adapter = ImmediateExitAdapter(closed_pipes)
     try:

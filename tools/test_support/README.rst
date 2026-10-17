@@ -31,11 +31,15 @@ test_support: 実環境の形をした共有 fixture
 
 ``tools.test_support.uv``
     ``offline_uv_env`` は ``UV_OFFLINE=1`` ・隔離した ``UV_CACHE_DIR`` ・ ``UV_PYTHON=<テスト実行中の interpreter>`` を立てた環境変数を返す。
-    テストを動かしている venv の ``bin`` は ``PATH`` から除く。残っていると、 ``uv run`` が spawn するコマンドが漏れた venv から解決され、 venv 無し worktree での失敗を再現できない。
+    テストを動かしている venv の ``bin`` と、親ディレクトリに ``pyvenv.cfg`` がある別の venv の ``bin`` は ``PATH`` から除く。残っていると、 ``uv run`` が spawn するコマンドが漏れた venv から解決され、 venv 無し worktree での失敗を再現できない。
     ``run_uv_offline`` はその環境で ``uv`` を起動し、 ``CompletedProcess`` を返す。
 
 ``tools.test_support.plugin``
-    pytest fixture ``env_repo_factory`` ・ ``env_repo`` ・ ``owned_worktree`` 。制作物は ``create_product`` を直接呼んで作る。
+    pytest fixture ``env_repo_factory`` ・ ``env_repo`` ・ ``owned_worktree`` ・ ``outside_runner`` 。制作物は ``create_product`` を直接呼んで作る。
+    ``outside_runner`` は、テストの中だけ ``AGENT_RUNNER_DEPTH`` を外す。
+    runner の担当（ ``AGENT_RUNNER_DEPTH=1`` ）が関連テストを実行しても、偽の adapter・偽の CLI だけを起動するテストが ``nested_invocation`` で落ちないようにする。
+    本物の担当を起動しうるテストには使わない。
+    どの fixture も autouse ではない。test module で読み込んだプラグインの fixture はテスト一式から見えるため、autouse にすると読み込んだ後に収集したモジュールにも効く。
 
 .. _test_support_usage:
 
@@ -57,6 +61,12 @@ test module の先頭でプラグインを宣言する ::
 
     def test_two(env_repo_factory: Callable[[], EnvRepo]) -> None:
         first, second = env_repo_factory(), env_repo_factory()
+
+偽の担当だけを起動する test module は、モジュール単位で ``outside_runner`` を使う。
+モジュールに後から足したテストにも効く ::
+
+    pytest_plugins = ("tools.test_support.plugin",)
+    pytestmark = pytest.mark.usefixtures("outside_runner")
 
 直接呼び出し
 ------------

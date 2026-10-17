@@ -13,6 +13,10 @@ from tools.agent_runner.adapters.devin import ADAPTER
 from tools.agent_runner.models import Agent, Assignment, Config, Role, Workflow
 from tools.agent_runner.runner import run_workflow
 
+pytest_plugins = ("tools.test_support.plugin",)
+# Only fake agents are launched here; drop AGENT_RUNNER_DEPTH inside each test so a runner agent can run them
+pytestmark = pytest.mark.usefixtures("outside_runner")
+
 
 def _export(
     message: str | None = '{"ok": true}', tool_calls: list[dict[str, object]] | None = None
