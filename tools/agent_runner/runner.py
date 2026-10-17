@@ -13,8 +13,9 @@ import stat
 import tempfile
 import threading
 import time
+import unicodedata
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TypedDict, cast
 
@@ -86,6 +87,21 @@ def _redact_runtime_tree(root: Path, secrets: tuple[str, ...]) -> list[Path]:
 
 
 _NOFOLLOW_DIRECTORY = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+EXCEPTIONS_HEADING = "Caller-authorized exceptions to the rules above (only these; everything else stays forbidden):"
+
+
+def _single_line(value: object) -> bool:
+    """One trimmed line without control characters, so a value cannot add or reshape work-scope lines.
+
+    Non-ASCII spaces (U+3000, NBSP) stay valid: review directories take them from branch names.
+    """
+    return (
+        type(value) is str
+        and value != ""
+        and value == value.strip()
+        and value.splitlines() == [value]
+        and not any(unicodedata.category(character) == "Cc" for character in value)
+    )
 
 
 def _dispose_home(runtime_root: Path) -> bool:
@@ -246,6 +262,7 @@ def run_workflow(
     adapter_loader: Callable[[str], Adapter] = load_adapter,
     environment: Mapping[str, str] | None = None,
     sandbox_write_paths: tuple[Path, ...] = (),
+    write_exceptions: Sequence[str] = (),
 ) -> BatchResult:
     """Execute a batch synchronously; keep every artifact/worktree, even on failure.
 
@@ -253,11 +270,21 @@ def run_workflow(
     os.defpath as the PATH default. Adapter additions are explicit; child depth
     is always forced to 1. Caller-chosen paths and request prompts are intentional
     artifacts; environment values never enter request.json or error diagnostics.
+    write_exceptions are caller-authorized exceptions listed verbatim under the
+    work-scope lines, one per line; the runner neither interprets nor enforces them.
     """
     started = time.monotonic()
     check_depth()
     config = validate_config(config, workflow)
-    if type(concurrency) is not int or concurrency < 1 or type(prompt) is not str:
+    # A bare string is also a Sequence[str]; never list it one character per line.
+    exceptions = () if isinstance(write_exceptions, str) else tuple(write_exceptions)
+    if (
+        type(concurrency) is not int
+        or concurrency < 1
+        or type(prompt) is not str
+        or isinstance(write_exceptions, str)
+        or not all(_single_line(item) for item in exceptions)
+    ):
         raise RunnerError()
     try:
         asyncio.get_running_loop()
@@ -350,8 +377,11 @@ def run_workflow(
             instructions = (
                 f"Work in this worktree only: {work_dir}. Do not modify other checkouts.\n"
                 f"writes={role.writes}: {'changes are permitted here' if role.writes else 'do not modify files'}. "
-                "This is an instruction, not a sandbox.\n\n"
+                "This is an instruction, not a sandbox.\n"
             )
+            if exceptions:
+                instructions += EXCEPTIONS_HEADING + "\n" + "".join(f"- {item}\n" for item in exceptions)
+            instructions += "\n"
             if agent.runtime == "dsh":
                 instructions += (
                     "Runtime-owned HOME/cache/temp and caller-authorized review outputs/lock are permitted "

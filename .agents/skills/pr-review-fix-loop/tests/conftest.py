@@ -233,8 +233,8 @@ class LoopEnv:
     def template(self) -> Path:
         return self.root / "agent-runner.toml"
 
-    def reviewers(self, behaviors: dict[str, str], *, findings: int = 0) -> ReviewerAdapter:
-        """現在の HEAD を対象にした偽のレビュアー（agent_id → success か failed）。"""
+    def reviewers(self, behaviors: dict[str, str | list[str]], *, findings: int = 0) -> ReviewerAdapter:
+        """現在の HEAD を対象にした偽のレビュアー（agent_id → success・failed・crash、または起動ごとの列）。"""
         head = self.gh.head()
         agents: dict[str, Any] = {}
         for agent, behavior in behaviors.items():
@@ -356,10 +356,19 @@ copies = pathlib.Path(scenario["copies"])
 copies.mkdir(exist_ok=True)
 shutil.copyfile(parameters["records_comments"], copies / f"{agent}.json")
 spec = scenario["agents"][agent]
+behavior = spec["behavior"]
+if isinstance(behavior, list):
+    # 起動ごとに次の振る舞い（最後の値を使い続ける）。再実行の 1 回目と 2 回目を分ける
+    counter = copies / f"{agent}.launches"
+    launches = int(counter.read_text()) if counter.exists() else 0
+    counter.write_text(str(launches + 1))
+    behavior = behavior[min(launches, len(behavior) - 1)]
+if behavior == "crash":
+    sys.exit(3)  # receipt を書かずに異常終了する（runner の失敗）
 payload = {key: request[key] for key in ("run_id", "request_id", "agent_id", "role")}
 payload.update(schema_version=1, repository=scenario["repository"], pr_number=scenario["number"],
                pr_head=parameters["pr_head"], reviewed_head=parameters["pr_head"])
-if spec["behavior"] == "success":
+if behavior == "success":
     review = pathlib.Path(spec["review_file"])
     candidates = pathlib.Path(spec["findings_file"])
     candidates.parent.mkdir(parents=True, exist_ok=True)

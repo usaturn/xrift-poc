@@ -554,11 +554,17 @@ def test_resumed_staged_review_is_finalized_without_hooks(
         assert [item["agent"] for item in reviewed["accepted"]] == ["alpha"]
         assert Path(reviewed["accepted"][0]["review_file"]) == saved and saved.is_file()
     else:
+        if case == "identity":
+            # runner は成功したが識別が合わない。同じ担当を 1 回だけ起動し直し、同じ検査で再び却下する
+            pending = loop.review(run_dir, github=env.github, tmp_root=env.tmp_root)
+            assert pending["rerun"] == {"agents": ["alpha"]}
+            # 偽の dispatch はこのプロセスの cwd を回収済みの worktree に移している。親の準備の前に戻す
+            monkeypatch.chdir(env.root)
         with pytest.raises(loop.LoopError) as error:
             loop.review(run_dir, github=env.github, tmp_root=env.tmp_root)
         assert (error.value.code, error.value.stage) == (6, "review")
         assert not saved.exists()
-    assert launched == ["alpha"]
+    assert launched == (["alpha", "alpha"] if case == "identity" else ["alpha"])
     assert read(run_dir / "cycle-1.json")["review"]["after_run"] == []
 
 
@@ -585,13 +591,16 @@ def test_after_run_result_is_reloaded_before_reviewer_validation(
         reviewed = loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
         assert [item["agent"] for item in reviewed["accepted"]] == ["alpha"]
         return
+    # 後処理が却下させた alpha と、失敗した beta を 1 回だけ再実行する。再実行の結果にも同じ後処理がかかる
+    pending = loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
+    assert pending["rerun"] == {"agents": ["alpha", "beta"]}
     with pytest.raises(loop.LoopError) as error:
         loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
     assert (error.value.code, error.value.stage) == (6, "review")
     reviewers = read(run_dir / "cycle-1.json")["review"]["reviewers"]
     alpha = next(item for item in reviewers if item["actual_agent"] == "alpha")
     assert alpha["verdict"] == "rejected" and "後処理が保存を拒否した" in alpha["reason"]
-    saved = read(run_dir / "cycle-1" / "review-result.json")
+    saved = read(run_dir / "cycle-1" / "rerun-result.json")
     saved_alpha = next(item for item in saved["results"] if item["actual_agent"] == "alpha")
     assert saved_alpha["attempts"][-1]["payload"]["status"] == "failed"
 
@@ -658,9 +667,11 @@ def test_review_records_partial_failure_and_cleans_owned_worktrees(loop: Any, en
     loop.cycle_begin(run_dir, github=env.github)
     adapter = env.reviewers({"alpha": "success", "beta": "failed"}, findings=1)
 
+    pending = loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
+    assert pending["rerun"] == {"agents": ["beta"]}
     reviewed = loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
 
-    assert sorted(adapter.launched) == ["alpha", "beta"]
+    assert sorted(adapter.launched) == ["alpha", "beta", "beta"]
     assert [item["agent"] for item in reviewed["accepted"]] == ["alpha"]
     assert [item["agent"] for item in reviewed["rejected"]] == ["beta"]
     assert reviewed["next"][-3:] == ["cycle-end", "--run", str(run_dir)]
@@ -670,8 +681,8 @@ def test_review_records_partial_failure_and_cleans_owned_worktrees(loop: Any, en
     assert beta["verdict"] == "rejected" and beta["active_findings"] is None
     assert (run_dir / "cycle-1/review-result.json").is_file()
     run = read(run_dir / "run.json")
-    assert [resource["state"] for resource in run["resources"]] == ["removed"]
-    assert not Path(run["resources"][0]["path"]).exists()
+    assert [resource["state"] for resource in run["resources"]] == ["removed", "removed"]
+    assert not any(Path(resource["path"]).exists() for resource in run["resources"])
     assert registered_worktrees(env.parent) == [str(env.parent)]
 
 
@@ -680,6 +691,9 @@ def test_review_with_no_accepted_reviewer_fails_with_code_6(loop: Any, env: Any)
     run_dir = Path(started["run_dir"])
     loop.cycle_begin(run_dir, github=env.github)
     adapter = env.reviewers({"alpha": "failed", "beta": "failed"})
+    # 全員が runner の成功の後に却下されたので、まず全員を 1 回だけ再実行する
+    pending = loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
+    assert pending["accepted"] == [] and pending["rerun"] == {"agents": ["alpha", "beta"]}
 
     with pytest.raises(loop.LoopError) as error:
         loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
@@ -705,6 +719,7 @@ def test_two_cycles_reuse_the_pre_push_review_and_end_merged(loop: Any, env: Any
     head1 = first["head"]
     adapter1 = env.reviewers({"alpha": "success", "beta": "failed"}, findings=1)
     loop.review(run_dir, github=env.github, adapter_loader=adapter1, tmp_root=env.tmp_root)
+    loop.review(run_dir, github=env.github, adapter_loader=adapter1, tmp_root=env.tmp_root)  # beta の再実行
     skip_ref = f"alpha-model#M-1@{head1[:12]}"
     fix_ref = f"alpha-model#H-1@{head1[:12]}"
     head2 = env.push("H-1 の修正")
@@ -1079,16 +1094,18 @@ def test_status_after_every_reviewer_failed_points_to_abort(loop: Any, env: Any)
     run_dir = Path(started["run_dir"])
     loop.cycle_begin(run_dir, github=env.github)
     adapter = env.reviewers({"alpha": "failed", "beta": "failed"})
+    loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
     with pytest.raises(loop.LoopError):
         loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
 
     next_command = loop.status(run_dir=run_dir)["next"]
     assert "finish" in next_command and any(item.startswith("--abort=external: ") for item in next_command)
     assert not has_placeholder(next_command)
+    # 再実行の後も全員が失敗したら、3 回目は起動しない
     with pytest.raises(loop.LoopError) as again:
         loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
     assert (again.value.code, again.value.stage) == (6, "review")
-    assert sorted(adapter.launched) == ["alpha", "beta"]
+    assert sorted(adapter.launched) == ["alpha", "alpha", "beta", "beta"]
 
 
 def test_runner_refusing_before_launch_can_be_retried(loop: Any, env: Any, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1210,3 +1227,224 @@ def test_missing_parent_with_no_registration_is_removed(loop: Any, env: Any, tmp
     run.resources.append(resource)
     result = loop.cleanup_output(env.parent, resource, None) if entrypoint == "cleanup" else loop.audit_resources(run)
     assert result == [] and resource.state == "removed"
+
+
+# --- 未実施レビュアーの再実行 -------------------------------------------------------------------------------------
+
+
+def started_cycle(loop: Any, env: Any) -> Path:
+    run_dir = Path(env.start()["run_dir"])
+    loop.cycle_begin(run_dir, github=env.github)
+    return run_dir
+
+
+def test_reviewer_rejected_after_runner_success_is_rerun_once(loop: Any, env: Any) -> None:
+    run_dir = started_cycle(loop, env)
+    adapter = env.reviewers({"alpha": ["failed", "success"], "beta": "success"})
+
+    first = loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
+
+    assert first["rerun"] == {"agents": ["alpha"]}
+    assert first["next"][-3:] == ["review", "--run", str(run_dir)]
+    assert [item["agent"] for item in first["accepted"]] == ["beta"]
+    assert read(run_dir / "cycle-1.json")["state"] == "reviewing"
+    assert loop.status(run_dir=run_dir)["next"][-3:] == ["review", "--run", str(run_dir)]
+
+    second = loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
+
+    assert sorted(adapter.launched) == ["alpha", "alpha", "beta"]
+    assert sorted(item["agent"] for item in second["accepted"]) == ["alpha", "beta"]
+    assert second["next"][-3:] == ["cycle-end", "--run", str(run_dir)]
+    cycle = loop.load_cycles(run_dir)[-1]
+    assert cycle.state == "planning"
+    assert [entry.verdict for entry in cycle.review.reviewers] == ["accepted", "accepted"]
+    replaced = cycle.review.rerun.replaced
+    assert [(entry.actual_agent, entry.rejected_stage) for entry in replaced] == [("alpha", "payload")]
+    kept = Path(replaced[0].request_file)
+    assert kept.parent == run_dir / "cycle-1" / "requests"
+    assert loop.sha256_file(kept) == replaced[0].request_sha256
+    assert Request.model_validate_json(kept.read_text(encoding="utf-8")).agent_id == "alpha"
+    assert (run_dir / "cycle-1" / "rerun-result.json").is_file()
+    run = read(run_dir / "run.json")
+    assert [resource["state"] for resource in run["resources"]] == ["removed", "removed"]
+    assert registered_worktrees(env.parent) == [str(env.parent)]
+
+
+def test_runner_level_failure_is_not_rerun(loop: Any, env: Any) -> None:
+    run_dir = started_cycle(loop, env)
+    adapter = env.reviewers({"alpha": "success", "beta": "crash"})
+
+    reviewed = loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
+
+    assert reviewed["next"][-3:] == ["cycle-end", "--run", str(run_dir)]
+    assert "rerun" not in reviewed
+    cycle = loop.load_cycles(run_dir)[-1]
+    assert cycle.review.rerun is None and cycle.state == "planning"
+    beta = next(entry for entry in cycle.review.reviewers if entry.actual_agent == "beta")
+    assert beta.rejected_stage == "runner" and Path(beta.request_file).is_file()
+    assert sorted(adapter.launched) == ["alpha", "beta"]
+
+
+def record_attempts(loop: Any, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """runner の各試行の状態と準備の stderr を、review の回収で消える前に 1 行ずつ写す（失敗の表示に使う）。"""
+    notes: list[str] = []
+    real = loop.run_workflow
+
+    def recording(*args: Any, **kwargs: Any) -> BatchResult:
+        batch: BatchResult = real(*args, **kwargs)
+        for result in batch.results:
+            for attempt in result.attempts:
+                log = attempt.request_path.parent / "worktree.stderr.log" if attempt.request_path else None
+                stderr = log.read_text(encoding="utf-8", errors="replace") if log and log.is_file() else "無い"
+                notes.append(
+                    f"{attempt.agent_id}: state={attempt.state} exit_code={attempt.exit_code} "
+                    f"stop_confirmed={attempt.stop_confirmed} 準備の stderr={stderr!r}"
+                )
+        return batch
+
+    monkeypatch.setattr(loop, "run_workflow", recording)
+    return notes
+
+
+def test_rerun_that_fails_again_continues_with_the_accepted_reviewers(
+    loop: Any, env: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 負荷の高い verify で 2 つの形で落ちたが、原因が分からない（#694）。次に落ちたとき、各レビュアーの
+    # 拒否の理由と runner の試行（準備の stderr を含む）が表示に出るようにする
+    run_dir = started_cycle(loop, env)
+    notes = record_attempts(loop, monkeypatch)
+    adapter = env.reviewers({"alpha": "success", "beta": "failed"})
+
+    def review(number: int) -> dict[str, Any]:
+        try:
+            return loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
+        except loop.LoopError as error:
+            pytest.fail(f"{number} 回目の review が失敗した（{error.stage}）: {error.reason}\n" + "\n".join(notes))
+
+    first = review(1)
+    explained = f"rejected={first['rejected']}\n" + "\n".join(notes)
+    assert first.get("rerun") == {"agents": ["beta"]}, explained
+    assert [(item["agent"], item["rejected_stage"]) for item in first["rejected"]] == [("beta", "payload")], explained
+
+    second = review(2)
+
+    assert [item["agent"] for item in second["accepted"]] == ["alpha"]
+    assert [item["agent"] for item in second["rejected"]] == ["beta"]
+    assert second["next"][-3:] == ["cycle-end", "--run", str(run_dir)]
+    cycle = loop.load_cycles(run_dir)[-1]
+    assert cycle.state == "planning" and len(cycle.review.rerun.replaced) == 1
+    assert sorted(adapter.launched) == ["alpha", "beta", "beta"], "\n".join(notes)
+
+
+def test_rerun_is_not_started_while_another_attempt_is_unconfirmed(
+    loop: Any, env: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 再実行は依存する仕事なので、1 回目の batch の全試行の停止を確かめてからでないと始めない
+    run_dir = started_cycle(loop, env)
+    real = loop.run_workflow
+
+    def alpha_unconfirmed(*args: Any, **kwargs: Any) -> BatchResult:
+        batch: BatchResult = real(*args, **kwargs)
+        results = [
+            item.model_copy(
+                update={
+                    "attempts": [attempt.model_copy(update={"stop_confirmed": False}) for attempt in item.attempts]
+                }
+            )
+            if item.actual_agent == "alpha"
+            else item
+            for item in batch.results
+        ]
+        return batch.model_copy(update={"results": results})
+
+    monkeypatch.setattr(loop, "run_workflow", alpha_unconfirmed)
+    adapter = env.reviewers({"alpha": "success", "beta": ["failed", "success"]})
+
+    with pytest.raises(loop.LoopError) as error:
+        loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
+
+    assert (error.value.code, error.value.stage) == (6, "review")
+    assert loop.load_cycles(run_dir)[-1].review.rerun is None
+    assert sorted(adapter.launched) == ["alpha", "beta"]
+    assert Path(read(run_dir / "run.json")["resources"][0]["path"]).exists()
+
+
+def test_rerun_refuses_when_the_head_moved(loop: Any, env: Any) -> None:
+    run_dir = started_cycle(loop, env)
+    adapter = env.reviewers({"alpha": ["failed", "success"], "beta": "success"})
+    loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
+    env.push("1 回目のレビューの後の push")
+
+    with pytest.raises(loop.LoopError) as error:
+        loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
+
+    assert (error.value.code, error.value.stage) == (4, "head_moved")
+    assert sorted(adapter.launched) == ["alpha", "beta"]
+
+
+def test_interrupted_rerun_is_not_relaunched(loop: Any, env: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    run_dir = started_cycle(loop, env)
+    adapter = env.reviewers({"alpha": ["failed", "success"], "beta": "success"})
+    loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
+
+    def interrupted(*args: Any, **kwargs: Any) -> BatchResult:
+        kwargs["output_dir"].mkdir()
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(loop, "run_workflow", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
+    monkeypatch.undo()
+
+    with pytest.raises(loop.LoopError) as error:
+        loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
+    assert (error.value.code, error.value.stage) == (3, "interrupted_review")
+    assert sorted(adapter.launched) == ["alpha", "beta"]
+
+
+def test_cycle_record_without_the_rerun_fields_loads(loop: Any, env: Any) -> None:
+    run_dir = started_cycle(loop, env)
+    loop.review(
+        run_dir,
+        github=env.github,
+        adapter_loader=env.reviewers({"alpha": "success", "beta": "crash"}),
+        tmp_root=env.tmp_root,
+    )
+    path = run_dir / "cycle-1.json"
+    record = read(path)
+    # この変更より前の helper が書いた記録には、再実行と調査用の欄が無い
+    record["review"].pop("rerun")
+    for entry in record["review"]["reviewers"]:
+        for key in ("rejected_stage", "request_file", "request_sha256"):
+            entry.pop(key)
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    cycle = loop.load_cycles(run_dir)[-1]
+
+    assert cycle.review.rerun is None
+    assert all(entry.rejected_stage is None for entry in cycle.review.reviewers)
+
+
+def test_request_is_kept_only_from_a_regular_file(loop: Any, env: Any, tmp_path: Path) -> None:
+    result, head = accepted_result(env, tmp_path)
+    attempt = result.attempts[-1]
+    payload = {**cast(dict[str, Any], attempt.payload), "status": "failed"}
+    target = tmp_path / "elsewhere.json"
+    target.write_text(cast(Path, attempt.request_path).read_text(encoding="utf-8"), encoding="utf-8")
+    link = tmp_path / "linked-request.json"
+    link.symlink_to(target)
+    pr = loop.PrRef(repository="usaturn/xrift-poc", number=900, url="https://github.com/usaturn/xrift-poc/pull/900")
+    kept = tmp_path / "kept"
+    # 停止を確かめられない試行のファイルは、生きた書き手が差し替えうるので読まない
+    for request_path, stopped, expected in (
+        (link, True, False),
+        (tmp_path / "missing.json", True, False),
+        (attempt.request_path, False, False),
+        (attempt.request_path, True, True),
+    ):
+        update = {"payload": payload, "request_path": request_path, "stop_confirmed": stopped}
+        failed = result.model_copy(update={"attempts": [attempt.model_copy(update=update)]})
+        entry = loop.verify_reviewer(failed, pr=pr, head=head, review_dir=env.review_dir)
+        loop.keep_rejected_request(failed, entry, kept)
+        assert (entry.request_file is not None) is expected
+    assert sorted(path.name for path in kept.iterdir()) == ["request-1.json"]

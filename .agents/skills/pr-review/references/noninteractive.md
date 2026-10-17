@@ -19,6 +19,8 @@
 
 runnerのrequestはそのattemptに渡されたものだけを読む。callerがpathを示せばそれを使う。既存runnerでは起動cwdの親の `request.json` がそれに当たる。別attemptのrequestを探索しない。completeも起動時と同じcwdで呼ぶ。レビュー用WTは別の隔離領域であり、そこへcdしたままrequest検査を実行しない。
 
+runnerの役割が `writes=false`（`inspect` など）のとき、その指示はレビュー対象（review用WTの追跡ファイルを含む）・どのcheckoutの追跡ファイル・他担当の成果を変更しないという意味である。helperが管理する実行記録・セッション（WT・backup・draft・state）・正式保存・保存ロック・Gitのworktree登録とref・uvの環境への書き込みはこれに当たらず、callerがrunnerの作業範囲の指示に「Caller-authorized exceptions」として列挙する（loopは自動で列挙する）。
+
 helperの実行にはpydanticを持つ既存の `tools/devenv` projectを使用する。`TOPLEVEL` は**読んだskillのsource checkoutのroot**、`RUN_HELPER`も同じ版。レビュー対象repoや今のcwdからhelperの置き場所を推測しない。例えばcallerがfeature版skillを指定したときは、そのfeature版のhelperを使う。uvのPythonは3.14以上、lockを変更しない。
 
 DSH 標準 headless の場合、runner は Linux Dev Container の bubblewrap で、隔離 HOME/TMPDIR と controller が確定した対象 PR の正式保存先・通常ファイルの保存ロックだけを追加許可する。共有 `.git` 全体は許可しない。uv の cache/仮想環境は隔離 HOME 内に固定され、request/state/patch は bash から読み取り可能なまま保護される。モデルは自身の DSH_SESSION_ID/cwd に結び付いた v4 session の request/assistant 記録から helper が確定し、complete 前にも再照合する。Git 操作は専用 clone 内で行う。`--source-root` / 指定 commit も共有 Git metadata を書き換えず専用 clone に取得する。保存名は provider ごとに分離する。CLI 版など観測できない値は unknown。
