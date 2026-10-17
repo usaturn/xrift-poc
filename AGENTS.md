@@ -126,8 +126,10 @@ xrift-poc は、XRift のワールドとアイテムを作るための開発環�
 
 ```bash
 uv sync --project tools/devenv --locked
-uv run --project tools/devenv --no-sync pytest -c tools/devenv/pyproject.toml tools/devenv/tests tools/devenv_migration/tests tools/review_triage/tests tools/agent_runner/tests tools/test_support/tests .agents --collect-only -q
+uv run --project tools/devenv --no-sync pytest -c tools/devenv/pyproject.toml --rootdir . tools/devenv/tests tools/devenv_migration/tests tools/review_triage/tests tools/agent_runner/tests tools/test_support/tests .agents --collect-only -q
 ```
+
+- テストのファイルやディレクトリを指定して実行するときも、同じ root で `-c tools/devenv/pyproject.toml --rootdir .` を付ける。`--rootdir .` が無いと rootdir が `tools/devenv` になり、conftest の fixture が別のディレクトリのテストにも効き、テストのファイルを並べると別の conftest の同名の fixture を受け取る
 
 ## 一時ファイル・ディレクトリの削除
 

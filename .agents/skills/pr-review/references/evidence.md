@@ -20,7 +20,7 @@
 
 - `$WT` のコードを一時ディレクトリから読み込む（例: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$WT" uv run --no-project python "$SCRATCH/repro.py"`、`cd "$SCRATCH" && PYTHONDONTWRITEBYTECODE=1 uv run --no-project python -c '…'`）。`PYTHONDONTWRITEBYTECODE=1` が無いと、import したモジュールのバイトコードが `$WT` の `__pycache__/` に書かれる。
 - `mkdir -p "$SCRATCH/tree" && git -C "$WT" archive HEAD | tar -x -C "$SCRATCH/tree"` で一時ディレクトリへ展開し、そこで実行する。新しい作業環境（仮想環境の無いディレクトリなど）を作るときもこの形にする。
-- 既存のテストは、`$WT` を cwd にして読み取りだけで実行できるものに限り、キャッシュを書かない指定を付ける。`-p no:cacheprovider` が止めるのは `.pytest_cache` だけなので、`__pycache__/` を止める `PYTHONDONTWRITEBYTECODE=1` と併用する。テストの実行方法はリポジトリの規約に従う（素の `python3` には pytest が無いことがある）。親リポジトリでの例: `PYTHONDONTWRITEBYTECODE=1 uv run --project "$TOPLEVEL/tools/devenv" --no-sync pytest -c tools/devenv/pyproject.toml -p no:cacheprovider <テストのパス> -q`（cwd は `$WT`）。
+- 既存のテストは、`$WT` を cwd にして読み取りだけで実行できるものに限り、キャッシュを書かない指定を付ける。`-p no:cacheprovider` が止めるのは `.pytest_cache` だけなので、`__pycache__/` を止める `PYTHONDONTWRITEBYTECODE=1` と併用する。テストの実行方法はリポジトリの規約に従う（素の `python3` には pytest が無いことがある）。親リポジトリでの例: `PYTHONDONTWRITEBYTECODE=1 uv run --project "$TOPLEVEL/tools/devenv" --no-sync pytest -c tools/devenv/pyproject.toml --rootdir . -p no:cacheprovider <テストのパス> -q`（cwd は `$WT`。`--rootdir .` が無いと、テストのファイルを並べたときに別の conftest の同名の fixture を受け取る）。
 
 一時ファイルは、SKILL.md の規約どおり `uv run --no-project python "$TOPLEVEL/.agents/scripts/agent_tmp.py" mkdir "pr-review-scratch-${PR_NUMBER}"` で作る追加スクラッチ（親の main worktree の `tmp/agents/pr-review-scratch-<PR番号>.*`）に置く。証跡はレビュー本文の `再現` に転記し、スクラッチだけに残さない。一時ホームが要る場合は `env HOME="$tmpdir" …` のワンショットだけを使う。
 

@@ -1156,7 +1156,7 @@ dsh plugin --profile pi-tui -- add "@mars-sea/dsh-commandcode-provider@0.12.2"
 dsh 関連だけを先に確認するときは次を実行する。
 
 ```bash
-uv run --project tools/devenv --no-sync pytest -c tools/devenv/pyproject.toml tools/devenv_migration/tests/test_dsh_devcontainer.py tools/devenv_migration/tests/test_dsh_launchers.py tools/devenv_migration/tests/test_dsh_model_env.py -v
+uv run --project tools/devenv --no-sync pytest -c tools/devenv/pyproject.toml --rootdir . tools/devenv_migration/tests/test_dsh_devcontainer.py tools/devenv_migration/tests/test_dsh_launchers.py tools/devenv_migration/tests/test_dsh_model_env.py -v
 ```
 
 `test_dsh_model_env.py` は導入済みの実 dsh と実 `@deepseek-ai/dsh-shell-env` を、

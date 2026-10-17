@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import TypedDict
 
@@ -16,7 +17,9 @@ class UvCall(TypedDict):
     stage: str
 
 
-def make_minimal_parent_fixture(tmp_path: Path, failure: str | None = None) -> tuple[Path, Path, dict[str, str]]:
+def make_minimal_parent_fixture(
+    tmp_path: Path, failure: str | None = None, pytest_python: str | None = None
+) -> tuple[Path, Path, dict[str, str]]:
     root = tmp_path / "parent"
     for part in (
         "scripts/ci",
@@ -40,11 +43,14 @@ def make_minimal_parent_fixture(tmp_path: Path, failure: str | None = None) -> t
         "import json, os, sys\n"
         f"log = {str(log)!r}\n"
         f"failure = {failure!r}\n"
+        f"pytest_python = {pytest_python!r}\n"
         "args = sys.argv[1:]\n"
         "command = args[args.index('--no-sync') + 1:] if '--no-sync' in args else []\n"
         "stage = 'sync' if args[0] == 'sync' else ('ruff-' + command[1] if command[0] == 'ruff' else command[0])\n"
         "with open(log, 'a') as stream: stream.write("
         "json.dumps({'argv': args, 'cwd': os.getcwd(), 'stage': stage}) + '\\n')\n"
+        "if stage == 'pytest' and pytest_python:\n"
+        "    os.execv(pytest_python, [pytest_python, '-m', 'pytest', *command[1:]])\n"
         "sys.exit(23 if stage == failure else 0)\n"
     )
     stub.chmod(0o755)
@@ -94,3 +100,19 @@ def test_runner_rejects_argument_and_missing_lock(tmp_path: Path) -> None:
     (root / "tools/devenv/uv.lock").unlink()
     assert run_runner(root, env=env, cwd=tmp_path).returncode != 0
     assert read_calls(log) == []
+
+
+def test_runner_scopes_conftest_fixtures_to_their_directory(tmp_path: Path) -> None:
+    root, _, env = make_minimal_parent_fixture(tmp_path, pytest_python=sys.executable)
+    # 自分のディレクトリのテストにだけ効くはずの autouse の fixture。nodeid が repo の root からのパスかも確かめる
+    (root / "tools/agent_runner/tests/conftest.py").write_text(
+        "import pytest\n\n\n"
+        "@pytest.fixture(autouse=True)\n"
+        "def agent_runner_only(request: pytest.FixtureRequest) -> None:\n"
+        "    assert request.node.nodeid.startswith('tools/agent_runner/tests/'), request.node.nodeid\n"
+    )
+    (root / "tools/agent_runner/tests/test_inside.py").write_text("def test_inside() -> None:\n    pass\n")
+    (root / "tools/review_triage/tests/test_outside.py").write_text("def test_outside() -> None:\n    pass\n")
+    result = run_runner(root, env=env, cwd=root)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "2 passed" in result.stdout

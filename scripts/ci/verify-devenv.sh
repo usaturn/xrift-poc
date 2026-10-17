@@ -17,4 +17,4 @@ uv sync --project "$project" --locked
 uv run --project "$project" --no-sync ruff check --config "$project/pyproject.toml" tools/devenv tools/devenv_migration tools/review_triage tools/agent_runner tools/test_support .agents scripts/write_shell_block.py
 uv run --project "$project" --no-sync ruff format --check --config "$project/pyproject.toml" tools/devenv tools/devenv_migration tools/review_triage tools/agent_runner tools/test_support .agents scripts/write_shell_block.py
 uv run --project "$project" --no-sync pyright --project "$project/pyproject.toml"
-uv run --project "$project" --no-sync pytest -c "$project/pyproject.toml" tools/devenv/tests tools/devenv_migration/tests tools/review_triage/tests tools/agent_runner/tests tools/test_support/tests .agents
+uv run --project "$project" --no-sync pytest -c "$project/pyproject.toml" --rootdir "$root" tools/devenv/tests tools/devenv_migration/tests tools/review_triage/tests tools/agent_runner/tests tools/test_support/tests .agents
