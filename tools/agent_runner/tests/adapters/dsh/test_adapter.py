@@ -70,6 +70,7 @@ def context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AdapterContext:
 
 
 def test_adapter_cache_paths_are_writable_with_its_scoped_runner(context: AdapterContext) -> None:
+    import os
     import subprocess
     import sys
 
@@ -99,7 +100,9 @@ def test_adapter_cache_paths_are_writable_with_its_scoped_runner(context: Adapte
     state.write_text("observed")
     program = "from pathlib import Path; " + "; ".join(f"Path({str(path)!r}).mkdir()" for path in (cache, venv))
     program += f"; assert Path({str(state)!r}).read_text() == 'observed'"
-    result = subprocess.run([*command, *profile, sys.executable, "-c", program], capture_output=True, text=True)
+    # The profile empties /tmp, where the venv may live; run the interpreter its python links to.
+    python = os.path.realpath(sys.executable)
+    result = subprocess.run([*command, *profile, python, "-c", program], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert cache.is_dir() and venv.is_dir()
 

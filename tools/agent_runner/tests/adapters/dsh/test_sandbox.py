@@ -1,6 +1,7 @@
 """The scoped DSH runner permits owned outputs, not neighboring host files."""
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -43,7 +44,8 @@ def invoke(
             "--",
             *profile,
             "--",
-            sys.executable,
+            # The profile empties /tmp, where the venv may live; run the interpreter its python links to.
+            os.path.realpath(sys.executable),
             "-c",
             program,
         ],
