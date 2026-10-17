@@ -14,7 +14,12 @@ from tools.agent_runner import environ, runner
 from tools.agent_runner.models import Agent, Assignment, Config, Role, Workflow
 from tools.agent_runner.process import ProcessResult
 from tools.agent_runner.runner import run_workflow
+from tools.agent_runner.tests.test_runner import set_when, written
 from tools.test_support.repos import create_env_repo
+
+pytest_plugins = ("tools.test_support.plugin",)
+# Only fake agents are launched here; drop AGENT_RUNNER_DEPTH inside each test so a runner agent can run them
+pytestmark = pytest.mark.usefixtures("outside_runner")
 
 FAKE = Path(__file__).with_name("fake_cli.py")
 
@@ -89,6 +94,46 @@ def test_real_process_state_and_stdin(
     if mode == "descendant":
         pid = int((attempt.work_dir / "child.pid").read_text())
         _assert_stopped(pid)
+
+
+def test_explicit_provider_key_is_used_without_ambient_credentials(
+    config: Config, repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(environ, "_literal", {"PATH": os.defpath})
+    result = run_workflow(
+        config,
+        "test",
+        "respond",
+        repository,
+        output_dir=tmp_path / "run",
+        environment={"COMMANDCODE_API_KEY": "explicit-test-credential"},
+    )
+    assert result.state == "success"
+    attempt = result.results[0].attempts[0]
+    assert isinstance(attempt.payload, dict) and attempt.payload["secret"] == "[REDACTED]"
+    assert "explicit-test-credential" not in result.model_dump_json()
+
+
+def test_explicit_auth_environment_is_allowlisted_and_redacted(
+    config: Config, repository: Path, tmp_path: Path
+) -> None:
+    config.agents["a"].env.append("GH_TOKEN")
+    config.agents["a"].command[-1] = "github-token"
+    result = run_workflow(
+        config,
+        "test",
+        "respond",
+        repository,
+        output_dir=tmp_path / "run",
+        environment={"GH_TOKEN": "private-github-token", "UNLISTED_SECRET": "do-not-inherit"},
+    )
+    attempt = result.results[0].attempts[0]
+    assert attempt.state == "success" and attempt.stop_confirmed
+    assert attempt.payload == {"github_token": "[REDACTED]", "unlisted": None}
+    assert attempt.request_path is not None
+    assert "private-github-token" not in result.model_dump_json()
+    for name in ("stdout.log", "request.json", "dsh/state/session.jsonl"):
+        assert "private-github-token" not in (attempt.request_path.parent / name).read_text()
 
 
 def test_private_session_artifacts_are_redacted(config: Config, repository: Path, tmp_path: Path) -> None:
@@ -266,17 +311,12 @@ def test_timeout_and_cancellation_stop_descendants(
     config: Config, repository: Path, tmp_path: Path, interrupt: bool
 ) -> None:
     config.agents["a"].command[-1] = "hang"
-    config.roles["inspect"].deadline_seconds = 2.0
+    # Cancel once the runtime wrote its last file, not on a clock started before
+    # the run; the timeout covers checkout and startup (unloaded 0.17 s) (#694).
+    config.roles["inspect"].deadline_seconds = 60.0 if interrupt else 3.0
     cancel = threading.Event()
-    timer = threading.Timer(1.0, cancel.set)
-    if interrupt:
-        timer.start()
-    try:
+    with set_when(cancel, lambda: interrupt and written(tmp_path.glob("run/*/attempt-1/worktree/child.pid")) == 1):
         result = run_workflow(config, "test", "respond", repository, output_dir=tmp_path / "run", cancel=cancel)
-    finally:
-        timer.cancel()
-        if interrupt:
-            timer.join()
     attempt = result.results[0].attempts[0]
     assert attempt.state == ("interrupted" if interrupt else "timed_out")
     assert attempt.stop_confirmed

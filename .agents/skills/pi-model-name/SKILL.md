@@ -3,7 +3,17 @@ name: pi-model-name
 description: pi または DeepSeek Harness（DSH）で現在動いている AI のモデルや provider を尋ねられたとき、現在のモデル名を表示するとき、レビューや成果物に MODEL_NAME を記録するときに使う。
 ---
 
-# Pi のモデル名
+# Pi / DSH のモデル名
+
+## DSH 標準 headless の PR レビュー
+
+`DSH_PROFILE=headless`・`DSH_SHELL=1` の標準 headless は TUI 用の model-env プラグインを使わず、`PI_PROVIDER` / `PI_MODEL` / `DSH_MODEL` をモデル識別の条件にしない。pr-review では `review_run.py prepare --runtime dsh` に model-name を渡さず、helper が自身の隔離 `DSH_HOME`・明示した `DSH_SESSION_ID`・cwd に結び付いた v4 session を解析する。解決済み request header と assistant message source の provider/model が一致した値を使い、effort は同じ header、CLI 版は unknown とする。complete 前にも同じ経路を照合する。
+
+これは任意の履歴や最後に更新されたファイルからの推測ではない。ログ欠落・不正・別 session/cwd・途中のモデル変更は failed。親の PI_*、requested な設定値、共有 ~/.dsh のログで代用しない。保存名は helper が provider/model ごとに決める。通常の非対話レビューではユーザにモデル名を尋ねない。
+
+## Pi / DSH pi-tui の環境変数
+
+以下の環境変数・print-pi-model.sh の手順は Pi と model-env を載せた DSH pi-tui 用であり、標準 headless のレビューでは上の helper を使う。
 
 実行中の provider / model は、ランタイムが bash ツールへ注入する変数で確認する。pi は `PI_PROVIDER` / `PI_MODEL`、DeepSeek Harness（`dshccd` / `dshgo` の pi-tui）は `DSH_PROVIDER` / `DSH_MODEL` を提示する。システムプロンプトの推測、保存設定、ランチャー名、セッション履歴の `model_change` / `modelId` を根拠にしない。
 

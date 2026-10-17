@@ -142,10 +142,14 @@ writes = false
 deadline_seconds = 2700
 result_shape = "json"
 
-# PR レビューの後処理（#601）。各レビュアーの実行記録へ、ランナーが観測した Identity と試行の結果を書く。
-# 止めるときは個人設定に [workflows.review] after_run = [] と書く。
+# PR レビューの後処理。DSH の staged 成果は親で HEAD を再照合して保存し、実行記録へ観測値を書く。
+# 直接 runner を使う DSH caller は prepare-parent の descriptor を Request.prompt に渡す。
+# loop は親保存を必ず実行する。個人設定の after_run = [] は観測値の追記だけを止める。
 [workflows.review]
 after_run = [[
+  "uv", "run", "--project", "tools/devenv", "--locked", "python",
+  ".agents/skills/pr-review/scripts/review_run.py", "finalize-parent", "--result", "{result}",
+], [
   "uv", "run", "--project", "tools/devenv", "--locked", "python",
   ".agents/skills/pr-review/scripts/review_run.py", "attach-runner", "--result", "{result}",
 ]]
@@ -153,9 +157,9 @@ after_run = [[
 # workflow の割り当て既定値（#565）。
 # review の inspect（レビュアー）は固定しない。依頼ごとに --assign inspect=agent-a,agent-b で選ぶ。
 # いつも使う構成は、個人設定のこの節の agents を書き換える。
-# 下の 4 人は指定が無いときの既定値で、#616 で利用者が個人設定で使っている構成に合わせた。性能の順位ではない。
+# 下の 5 人は指定が無いときの既定値で、移植元（agent-workspace #657）と同じ構成にした。性能の順位ではない。
 [workflows.review.assignments.inspect]
-agents = ["pi-gemf", "devin-swe", "pi-deepseek", "pi-go-glmf"]
+agents = ["pi-gpt", "devin-swe", "dsh-ccd", "claude-opus", "pixg"]
 
 [workflows.fix.assignments.implement]
 agents = ["claude-opus"]

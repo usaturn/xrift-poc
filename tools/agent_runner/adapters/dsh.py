@@ -1,8 +1,9 @@
 """Standard DSH headless profile, isolated from user profiles and plugins.
 
 The CLI owns profile initialization; no plugin install or subprocess runs here.
-Only sessionId is observable in its JSONL projection. Exit and descendant stop
-status are independently enforced by the runner, not inferred from ``final``.
+The JSONL projection supplies sessionId; the bound durable session supplies
+observed provider/model/effort. Exit and descendant stop status are independently
+enforced by the runner, not inferred from ``final``.
 HOME is a disposable cache the runner removes after stop. State, the patch and
 regular files in a private TMPDIR (DSH spills large command output there) are
 retained redacted; links and special files tools leave in TMPDIR are unlinked.
@@ -10,6 +11,7 @@ retained redacted; links and special files tools leave in TMPDIR are unlinked.
 
 import json
 import re
+import sys
 import uuid
 from pathlib import Path
 from typing import cast
@@ -21,6 +23,7 @@ from tools.agent_runner.adapters import (
     LaunchSpec,
 )
 from tools.agent_runner.adapters.skills import prompt_lines
+from tools.agent_runner.dsh_identity import read_session_identity
 from tools.agent_runner.environ import literal_environ
 from tools.agent_runner.models import Identity, Payload, Receipt, ReceiptStatus
 
@@ -178,7 +181,8 @@ class Dsh:
         # or a shared credential store under the original provider key name.
         key_ref = f"AGENT_RUNNER_DSH_{uuid.uuid4().hex.upper()}_API_KEY"
         key_name = _KEYS[provider]
-        key = literal_environ().get(key_name, "") if key_name in agent.env else ""
+        inherited = context.environment if context.environment is not None else literal_environ()
+        key = inherited.get(key_name, "") if key_name in agent.env else ""
         model: dict[str, object] = {"id": agent.model, "contextWindow": 1000000}
         selection: dict[str, object] = {"provider": provider, "model": agent.model}
         if agent.effort is not None:
@@ -195,7 +199,24 @@ class Dsh:
                 baseURL="https://api.commandcode.ai/provider/v1",
                 compat={"thinkingFormat": "deepseek"},
             )
+        runner_command = [
+            sys.executable,
+            str(Path(__file__).resolve().parents[1] / "dsh_sandbox.py"),
+            "--workspace",
+            str(context.work_dir.resolve(strict=True)),
+            "--read-root",
+            str(context.receipt_path.parent.resolve(strict=True)),
+            *[argument for path in (home, tmp, *context.sandbox_write_paths) for argument in ("--grant", str(path))],
+            "--",
+        ]
         patch = [
+            {
+                "id": "sandbox",
+                "config": {
+                    "runnerCommand": runner_command,
+                    "runnerFailureSignatures": ["dsh-sandbox:", "bwrap:"],
+                },
+            },
             {"id": "llm-pi-ai", "config": {"providers": {provider: route}}},
             {"id": "agent-default-model", "config": selection},
             {"id": "approval", "config": {"policy": "never"}},
@@ -244,6 +265,10 @@ class Dsh:
                 "DSH_TELEMETRY_MODE": "DISABLED",
                 "DSH_TELEMETRY_DISABLED": "1",
                 "DSH_PERMISSION_MODE": "workspace-write",
+                "UV_CACHE_DIR": str(home / "uv-cache"),
+                "UV_PROJECT_ENVIRONMENT": str(home / "venv"),
+                "UV_PYTHON_DOWNLOADS": "manual",
+                "UV_PYTHON_PREFERENCE": "system",
                 key_ref: key,
             },
         )
@@ -267,6 +292,18 @@ class Dsh:
             except OSError, UnicodeError:
                 pass
         session = events[0].get("sessionId") if events and events[0].get("type") == "session" else None
+        identity = Identity(
+            session_id=session if isinstance(session, str) and not events[0].get("truncated") else None
+        )
+        if identity.session_id:
+            try:
+                identity = read_session_identity(
+                    context.receipt_path.parent / "dsh" / "state", context.work_dir, identity.session_id
+                )
+            except FileNotFoundError:
+                pass  # Generic uses may have no durable model observation; review callers reject unknown.
+            except OSError, ValueError, KeyError, TypeError:
+                status, payload = "response_failed", None
         return AdapterOutcome(
             receipt=Receipt(
                 run_id=context.request.run_id,
@@ -276,9 +313,7 @@ class Dsh:
                 status=status,
                 payload=payload,
             ),
-            identity=Identity(
-                session_id=session if isinstance(session, str) and not events[0].get("truncated") else None
-            ),
+            identity=identity,
         )
 
 

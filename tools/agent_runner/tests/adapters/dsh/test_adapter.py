@@ -8,8 +8,22 @@ from typing import Any
 import pytest
 
 from tools.agent_runner import environ
-from tools.agent_runner.adapters import AdapterContext, AdapterOutcome, LaunchSpec, load_adapter, runtime_supported
-from tools.agent_runner.models import Agent, Payload, ReceiptStatus, Request, ResultShape, Role
+from tools.agent_runner.adapters import (
+    AdapterContext,
+    AdapterOutcome,
+    LaunchSpec,
+    load_adapter,
+    runtime_supported,
+)
+from tools.agent_runner.models import (
+    Agent,
+    Payload,
+    ReceiptStatus,
+    Request,
+    ResultShape,
+    Role,
+)
+from tools.test_support.dsh import write_session
 
 
 @pytest.fixture
@@ -53,6 +67,44 @@ def context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AdapterContext:
         work,
         attempt / "receipt.json",
     )
+
+
+def test_adapter_cache_paths_are_writable_with_its_scoped_runner(context: AdapterContext) -> None:
+    import os
+    import subprocess
+    import sys
+
+    spec = load_adapter("dsh").prepare(context)
+    command = _patch(spec)["sandbox"]["config"]["runnerCommand"]
+    work = str(context.work_dir.resolve())
+    profile = [
+        "--ro-bind",
+        "/",
+        "/",
+        "--dev",
+        "/dev",
+        "--unshare-pid",
+        "--proc",
+        "/proc",
+        "--die-with-parent",
+        "--tmpfs",
+        "/tmp",
+        "--bind",
+        work,
+        work,
+        "--",
+    ]
+    cache, venv = Path(spec.env["UV_CACHE_DIR"]), Path(spec.env["UV_PROJECT_ENVIRONMENT"])
+    assert cache.is_relative_to(spec.env["HOME"]) and venv.is_relative_to(spec.env["HOME"])
+    state = Path(spec.env["DSH_HOME"]) / "visible"
+    state.write_text("observed")
+    program = "from pathlib import Path; " + "; ".join(f"Path({str(path)!r}).mkdir()" for path in (cache, venv))
+    program += f"; assert Path({str(state)!r}).read_text() == 'observed'"
+    # The profile empties /tmp, where the venv may live; run the interpreter its python links to.
+    python = os.path.realpath(sys.executable)
+    result = subprocess.run([*command, *profile, python, "-c", program], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert cache.is_dir() and venv.is_dir()
 
 
 def test_runtime_is_registered() -> None:
@@ -164,6 +216,23 @@ def _collect(context: AdapterContext, events: Iterable[object], stderr: str = ""
     stderr_path = context.receipt_path.parent / "stderr.log"
     stderr_path.write_text(stderr)
     return load_adapter("dsh").collect(context, stdout_path, stderr_path)
+
+
+def test_collector_binds_stdout_session_to_observed_model(context: AdapterContext) -> None:
+    write_session(
+        context.receipt_path.parent / "dsh" / "state",
+        context.work_dir,
+        session_id="observed-session",
+        provider="live-provider",
+        model="live-model",
+    )
+    outcome = _collect(context, _stream())
+    assert outcome.receipt is not None and outcome.receipt.status == "success"
+    assert (outcome.identity.provider, outcome.identity.model, outcome.identity.effort) == (
+        "live-provider",
+        "live-model",
+        "high",
+    )
 
 
 def _status(context: AdapterContext, events: Iterable[object]) -> ReceiptStatus:
