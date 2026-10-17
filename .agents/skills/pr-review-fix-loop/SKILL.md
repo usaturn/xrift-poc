@@ -38,7 +38,7 @@ uv run --project "$TOOL_ROOT/tools/devenv" --locked python \
 
 - `--controller-model` は、review-fix-planning が状況コメントに使う `MODEL_NAME` と同じ値にする。`--controller-runtime` は `claude-code`・`devin`・`pi`・`codex`・`cursor`・`grok-build` のどれか。
 - `--max-cycles N`: サイクルの上限（1〜10、既定 3）。
-- `--hold-action skip|fix`: 利用者が指定したときだけ渡す。指定が無ければ、Hold が出たときに review-fix-planning の規則で `stopped` になる。
+- `--hold-action skip|fix`: 利用者が指定したときだけ渡す。新規起動で未指定なら helper が `skip` を適用する。明示した `skip`・`fix` はそのまま適用する。
 - `--assign ROLE=AGENT[,AGENT]`（複数可）: `inspect`（レビュアー、複数可）と、`implement`・`self-review`・`fix-check`（各 1 つ。review-fix-planning の `run_roles.py` に渡す）。agent は agent-runner の設定に定義された名前。
 - `--template`・`--config`: agent-runner の雛形と個人設定。既定は雛形 `.devcontainer/agent-runner.toml` と既存の個人設定。
 - `--fresh-review`: 現在の HEAD のレビューの成果があっても、レビュアーを起動する。
@@ -53,7 +53,8 @@ uv run --project "$TOOL_ROOT/tools/devenv" --locked python \
    - `reuse`: 現在の HEAD のレビューの成果が、すでにレビューディレクトリにある（前のサイクルの push 前の PR 全体レビューなど）。レビュアーを起動せずに 3 へ進む。
 2. **`review`**: 全レビュアーが終わるまで同期で待つ（「監視」）。`accepted` と `rejected` を確かめる。`rejected` は失敗したレビュアーで、指摘 0 件ではない。保存の後に失敗した（後片付けの失敗、期限切れなど）レビュアーの成果は、このサイクルの HEAD のままレビューディレクトリに残ることがあり、review-fix-planning はそれも読む。状況コメントには、loop の判定（`rejected` と理由）と、そのレビュアーの成果を計画の入力にしたかを書く。`retained` のパスは最終報告に書く。終了コード 6 は全員の失敗である（「終わり方」）。
 3. **計画**: review-fix-planning の SKILL.md を読み、`planning.review_dir`（レビューディレクトリの完全パス）を第 1 引数にして、その手順を最後まで行う。
-   - `planning.hold_action` が null でなければ、それを利用者の hold-action の明示選択として扱う。
+   - `planning.hold_action` をこの run の Hold 方針として渡す。新規 run は未指定時の既定 `skip` または利用者の明示 `skip`・`fix` であり、既定の適用を利用者の明示選択と書かない。このループの既定 `skip` は Hold にだけ適用し、理由付き `Skip` として判断を残す（`Resolved` にしない）。必須修正や `Unverified` は、review-fix-planning の既存規則で扱う。
+   - 旧 run の `planning.hold_action` が null なら未選択のまま扱い、Hold が残れば review-fix-planning の認可不足で `stopped` にする。単独の review-fix-planning の未指定時の規則は変えない。
    - `run_roles.py` の呼び出しには、`planning.run_roles_options` をそのまま足す。
    - 挙動の再現が要るときは、review-fix-planning 2 章の専用 worktree で確かめる。
    - 関連検証が失敗したら、review-fix-planning の規則どおり原因を診断して直す。loop は計画の結果を待ち、サイクルを終えない。
@@ -89,7 +90,7 @@ uv run --project "$TOOL_ROOT/tools/devenv" --locked python \
 
 ## 止まったとき（中断・再開・回収）
 
-- **再開**: `status --run <run_dir>`（PR しか分からなければ `status <PR>`）の `next` を実行する。状態は `<review_dir>/loop/` にだけあり、会話の記憶に頼らない。
+- **再開**: `status --run <run_dir>`（PR しか分からなければ `status <PR>`）の `next` を実行する。状態は `<review_dir>/loop/` にだけあり、会話の記憶に頼らない。保存済みの `options.hold_action`（旧 run の null を含む）を維持し、新規起動の既定値で上書きしない。
 - **`review` の終了コード 3（`interrupted_review`）**: 前のレビューが結果を残さずに止まった。レビュアーを起動し直さない。runner とレビュアーのプロセスが残っていないことを `ps` などで確かめ、その事実を `recover --run <run_dir> --operator-confirmed-stopped "<確かめた事実>"` に渡す。記録した資源だけを回収し、run は `abandoned` になる。続けるときは `start` からやり直す。
 - **終了コード 7（`resources`）**: 同じく、停止を確かめてから `recover` に事実を渡す。確かめられないときは、ロックと資源を残したまま、完全パスを利用者に報告して止まる。
 - **`review` の終了コード 4（`head_moved`）**: `cycle-begin` の後に PR の HEAD が動いた。`next` のとおり `finish --abort` で止め、新しい run を始める。

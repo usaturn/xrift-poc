@@ -803,7 +803,7 @@ def test_reviewers_receive_the_previous_round_when_the_head_moved(loop: Any, env
             head3,
             "stopped",
             [kit.decision(skip_ref, "skip", "inherited")],
-            stop_reason="permission: hold-action の選択が無い",
+            stop_reason="permission: 追加レビューの認可が無い",
             seats=[kit.seat(head3, "alpha-model")],
         )
     )

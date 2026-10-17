@@ -26,7 +26,8 @@ TARGET_JSON=$(uv run --no-project python "$TOPLEVEL/.agents/scripts/review_targe
 - レビューディレクトリのパスの識別・head branch不一致はexit 11で停止。
 - exit 10は対象外owner、3〜7は存在・アクセス・認証・API・親rootの障害。stderrと具体的な不足を報告する。API失敗を「PRが存在しない」にしない。
 - `TARGET_REPO_ROOT` は親のPRなら親のcheckout、制作物や他repoのPRならnull。nullなら下の再現・実装の前に一時cloneを作って使い、`items/<name>`・`worlds/<name>` のcheckoutは使わない。対象repositoryのroot/remoteを確認してから検証する。入力helperの成功はcommit/push/mergeの認可ではない。
-- 任意オプション: `hold-action=fix|skip`（Holdだけへの利用者の明示選択）、runnerのtemplate/configと `implement` / `self-review` / `fix-check` の割当。空欄は設定どおり、未指定を名指し・選択に作り替えない。役割CLIは `references/execution.md`。
+- 任意オプション: `hold-action=fix|skip`（通常入口ではHoldだけへの利用者の明示選択）、runnerのtemplate/configと `implement` / `self-review` / `fix-check` の割当。空欄は設定どおり、未指定を名指し・選択に作り替えない。役割CLIは `references/execution.md`。
+- pr-review-fix-loop から呼ばれた場合は、helper が返した `planning.hold_action` をその run の実効方針として Hold にだけ適用する。ループの既定 `skip` を利用者の明示選択と記録しない。保存値が null の旧 run は未選択のまま扱う。単独の通常入口では、未指定の Hold を `skip` に補わない。
 
 ## 1. 入力を全件読む
 

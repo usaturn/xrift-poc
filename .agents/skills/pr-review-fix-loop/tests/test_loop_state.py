@@ -54,16 +54,65 @@ def test_start_rejects_an_unknown_role_and_inspect_self(loop: Any, env: Any) -> 
     assert not (env.review_dir / "loop/lock.json").exists()
 
 
-def test_start_records_options_and_effective_assignments(loop: Any, env: Any, kit: Any) -> None:
-    started = env.start(assign=["inspect=beta,alpha", "implement=beta"], hold_action="skip", max_cycles=2)
+@pytest.mark.parametrize(
+    ("entrypoint", "hold_options", "expected"),
+    [
+        ("api", {}, "skip"),
+        ("api", {"hold_action": None}, "skip"),
+        ("api", {"hold_action": "skip"}, "skip"),
+        ("api", {"hold_action": "fix"}, "fix"),
+        ("cli", {}, "skip"),
+        ("cli", {"hold_action": "skip"}, "skip"),
+        ("cli", {"hold_action": "fix"}, "fix"),
+    ],
+)
+def test_start_records_options_and_effective_assignments(
+    loop: Any,
+    env: Any,
+    kit: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    entrypoint: str,
+    hold_options: dict[str, Any],
+    expected: str,
+) -> None:
+    # CLI でも保存と計画への引き渡しは実 helper を使い、GitHub と親 checkout の探索だけ隔離する。
+    if entrypoint == "api":
+        started = env.start(assign=["inspect=beta,alpha", "implement=beta"], max_cycles=2, **hold_options)
+    else:
+        monkeypatch.setattr(loop, "GitHub", lambda: env.github)
+        monkeypatch.setattr(loop.target, "default_parent_root", lambda: env.parent)
+        args = [
+            "start",
+            f"#{kit.number}",
+            "--controller-model",
+            "test-planner",
+            "--controller-runtime",
+            "pi",
+            "--max-cycles",
+            "2",
+            "--assign",
+            "inspect=beta,alpha",
+            "--assign",
+            "implement=beta",
+            "--template",
+            str(env.template),
+        ]
+        if hold_options:
+            args += ["--hold-action", hold_options["hold_action"]]
+        assert loop.main(args) == 0
+        started = json.loads(capsys.readouterr().out)
+        env.run_dirs.append(Path(started["run_dir"]))
 
     run = json.loads((Path(started["run_dir"]) / "run.json").read_text(encoding="utf-8"))
     assert run["schema"] == "pr-review-fix-loop/v1"
     assert run["options"]["max_cycles"] == 2
-    assert run["options"]["hold_action"] == "skip"
+    assert run["options"]["hold_action"] == expected
+    assert reuse_or_run(loop, env)["planning"]["hold_action"] == expected
     assert run["assignments"]["review"]["inspect"]["agents"] == ["beta", "alpha"]
     assert run["assignments"]["fix"]["implement"]["agents"] == ["beta"]
-    assert run["tool_commit"] == kit.git(env.parent, "rev-parse", "HEAD")
+    if entrypoint == "api":
+        assert run["tool_commit"] == kit.git(env.parent, "rev-parse", "HEAD")
     assert started["next"][-3:] == ["cycle-begin", "--run", started["run_dir"]]
 
 
@@ -241,14 +290,14 @@ def test_stopped_record_ends_the_run_and_finish_releases_the_lock(loop: Any, env
     head = env.gh.head()
     reuse_or_run(loop, env)
     env.gh.post_record(
-        kit.round_record(1, head, "stopped", [], stop_reason="permission: hold-action の選択が無い", seats=[])
+        kit.round_record(1, head, "stopped", [], stop_reason="permission: 追加レビューの認可が無い", seats=[])
     )
 
     ended = loop.cycle_end(env.run_dirs[-1], github=env.github)
     finished = loop.finish(env.run_dirs[-1])
 
     assert ended["outcome"] == "stopped"
-    assert finished["result"]["stop_reason"] == "permission: hold-action の選択が無い"
+    assert finished["result"]["stop_reason"] == "permission: 追加レビューの認可が無い"
     assert not (env.review_dir / "loop/lock.json").exists()
     assert env.start()["status"] == "ok"
 
@@ -280,10 +329,20 @@ def test_abort_needs_a_classified_reason(loop: Any, env: Any) -> None:
     assert not (env.review_dir / "loop/lock.json").exists()
 
 
-def test_status_returns_the_next_command_after_a_restart(loop: Any, env: Any, kit: Any) -> None:
-    started = env.start()
+@pytest.mark.parametrize("saved_hold_action", [None, "skip", "fix"])
+def test_status_returns_the_next_command_after_a_restart(
+    loop: Any, env: Any, kit: Any, saved_hold_action: str | None
+) -> None:
+    started = env.start(hold_action="fix")
     run_dir = Path(started["run_dir"])
-    reuse_or_run(loop, env)
+    # 変更前の run.json（null を含む）を保存済み記録として用意する。新規 start の既定を使わない。
+    run_file = run_dir / "run.json"
+    saved = json.loads(run_file.read_text(encoding="utf-8"))
+    saved["options"]["hold_action"] = saved_hold_action
+    run_file.write_text(json.dumps(saved), encoding="utf-8")
+    loop.status(run_dir=run_dir)
+    assert reuse_or_run(loop, env)["planning"]["hold_action"] == saved_hold_action
+    assert json.loads(run_file.read_text(encoding="utf-8"))["options"]["hold_action"] == saved_hold_action
 
     by_run = loop.status(run_dir=run_dir)
     by_pr = loop.status(argument=f"#{kit.number}", github=env.github, parent_root=env.parent)
@@ -295,12 +354,12 @@ def test_status_returns_the_next_command_after_a_restart(loop: Any, env: Any, ki
 
 def test_record_from_an_earlier_run_for_the_same_head_is_not_taken(loop: Any, env: Any, kit: Any) -> None:
     # 前の run が同じ HEAD で stopped を投稿した後、同じ HEAD で新しい run を始めた場合
-    # （例: --hold-action を付けて再実行）
+    # （例: 権限不足で止まった run を同じ HEAD で再実行）
     first = env.start()
     head = env.gh.head()
     reuse_or_run(loop, env)
     env.gh.post_record(
-        kit.round_record(1, head, "stopped", [], stop_reason="permission: hold-action の選択が無い", seats=[])
+        kit.round_record(1, head, "stopped", [], stop_reason="permission: 追加レビューの認可が無い", seats=[])
     )
     loop.cycle_end(Path(first["run_dir"]), github=env.github)
     loop.finish(Path(first["run_dir"]))

@@ -1060,7 +1060,7 @@ def start(
             controller=Controller(model=controller_model, runtime=controller_runtime),
             options=Options(
                 max_cycles=max_cycles,
-                hold_action=hold_action,
+                hold_action="skip" if hold_action is None else hold_action,
                 assign=requested,
                 template=str(template),
                 config=str(config) if config is not None else None,
@@ -1749,7 +1749,7 @@ def parser() -> argparse.ArgumentParser:
     begin.add_argument("--controller-model", required=True, help="司令塔の正確なモデル ID")
     begin.add_argument("--controller-runtime", required=True, choices=RUNTIMES)
     begin.add_argument("--max-cycles", type=int, default=3)
-    begin.add_argument("--hold-action", choices=("skip", "fix"))
+    begin.add_argument("--hold-action", choices=("skip", "fix"), default="skip", help="Hold の方針（既定: skip）")
     begin.add_argument("--assign", action="append", default=[], metavar="ROLE=AGENT[,AGENT]")
     begin.add_argument("--template", type=Path, default=DEFAULT_TEMPLATE)
     begin.add_argument("--config", type=Path)

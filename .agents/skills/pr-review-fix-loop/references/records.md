@@ -51,6 +51,8 @@ reviews/<owner>/<repo>/#<PR>-<ブランチ>/
 | `resources` | `[{"path", "kind": "runner_output", "cycle", "state", "reason"}]`。`state` は `created`（未回収）・`removed`・`retained`（消さずに残した） |
 | `notes` | `recover` で受け取った確認の事実など |
 
+`options.hold_action` はこの run の実効方針である。新規 `start` は未指定（API の `None` を含む）を `skip` として保存し、明示した `skip`・`fix` は維持する。`cycle-begin`（再利用時）と `review` が返す `planning.hold_action` はこの保存値と同じで、計画担当はそれを適用する。既定値の適用を利用者の明示指定と記録しない。既存 run の再開では保存値を変えず、旧 run の null も未選択のまま維持する。
+
 ## 4. サイクル（`cycle-<n>.json`）
 
 | キー | 値 |
