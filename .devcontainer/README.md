@@ -212,6 +212,59 @@ agents = ["claude-opus", "codex"]
 雛形に無い agent は、個人設定の `[agents.<name>]` に定義してから指定する。
 雛形の既定値を変えても、既存の個人設定には反映されない。
 
+### DSH の標準 headless
+
+DSH `0.2.0-rc.2` の `dsh --profile headless --patch <file> --json -` を使う
+`dsh` runtime を追加した。雛形の agent は `dsh-ccd`（Command Code GOAT）と
+`dsh-go`（OpenCode Go）である。個人設定に定義した workflow の
+`[workflows.<name>.assignments.<role>]` の `agents` に書くか、
+その workflow の `run` に `--assign <role>=dsh-ccd` を付けて選ぶ。
+既存の `dshccd` / `dshgo`、pi agent、workflow の既定割り当ては変更しない。
+
+PR レビュー（workflow `review` の `inspect`）のレビュアーと PR 修正ループの司令塔には使えない。
+pr-review の helper の `--runtime` とループの `--controller-runtime` は `dsh` を受け付けず、
+標準 headless の JSONL からはレビューの記録に必要なモデル名を観測できない（後述の Identity）。
+
+認証はそれぞれ `COMMANDCODE_API_KEY` / `OPENCODE_API_KEY` を起動元の環境に設定し、
+agent の `env` にその名前を指定する。値は TOML や argv に書かない。
+実行ごとに生成する環境変数参照を patch に設定するため、共有 credentials や
+プロジェクトの `.env` にある元のキーには fallback しない。
+`OPENCODE_GO_API_KEY` への fallback は無い。OpenCode Go の endpoint は catalog を使う。
+
+試行の保存先の `dsh/` に HOME（`home/`）・DSH_HOME（`state/`）・patch・
+`TMPDIR`（`tmp/`）を作り、共有 `~/.dsh` / `~/.pi` の profile、patch、
+追加プラグインを利用・上書きしない。起動元の `TMPDIR` も使わない。
+標準 headless に含まれる `llm-pi-ai` を使い、追加プラグインの導入は行わない。
+テレメトリ、セッション名用の追加モデル呼び出し、plugin inventory の送信を無効にする。
+
+`home/` は uv・npm・Go などのツールのキャッシュを置く使い捨ての領域で、
+停止確認後に削除し、保持しない。削除はリンクをたどらず、試行の `dsh/` の中にある
+自分の所有する実ディレクトリだけを対象にする。`home/` や `dsh/` がリンクなどに
+置き換わっていた場合や削除に失敗した場合は、成功にせず `sensitive_paths` に報告し、
+残った `home/` も次の保持物と同じく redact する。
+`state/`（セッションを含む）・patch・`tmp/`（DSH が 64 KB を超えるコマンド出力を
+書き出す一時ログを含む）は保持し、停止確認後に秘密値を redact する。
+安全に処理できないリンク・特殊ファイルや停止未確認の `dsh/` は `sensitive_paths` に報告する。
+停止を確認できないあいだは `home/` も削除しない。
+
+承認 policy は `never` とし、workspace-write のまま承認を必要とする操作を拒否する。
+承認待ちの入力には切り替えない。role の `writes` は共通仕様どおり指示であり、
+DSH を読み取り専用にする sandbox の保証ではない。
+対応 provider は上記の二つ。管理する起動設定の上書きを避けるため、
+`args` は空だけを受け付け、非空や未対応 provider は `launch_failed` で明示的に拒否する。
+`skill_sources` は role の `skills` を指定ファイルへの絶対パスとして prompt に反映し、
+見つからないスキルは標準 discovery に任せる（他 adapter と同じ仕様）。
+
+JSONL の `turn_end`、`final`、CLI の終了コードと既存 runner の停止確認を照合する。
+キー無しで空の `final` が出ても `awaiting_authentication` とし、成功扱いしない。
+JSON の payload は、最終応答の全文、または本文中の `` ```json `` フェンスを
+この順に読み、最初に object として読めたものにする（pi・Claude Code・Devin の adapter と同じ候補順）。
+空の object、重複したキーや `NaN` を含む JSON、フェンスに入っていない前置き付きの JSON は成功にしない。
+text の payload は最終応答をそのまま返す。
+標準 headless の JSONL で観測できる Identity は `session_id` だけで、
+`model` / `provider` / `effort` / `cli_version` は `null`、`skill_versions` は空になる。
+指定した設定値や親の `PI_PROVIDER` / `PI_MODEL` から推測しない。
+
 ### レビューの後処理
 
 雛形の workflow `review` は、run の終了後に後処理（`after_run`）として

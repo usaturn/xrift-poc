@@ -8,6 +8,8 @@ it. Adapters are trusted integrations, not a security sandbox.
 import asyncio
 import os
 import re
+import shutil
+import stat
 import tempfile
 import threading
 import time
@@ -62,6 +64,60 @@ def _scrub(value: object, secrets: set[str]) -> object:
     if isinstance(value, list):
         return [_scrub(child, secrets) for child in cast(list[object], value)]
     return value
+
+
+def _redact_runtime_tree(root: Path, secrets: tuple[str, ...]) -> list[Path]:
+    """Redact a stopped runtime's owned tree without opening links or special files."""
+    unsafe: list[Path] = []
+    pending = [root]
+    while pending:
+        path = pending.pop()
+        try:
+            mode = path.lstat().st_mode
+            if stat.S_ISDIR(mode):
+                pending.extend(sorted(path.iterdir(), reverse=True))
+            elif not stat.S_ISREG(mode) or not redact_file(path, secrets):
+                unsafe.append(path)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            unsafe.append(path)
+    return unsafe
+
+
+def _dispose_home(runtime_root: Path) -> bool:
+    """Remove a stopped runtime's disposable ``home`` without following any link.
+
+    Only a real directory owned by this user, on the runtime root's device, is
+    removed through descriptors relative to that root. False leaves the rest in
+    place for the caller to report and redact.
+    """
+    try:
+        root = os.open(runtime_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    try:
+        owner, device = os.getuid(), os.fstat(root).st_dev
+        try:
+            home = os.stat("home", dir_fd=root, follow_symlinks=False)
+        except FileNotFoundError:
+            return True
+        if not stat.S_ISDIR(home.st_mode) or home.st_uid != owner or home.st_dev != device:
+            return False
+        # Tool caches such as Go modules leave read-only directories; fwalk
+        # opens each without following links before the owner's access is restored.
+        for _, _, _, descriptor in os.fwalk("home", dir_fd=root):
+            info = os.fstat(descriptor)
+            if info.st_uid == owner and (info.st_mode & 0o700) != 0o700:
+                os.fchmod(descriptor, stat.S_IMODE(info.st_mode) | 0o700)
+        shutil.rmtree("home", dir_fd=root)
+        return True
+    except OSError:
+        return False
+    finally:
+        os.close(root)
 
 
 def _collect(adapter: Adapter, context: AdapterContext, stdout: Path, stderr: Path) -> tuple[State, Identity, Payload]:
@@ -272,7 +328,16 @@ def run_workflow(
         sensitive_paths: list[Path] = []
         export_path = context.receipt_path.parent / "export.json" if agent.runtime == "devin" else None
         export_unsafe = False
+        runtime_root = context.receipt_path.parent / "dsh" if agent.runtime == "dsh" else None
         if process.stop_confirmed:
+            if runtime_root is not None:
+                # HOME only holds tool caches (uv links, read-only Go modules) and is
+                # not retained. State, patch and TMPDIR spills stay strictly redacted;
+                # a HOME that could not be removed is reported and redacted, never skipped.
+                if not _dispose_home(runtime_root):
+                    sensitive_paths.append(runtime_root / "home")
+                unsafe = _redact_runtime_tree(runtime_root, tuple(secrets))
+                sensitive_paths.extend(path for path in unsafe if path not in sensitive_paths)
             # Devin leaves an ATIF export next to the receipt; inherited values can
             # be repeated in the final answer, history, and tool arguments. Redact
             # it like the receipt, before any collection reads it.
@@ -293,6 +358,8 @@ def run_workflow(
             sensitive_paths.append(context.receipt_path)
             if export_path is not None:
                 sensitive_paths.append(export_path)
+            if runtime_root is not None:
+                sensitive_paths.append(runtime_root)
         if process.state in {"timed_out", "launch_failed"}:
             state = process.state
         elif event.is_set() or process.state == "interrupted":
