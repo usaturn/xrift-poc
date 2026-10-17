@@ -11,6 +11,10 @@ from tools.agent_runner.models import Agent, Assignment, Config, Role, Workflow
 from tools.agent_runner.runner import run_workflow
 from tools.agent_runner.tests.adapters.codex.fake_cli import SESSION
 
+pytest_plugins = ("tools.test_support.plugin",)
+# Only fake agents are launched here; drop AGENT_RUNNER_DEPTH inside each test so a runner agent can run them
+pytestmark = pytest.mark.usefixtures("outside_runner")
+
 _FAKE = str(Path(__file__).with_name("fake_cli.py"))
 
 

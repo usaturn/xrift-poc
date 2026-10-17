@@ -22,6 +22,10 @@ from tools.agent_runner.models import Agent, Assignment, Config, Identity, Recei
 from tools.agent_runner.process import ProcessResult
 from tools.agent_runner.runner import RunnerError, run_workflow
 
+pytest_plugins = ("tools.test_support.plugin",)
+# Only fake agents are launched here; drop AGENT_RUNNER_DEPTH inside each test so a runner agent can run them
+pytestmark = pytest.mark.usefixtures("outside_runner")
+
 # Removing receipt validation, cancellation checks, environment filtering, or the
 # workflow semaphore must break these consumer-visible assertions.
 _SCRIPT = """

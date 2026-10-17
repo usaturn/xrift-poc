@@ -17,6 +17,10 @@ from tools.agent_runner.runner import run_workflow
 from tools.agent_runner.tests.test_process import alive
 from tools.agent_runner.tests.test_runner import FakeAdapter, configuration
 
+pytest_plugins = ("tools.test_support.plugin",)
+# Only fake agents are launched here; drop AGENT_RUNNER_DEPTH inside each test so a runner agent can run them
+pytestmark = pytest.mark.usefixtures("outside_runner")
+
 
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
