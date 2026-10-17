@@ -98,14 +98,25 @@ process.exit(credential?.type === "oauth" &&
     return 1
 }
 
+# Vertex ランチャーの一覧と、起動前に bundled catalog で確かめる exact model ID は
+# ここだけで定義する。ID は親 Pi の --model と、.devcontainer/pi-superagents/<launcher>.json
+# の tier が使う google-vertex のモデルに合わせる。Vertex ランチャーなら ID を reply に
+# 入れて 0 を返し、それ以外は 1 を返す。呼び出し側は local -a reply を宣言しておく。
+pi_google_vertex_models() {
+    case "$1" in
+        pigemf) reply=(gemini-3.8-flash) ;;
+        pigemp) reply=(gemini-3.8-flash gemini-3.1-pro-preview) ;;
+        pigema) reply=(gemini-3.8-flash gemini-4-argon) ;;
+        *) return 1 ;;
+    esac
+}
+
 # メタデータだけを読む。Pi CLI / provider availability API は認証を調べるため
 # 使わない。npm で配置された Pi の実体から bundled catalog を探す。
 pi_google_vertex_require_models() {
     local launcher="$1"
-    local -a models=(gemini-3.8-flash)
-    if [[ "${launcher}" == "pigemp" ]]; then
-        models+=(gemini-3.1-pro-preview)
-    fi
+    local -a reply
+    pi_google_vertex_models "${launcher}" || return 1
     if ! node -e '
 const fs = require("node:fs");
 const path = require("node:path");
@@ -131,7 +142,7 @@ try {
 } catch {
     process.exit(1);
 }
-' "$(command -v pi)" "${models[@]}" >/dev/null 2>&1; then
+' "$(command -v pi)" "${reply[@]}" >/dev/null 2>&1; then
         print -ru2 -- "[${launcher}] ERROR: Vertex model catalog が無いか、必要な exact model ID がありません。Pi を更新してください。"
         return 1
     fi
@@ -226,8 +237,10 @@ pi_superagents_exec() {
         --die-with-parent
     )
 
-    local agent_dir auth_file
-    if [[ "${launcher}" == "pigemf" || "${launcher}" == "pigemp" ]]; then
+    local agent_dir auth_file vertex=0
+    local -a reply
+    if pi_google_vertex_models "${launcher}"; then
+        vertex=1
         agent_dir="${PI_CODING_AGENT_DIR:-${HOME}/.pi/agent}"
         if [[ "${agent_dir}" == "~" ]]; then
             agent_dir="${HOME}"
@@ -256,7 +269,7 @@ pi_superagents_exec() {
         return 0
     fi
 
-    if [[ "${launcher}" == "pigemf" || "${launcher}" == "pigemp" ]]; then
+    if (( vertex )); then
         pi_google_vertex_require_models "${launcher}" || return 1
         local auth_overlay
         auth_overlay="$(pi_google_vertex_auth_overlay "${auth_file}")" || return 1

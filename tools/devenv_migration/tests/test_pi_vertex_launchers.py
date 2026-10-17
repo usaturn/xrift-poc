@@ -20,7 +20,7 @@ from typing import cast
 import pytest
 
 DEVCONTAINER = Path(__file__).resolve().parents[3] / ".devcontainer"
-LAUNCHERS = ("pigemf", "pigemp")
+LAUNCHERS = ("pigemf", "pigemp", "pigema")
 
 
 @pytest.fixture
@@ -342,7 +342,7 @@ def test_concurrent_launchers_initialize_only_empty_missing_auth(sandbox: tuple[
     def launch(launcher: str) -> subprocess.CompletedProcess[str]:
         return _run(sandbox, launcher)
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    with ThreadPoolExecutor(max_workers=len(LAUNCHERS)) as pool:
         results = list(pool.map(launch, LAUNCHERS))
     for result in results:
         assert result.returncode == 0, result.stderr
@@ -402,24 +402,55 @@ def test_invalid_auth_configuration_fails_closed_without_secret_output(
     assert auth.read_text() == content
 
 
+def _catalog(sandbox: tuple[Path, Path, Path]) -> Path:
+    package = (sandbox[1] / "pi").resolve().parents[2]
+    return package / "node_modules/@earendil-works/pi-ai/dist/providers/data/google-vertex.json"
+
+
+def _used_vertex_models(sandbox: tuple[Path, Path, Path], launcher: str) -> list[str]:
+    """親 Pi の --model と、リポジトリの tier が使う google-vertex のモデル ID（値はテストに写さない）。"""
+    tiers = json.loads((DEVCONTAINER / f"pi-superagents/{launcher}.json").read_text())["superagents"]["modelTiers"]
+    used = [_launcher_model(sandbox, launcher)]
+    for tier in tiers.values():
+        provider, _, model = tier["model"].partition("/")
+        if provider == "google-vertex" and model not in used:
+            used.append(model)
+    return used
+
+
 # Break caught: allowing Pi fuzzy matching/custom metadata when an exact ID is
-# absent, or invoking an auth-aware Pi CLI command for the offline guard.
+# absent, checking only the parent model while a child tier model is missing,
+# or invoking an auth-aware Pi CLI command for the offline guard.
 @pytest.mark.parametrize("launcher", LAUNCHERS)
-def test_missing_exact_bundled_model_stops_before_pi_and_auth_reads(
+def test_missing_any_used_vertex_model_stops_before_pi_and_auth_reads(
     sandbox: tuple[Path, Path, Path], launcher: str
 ) -> None:
-    model = _launcher_model(sandbox, launcher)
-    package = (sandbox[1] / "pi").resolve().parents[2]
-    catalog = package / "node_modules/@earendil-works/pi-ai/dist/providers/data/google-vertex.json"
-    data = json.loads(catalog.read_text())
-    del data["google-vertex"][f"chat:{model}"]
-    catalog.write_text(json.dumps(data))
+    catalog = _catalog(sandbox)
+    original = catalog.read_text()
     # No credential file or ADC discovery is allowed to gate this failure.
     os.mkfifo(sandbox[0] / ".pi/agent/auth.json")
+    for model in _used_vertex_models(sandbox, launcher):
+        data = json.loads(original)
+        del data["google-vertex"][f"chat:{model}"]
+        catalog.write_text(json.dumps(data))
+        result = _run(sandbox, launcher)
+        assert result.returncode != 0, model
+        assert "catalog" in result.stderr.lower(), model
+        assert not result.stdout, model
+
+
+# Break caught: requiring a Vertex model the launcher and its tiers never use,
+# which stops a working launcher whenever Pi drops an unrelated catalog entry.
+@pytest.mark.parametrize("launcher", LAUNCHERS)
+def test_catalog_with_only_used_vertex_models_reaches_pi(sandbox: tuple[Path, Path, Path], launcher: str) -> None:
+    catalog = _catalog(sandbox)
+    used = {f"chat:{model}" for model in _used_vertex_models(sandbox, launcher)}
+    data = json.loads(catalog.read_text())
+    data["google-vertex"] = {key: entry for key, entry in data["google-vertex"].items() if key in used}
+    catalog.write_text(json.dumps(data))
     result = _run(sandbox, launcher)
-    assert result.returncode != 0
-    assert "catalog" in result.stderr.lower()
-    assert not result.stdout
+    assert result.returncode == 0, result.stderr
+    assert _payload(result)["args"]
 
 
 def _native_namespace_probe(sandbox: tuple[Path, Path, Path], body: str) -> None:
