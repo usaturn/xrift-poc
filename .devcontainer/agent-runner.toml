@@ -30,6 +30,14 @@ provider = "openai-codex"
 effort = "xhigh"
 env = ["HOME", "PATH", "OPENCODE_GO_API_KEY"]
 
+[agents.pixg]
+runtime = "pi"
+command = ["pixg"]
+model = "grok-4.7"
+provider = "xai"
+effort = "xhigh"
+env = ["HOME", "PATH"]
+
 [agents.pi-go-glmf]
 runtime = "pi"
 command = ["pi"]
