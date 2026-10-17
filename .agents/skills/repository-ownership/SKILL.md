@@ -63,6 +63,89 @@ uv run --no-project python "$XRIFT_POC_ROOT/.agents/scripts/route_target.py" "${
 | `product_origin_is_env` | 制作物の origin が親を指している。制作物自身のリポジトリを origin に設定する |
 | `not_git`・`unknown`・`env_origin_mismatch` | 作業する場所を確かめる。親か制作物の checkout に移る |
 
+## 公開前の秘密検査
+
+親は public で、制作物のリポジトリも公開しうる。新しい commit を push するときは、commit の後・push の前に `scan_before_push` で未 push の commit を Gitleaks で検査し、検査した commit の SHA だけを push する。マージ commit で入った内容（競合の解消や、マージのときに足した変更）も検査する。
+
+- **実行する場所:** Git の root で、引数なしに実行する。受け付けるのは、`route_target.py` が `env` と判定する親の feature worktree の root と、`product` と判定し `repository` が null でない制作物の Git の root（main checkout か、制作物の中の worktree）である
+- **止まる場所:** 親の main checkout、Git の root ではない場所（subdirectory）、`stop`、`repository` が null の制作物。`repository` が null なら、origin を GitHub の URL にしてから実行する
+- **base:** 親は `origin/main`、制作物は origin の既定ブランチ。どちらも fetch してから決める。origin にブランチが 1 つも無い制作物（GitHub で作ったばかりの空のリポジトリへの初めての push）では、HEAD から辿れる commit がすべて未 push なので、すべてを検査する。ブランチがあるのに既定ブランチを読めないときは止まる
+- **設定:** base の commit の `.gitleaks.toml`、無ければ Gitleaks の既定の規則（`[extend]` の `useDefault = true`）を使う。作業ツリーの `.gitleaks.toml`、環境変数 `GITLEAKS_CONFIG`・`GITLEAKS_CONFIG_TOML`、inline の `gitleaks:allow` で検査を緩めない。`.gitleaksignore` があれば（壊れたシンボリックリンクを含む）止まる
+- **出力:** 成功したときだけ、検査した commit の SHA を stdout に 1 行出す。ログは stderr に出る。検出・設定の取得・scanner の失敗を成功扱いしない
+- Gitleaks は Dev Container が入れる approved pin（`.devcontainer/install_beforehand.bash`）を使う。`jq` も使う
+
+シェルの状態は Bash の呼び出しをまたいで残らない。関数の定義・`XRIFT_POC_ROOT`・push は同じ呼び出しで実行する。
+
+```bash
+# repository-ownership scan before push
+# Git の root で引数なしに実行する。成功したときだけ、検査した commit の SHA を stdout に出す
+# zsh では "$VAR:r" などが修飾子になるため、: の前の変数は ${VAR} で区切る。path・status を変数名に使わない
+scan_before_push() (
+    set -euo pipefail
+    : "${XRIFT_POC_ROOT:?XRIFT_POC_ROOT を xrift-poc の main checkout のパスに設定する}"
+    here="$(pwd -P)" || return 1
+    # stop と、判定の前提が壊れているときは、route_target.py が 0 以外で終わる
+    route="$(uv run --no-project python "$XRIFT_POC_ROOT/.agents/scripts/route_target.py" "$here")" || return 1
+    kind="$(jq -er .kind <<<"$route")" || return 1
+    git_root="$(jq -er .git_root <<<"$route")" || return 1
+    if [[ "$git_root" != "$here" ]]; then
+        printf 'scan_before_push: Git の root（%s）で実行する\n' "$git_root" >&2
+        return 1
+    fi
+    base_branch=""
+    case "$kind" in
+        env)
+            if [[ "$(git rev-parse --path-format=absolute --git-dir)" == "$(git rev-parse --path-format=absolute --git-common-dir)" ]]; then
+                printf 'scan_before_push: 親の main checkout からは push しない。feature worktree で実行する\n' >&2
+                return 1
+            fi
+            base_branch=main
+            ;;
+        product)
+            if ! jq -er .repository <<<"$route" >/dev/null; then
+                printf 'scan_before_push: 制作物の origin を GitHub のリポジトリとして読めない。origin を GitHub の URL にする\n' >&2
+                return 1
+            fi
+            # origin にブランチが無ければ base は無い（HEAD から辿れる commit をすべて検査する）
+            heads="$(git ls-remote --heads origin)" || return 1
+            if [[ -n "$heads" ]]; then
+                base_branch="$(git ls-remote --symref origin HEAD | awk '$1 == "ref:" && $3 == "HEAD" { sub("^refs/heads/", "", $2); print $2 }')" || return 1
+                if [[ -z "$base_branch" ]]; then
+                    printf 'scan_before_push: origin の既定ブランチを読めない\n' >&2
+                    return 1
+                fi
+            fi
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+    if [[ -e .gitleaksignore || -L .gitleaksignore ]]; then
+        printf 'scan_before_push: .gitleaksignore があると検査を緩められる。push の前に止める\n' >&2
+        return 1
+    fi
+    scanned_sha="$(git rev-parse --verify 'HEAD^{commit}')" || return 1
+    scan_dir="$(mktemp -d)" || return 1
+    trap 'rm -rf -- "${scan_dir:?}"' EXIT
+    printf '[extend]\nuseDefault = true\n' > "$scan_dir/config.toml" || return 1
+    : > "$scan_dir/ignore" || return 1
+    range="$scanned_sha"
+    if [[ -n "$base_branch" ]]; then
+        git fetch --no-tags origin "+refs/heads/${base_branch}:refs/remotes/origin/${base_branch}" >&2 || return 1
+        base_sha="$(git rev-parse --verify "refs/remotes/origin/${base_branch}^{commit}")" || return 1
+        range="${base_sha}..${scanned_sha}"
+        if git cat-file -e "${base_sha}:.gitleaks.toml" 2>/dev/null; then
+            git cat-file blob "${base_sha}:.gitleaks.toml" > "$scan_dir/config.toml" || return 1
+        fi
+    fi
+    # マージ commit も各親との差分として検査する。利用者の log.diffMerges（off など）に左右されない
+    env -u GITLEAKS_CONFIG -u GITLEAKS_CONFIG_TOML \
+        gitleaks git --redact --ignore-gitleaks-allow --config "$scan_dir/config.toml" \
+        --gitleaks-ignore-path "$scan_dir/ignore" --log-opts="--diff-merges=separate ${range}" . >&2 || return 1
+    printf '%s\n' "$scanned_sha"
+)
+```
+
 ## 振り分けを誤ったときの症状
 
 | 症状 | 原因 |
