@@ -53,8 +53,19 @@ reviews/<owner>/<repo>/#<PR>-<ブランチ>/
 | `result` | `{"outcome", "ended_by", "stop_reason", "merged", "cycles"}`。`outcome` は `fixes_pushed`・`no_fix_needed`・`stopped`、`ended_by` は `outcome`・`cycle_limit`・`abort` |
 | `resources` | `[{"path", "kind": "runner_output", "cycle", "state", "reason"}]`。`state` は `created`（未回収）・`removed`・`retained`（消さずに残した） |
 | `notes` | `recover` で受け取った確認の事実など |
+| `herdr_pane` | `{"state", "pane_id", "label", "reason"}`。`start` が現在の Herdr ペインの名前を変えた結果。この項目より前に作った run では `null` |
 
 `options.hold_action` はこの run の実効方針である。新規 `start` は未指定（API の `None` を含む）を `skip` として保存し、明示した `skip`・`fix` は維持する。`cycle-begin`（再利用時）と `review` が返す `planning.hold_action` はこの保存値と同じで、計画担当はそれを適用する。既定値の適用を利用者の明示指定と記録しない。既存 run の再開では保存値を変えず、旧 run の null も未選択のまま維持する。
+
+`herdr_pane` の `state` は次のどれかで、`start` の出力の `herdr_pane` にも同じ値を返す。`label` は `PR#<番号>`（番号は GitHub が返した PR の番号。リポジトリ名は付けない）。
+
+| `state` | 意味 | `pane_id` | `reason` |
+| --- | --- | --- | --- |
+| `renamed` | `herdr pane rename <HERDR_PANE_ID> PR#<番号>` が終了コード 0 で終わった | `HERDR_PANE_ID` | `null` |
+| `skipped` | `HERDR_ENV` が `1` ではない、または `HERDR_PANE_ID` が空なので、`herdr` を呼ばなかった | `null` | 呼ばなかった理由 |
+| `failed` | `herdr` が無い、0 以外で終わった、または期限（10 秒）までに終わらなかった | `HERDR_PANE_ID` | 失敗の理由（`start` の `warnings` にも入る） |
+
+名前を変えるのは、`start` がロックを取って `run.json` を保存した後だけである。`start` が失敗する場合は `herdr` を呼ばない。`failed` でも `start` は成功し、run はロックを持ったまま続く。
 
 ## 4. サイクル（`cycle-<n>.json`）
 

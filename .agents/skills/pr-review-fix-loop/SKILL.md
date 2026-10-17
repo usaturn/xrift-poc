@@ -45,6 +45,7 @@ uv run --project "$TOOL_ROOT/tools/devenv" --locked python \
 - 対象は `usaturn` 配下の open な PR だけ（review-fix-planning と同じ）。
 - 終了コード 3（`lock_held`）は、別の run がこの PR を使っていることを示す。`next`（`status`）で持ち主を確かめ、利用者に報告して止まる。古く見えても消さない。
 - `warnings` に未 commit の変更があるときは、レビュアーが作業ツリーのスキルと helper（未 commit の変更を含む）を読むことを利用者に伝える。
+- Herdr のペインの中（`HERDR_ENV=1` で `HERDR_PANE_ID` がある）で起動すると、`start` は run を始めた後で、現在のペインの名前を `PR#<番号>` に変える。結果は出力と `run.json` の `herdr_pane` にある。`herdr` を自分で呼ばない。名前を変えられなくても run は続き、理由が `warnings` に入るので、利用者に伝える。
 
 ## サイクル
 
@@ -110,6 +111,7 @@ uv run --project "$TOOL_ROOT/tools/devenv" --locked python \
 ## 最終報告
 
 - PR の URL、run ID、`<review_dir>/loop/<run_id>/` の完全パス
+- 現在の Herdr ペインの名前を変えた結果（`run.json` の `herdr_pane` の `state`。`skipped`・`failed` は `reason` も）
 - サイクルごとに: HEAD、レビューの `mode`、レビュアーごとの状態・実際の担当・モデル、判断の記録（round とコメントの URL）、結果、push した commit
 - 最終の結果、`ended_by`、マージしたか、`stop_reason`
 - 関連 Issue は、finalize の結果に含まれる、更新後に観測した state を書く。GitHub 側の自動 close を含め、Issue が閉じたことを要件が完了したことの証明として扱わない（要件の評価は review-fix-planning の記録に従う）

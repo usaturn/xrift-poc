@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -257,9 +258,9 @@ class LoopEnv:
         )
         return ReviewerAdapter(scenario)
 
-    def start(self, **options: Any) -> dict[str, Any]:
+    def start(self, argument: str = f"#{NUMBER}", **options: Any) -> dict[str, Any]:
         result: dict[str, Any] = LOOP.start(
-            f"#{NUMBER}",
+            argument,
             controller_model=PLANNER_MODEL,
             controller_runtime="claude-code",
             github=self.github,
@@ -508,6 +509,57 @@ class Kit:
 @pytest.fixture
 def kit() -> Kit:
     return Kit()
+
+
+# 偽の herdr。受け取った引数を FAKE_HERDR_LOG に 1 行ずつ追記し、FAKE_HERDR_MODE（ok・fail・hang）に従って終わる。
+# hang は自分で待つ 1 つのプロセスなので、subprocess.run の期限切れの kill で止まる
+HERDR_PROGRAM = r"""
+import json, os, sys, time
+with open(os.environ["FAKE_HERDR_LOG"], "a", encoding="utf-8") as stream:
+    stream.write(json.dumps(sys.argv[1:]) + "\n")
+mode = os.environ.get("FAKE_HERDR_MODE", "ok")
+if mode == "fail":
+    sys.stderr.write("pane not found\n")
+    sys.exit(1)
+if mode == "hang":
+    time.sleep(60)
+"""
+
+
+@dataclass(frozen=True)
+class FakeHerdr:
+    log: Path
+    monkeypatch: pytest.MonkeyPatch
+
+    def calls(self) -> list[list[str]]:
+        if not self.log.exists():
+            return []
+        return [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()]
+
+    def set_mode(self, mode: str) -> None:
+        self.monkeypatch.setenv("FAKE_HERDR_MODE", mode)
+
+
+@pytest.fixture(autouse=True)
+def no_herdr(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Herdr のペインの中（HERDR_ENV=1）では、herdr が利用者のセッションにつながっていて、start が実際のペインの
+    # 名前を変える。loop のテストからは外し、名前を変えるテストだけが偽の herdr を置いて設定し直す
+    monkeypatch.delenv("HERDR_ENV", raising=False)
+    monkeypatch.delenv("HERDR_PANE_ID", raising=False)
+
+
+@pytest.fixture
+def fake_herdr(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeHerdr:
+    """PATH の先頭に偽の herdr を置く。HERDR_ENV・HERDR_PANE_ID は各テストが設定する。"""
+    directory = tmp_path / "herdr-bin"
+    directory.mkdir()
+    program = directory / "herdr"
+    program.write_text(f"#!{sys.executable}\n{HERDR_PROGRAM}", encoding="utf-8")
+    program.chmod(0o755)
+    log = tmp_path / "herdr-calls.jsonl"
+    monkeypatch.setenv("FAKE_HERDR_LOG", str(log))
+    monkeypatch.setenv("PATH", f"{directory}{os.pathsep}{os.environ['PATH']}")
+    return FakeHerdr(log, monkeypatch)
 
 
 @pytest.fixture

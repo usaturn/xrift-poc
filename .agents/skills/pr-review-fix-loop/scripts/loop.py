@@ -62,6 +62,8 @@ STOP_REASON = re.compile(r"(?:permission|environment|external): \S.*", re.DOTALL
 MAX_CYCLES_LIMIT = 10
 # 使い捨ての runner の出力を置く /tmp のディレクトリ名（AGENTS.md の「PR 修正ループの所有 worktree」と同じ接頭辞）
 TMP_PREFIX = "xrift-poc-pr-loop-"
+# start が現在の Herdr ペインの名前を変えるときの herdr の期限（秒）。応答が無くても start を待たせ続けない
+HERDR_TIMEOUT_SECONDS: float = 10
 _HISTORY_ROW = re.compile(
     r"^\|[^|\n]*\|\s*`?(?P<head>[0-9a-f]{12})`?\s*\|\s*(?:Initial|Update)\s*\|\s*$", re.MULTILINE
 )
@@ -177,6 +179,15 @@ class RunResult(StrictModel):
     cycles: int
 
 
+class HerdrPane(StrictModel):
+    """start が現在の Herdr ペインの名前を変えた結果。"""
+
+    state: Literal["renamed", "skipped", "failed"]
+    pane_id: str | None
+    label: str
+    reason: str | None = None
+
+
 class RunRecord(StrictModel):
     schema_: Literal["pr-review-fix-loop/v1"] = Field(default="pr-review-fix-loop/v1", alias="schema")
     kind: Literal["run"] = "run"
@@ -194,6 +205,8 @@ class RunRecord(StrictModel):
     result: RunResult | None = None
     resources: list[Resource] = Field(default_factory=list[Resource])
     notes: list[str] = Field(default_factory=list[str])
+    # この項目より前に作った run には無い
+    herdr_pane: HerdrPane | None = None
 
 
 RejectedStage = Literal["runner", "payload", "binding", "head", "artifacts"]
@@ -553,6 +566,43 @@ class GitHub:
     def comments(self, repository: str, number: int) -> Any:
         """``gh api --paginate --slurp`` の出力（ページの配列）をそのまま返す。"""
         return self._api("--paginate", "--slurp", f"repos/{repository}/issues/{number}/comments")
+
+
+# --- Herdr --------------------------------------------------------------------------------------------------------
+
+
+def rename_pane(number: int) -> HerdrPane:
+    """Herdr のペインの中なら、現在のペイン（HERDR_PANE_ID）の名前を ``PR#<番号>`` に変える。
+
+    ほかのペインやフォーカスは変えない。ペインの名前は表示だけの情報なので、失敗しても例外にせず結果で返す。
+    """
+    label = f"PR#{number}"
+    pane_id = os.environ.get("HERDR_PANE_ID", "")
+    if os.environ.get("HERDR_ENV") != "1":
+        return HerdrPane(state="skipped", pane_id=None, label=label, reason="HERDR_ENV が 1 ではない（Herdr の外）")
+    if not pane_id.strip():
+        return HerdrPane(state="skipped", pane_id=None, label=label, reason="HERDR_PANE_ID が空")
+    try:
+        result = subprocess.run(
+            ["herdr", "pane", "rename", pane_id, label],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=HERDR_TIMEOUT_SECONDS,
+        )
+    except FileNotFoundError:
+        reason = "herdr が PATH に無い"
+    except subprocess.TimeoutExpired:
+        reason = f"herdr pane rename が {HERDR_TIMEOUT_SECONDS:g} 秒以内に終わらなかった"
+    except OSError as error:
+        reason = f"herdr を起動できない: {error}"
+    else:
+        if result.returncode == 0:
+            return HerdrPane(state="renamed", pane_id=pane_id, label=label)
+        detail = (result.stderr or "").strip()[:300]
+        reason = f"herdr pane rename が終了コード {result.returncode} で失敗した: {detail}"
+    return HerdrPane(state="failed", pane_id=pane_id, label=label, reason=reason)
 
 
 # --- 設定と割り当て -----------------------------------------------------------------------------------------------
@@ -1162,9 +1212,18 @@ def start(
             state="running",
         )
         save_run(run_dir, run)
+        # run を始めた後だけ変える（失敗する start や、別の run が使っている PR では変えない）
+        pane = rename_pane(pr.number)
+        run.herdr_pane = pane
+        save_run(run_dir, run)
     except BaseException:
         release_lock(review_dir, run_id)
         raise
+    if pane.state == "failed":
+        warnings.append(
+            f"現在の Herdr ペイン（{pane.pane_id}）の名前を {pane.label} に変えられなかった: {pane.reason}。"
+            "run は続ける"
+        )
     return {
         "status": "ok",
         "run_id": run_id,
@@ -1173,6 +1232,7 @@ def start(
         "pr": pr.model_dump(mode="json"),
         "head": pull.head_sha,
         "assignments": assignments,
+        "herdr_pane": pane.model_dump(mode="json"),
         "warnings": warnings,
         "next": command("cycle-begin", "--run", str(run_dir)),
     }
