@@ -38,22 +38,26 @@ uv run --project "$TOOL_ROOT/tools/devenv" --locked python \
 
 - `--controller-model` は、review-fix-planning が状況コメントに使う `MODEL_NAME` と同じ値にする。`--controller-runtime` は `claude-code`・`devin`・`pi`・`codex`・`cursor`・`grok-build` のどれか。
 - `--max-cycles N`: サイクルの上限（1〜10、既定 3）。
-- `--hold-action skip|fix`: 利用者が指定したときだけ渡す。指定が無ければ、Hold が出たときに review-fix-planning の規則で `stopped` になる。
+- `--hold-action skip|fix`: 利用者が指定したときだけ渡す。新規起動で未指定なら helper が `skip` を適用する。明示した `skip`・`fix` はそのまま適用する。
 - `--assign ROLE=AGENT[,AGENT]`（複数可）: `inspect`（レビュアー、複数可）と、`implement`・`self-review`・`fix-check`（各 1 つ。review-fix-planning の `run_roles.py` に渡す）。agent は agent-runner の設定に定義された名前。
+  - `self-review`・`fix-check` には、runtime が `dsh` の担当（`dsh-ccd`・`dsh-go` など）を一次担当にも fallback にも割り当てられない（理由は `.agents/skills/review-fix-planning/references/execution.md` の 2 章）。`inspect` と `implement` には割り当てられる。
+  - `start` は、`run_roles.py` が設定だけで拒否する fix の割り当て（上の DSH の担当のほか、一次担当が 2 つ以上、`self-review`・`fix-check` の `writes = true` など。個人設定で決まるものを含む）を、run を作る前に終了コード 2（`config`）で止める。`reason` を利用者に伝えて止まる。別の担当や `self` に自分で切り替えない。
 - `--template`・`--config`: agent-runner の雛形と個人設定。既定は雛形 `.devcontainer/agent-runner.toml` と既存の個人設定。
 - `--fresh-review`: 現在の HEAD のレビューの成果があっても、レビュアーを起動する。
 - 対象は `usaturn` 配下の open な PR だけ（review-fix-planning と同じ）。
 - 終了コード 3（`lock_held`）は、別の run がこの PR を使っていることを示す。`next`（`status`）で持ち主を確かめ、利用者に報告して止まる。古く見えても消さない。
 - `warnings` に未 commit の変更があるときは、レビュアーが作業ツリーのスキルと helper（未 commit の変更を含む）を読むことを利用者に伝える。
+- Herdr のペインの中（`HERDR_ENV=1` で `HERDR_PANE_ID` がある）で起動すると、`start` は run を始めた後で、現在のペインの名前を `PR#<番号>` に変える。結果は出力と `run.json` の `herdr_pane` にある。`herdr` を自分で呼ばない。名前を変えられなくても run は続き、理由が `warnings` に入るので、利用者に伝える。
 
 ## サイクル
 
 1. **`cycle-begin`**: 返った `review.mode` を見る。
    - `run`: `next`（`review`）を実行する。
    - `reuse`: 現在の HEAD のレビューの成果が、すでにレビューディレクトリにある（前のサイクルの push 前の PR 全体レビューなど）。レビュアーを起動せずに 3 へ進む。
-2. **`review`**: 全レビュアーが終わるまで同期で待つ（「監視」）。`accepted` と `rejected` を確かめる。`rejected` は失敗したレビュアーで、指摘 0 件ではない。保存の後に失敗した（後片付けの失敗、期限切れなど）レビュアーの成果は、このサイクルの HEAD のままレビューディレクトリに残ることがあり、review-fix-planning はそれも読む。状況コメントには、loop の判定（`rejected` と理由）と、そのレビュアーの成果を計画の入力にしたかを書く。`retained` のパスは最終報告に書く。終了コード 6 は全員の失敗である（「終わり方」）。
+2. **`review`**: 全レビュアーが終わるまで同期で待つ（「監視」）。`accepted` と `rejected` を確かめる。`rejected` は失敗したレビュアーで、指摘 0 件ではない。`rejected_stage` は却下した段階（`runner`・`payload`・`binding`・`head`・`artifacts`）である。返った `next` が `review` のとき（再実行待ち。対象は `rerun.agents`）は、runner は成功したが結果を受け付けられなかったレビュアーを、同じサイクルで 1 回だけ起動し直す。次に何を実行するかは `next` だけで決める（`rerun` は再実行を終えた後の出力にも残る）。計画に進まず、その `next` を同じように同期で待って実行する。runner の失敗（期限切れ・認証待ち・起動失敗）は再実行しない。保存の後に失敗した（後片付けの失敗、期限切れなど）レビュアーの成果は、このサイクルの HEAD のままレビューディレクトリに残ることがあり、review-fix-planning はそれも読む。状況コメントには、loop の判定（`rejected` と理由）と、そのレビュアーの成果を計画の入力にしたかを書く。`retained` のパスは最終報告に書く。終了コード 6 は全員の失敗である（「終わり方」）。
 3. **計画**: review-fix-planning の SKILL.md を読み、`planning.review_dir`（レビューディレクトリの完全パス）を第 1 引数にして、その手順を最後まで行う。
-   - `planning.hold_action` が null でなければ、それを利用者の hold-action の明示選択として扱う。
+   - `planning.hold_action` をこの run の Hold 方針として渡す。新規 run は未指定時の既定 `skip` または利用者の明示 `skip`・`fix` であり、既定の適用を利用者の明示選択と書かない。このループの既定 `skip` は Hold にだけ適用し、理由付き `Skip` として判断を残す（`Resolved` にしない）。必須修正や `Unverified` は、review-fix-planning の既存規則で扱う。
+   - 旧 run の `planning.hold_action` が null なら未選択のまま扱い、Hold が残れば review-fix-planning の認可不足で `stopped` にする。単独の review-fix-planning の未指定時の規則は変えない。
    - `run_roles.py` の呼び出しには、`planning.run_roles_options` をそのまま足す。
    - 挙動の再現が要るときは、review-fix-planning 2 章の専用 worktree で確かめる。
    - 関連検証が失敗したら、review-fix-planning の規則どおり原因を診断して直す。loop は計画の結果を待ち、サイクルを終えない。
@@ -89,7 +93,7 @@ uv run --project "$TOOL_ROOT/tools/devenv" --locked python \
 
 ## 止まったとき（中断・再開・回収）
 
-- **再開**: `status --run <run_dir>`（PR しか分からなければ `status <PR>`）の `next` を実行する。状態は `<review_dir>/loop/` にだけあり、会話の記憶に頼らない。
+- **再開**: `status --run <run_dir>`（PR しか分からなければ `status <PR>`）の `next` を実行する。状態は `<review_dir>/loop/` にだけあり、会話の記憶に頼らない。保存済みの `options.hold_action`（旧 run の null を含む）を維持し、新規起動の既定値で上書きしない。
 - **`review` の終了コード 3（`interrupted_review`）**: 前のレビューが結果を残さずに止まった。レビュアーを起動し直さない。runner とレビュアーのプロセスが残っていないことを `ps` などで確かめ、その事実を `recover --run <run_dir> --operator-confirmed-stopped "<確かめた事実>"` に渡す。記録した資源だけを回収し、run は `abandoned` になる。続けるときは `start` からやり直す。
 - **終了コード 7（`resources`）**: 同じく、停止を確かめてから `recover` に事実を渡す。確かめられないときは、ロックと資源を残したまま、完全パスを利用者に報告して止まる。
 - **`review` の終了コード 4（`head_moved`）**: `cycle-begin` の後に PR の HEAD が動いた。`next` のとおり `finish --abort` で止め、新しい run を始める。
@@ -103,12 +107,13 @@ uv run --project "$TOOL_ROOT/tools/devenv" --locked python \
 
 - 完了通知のあるランタイム（Claude Code の `run_in_background` など）は、`review` をバックグラウンドで実行し、終了コード付きの通知を待つ。
 - 完了通知の無いランタイム（Pi など）は、前景で実行する。期限は runner が守る。
-- stall は、`cycle-<n>.json` の `review.output_dir` の下のログの更新時刻で判定する。10 分間隔の確認で 2 回続けて変わらなければ stall を疑い、プロセスを止めずに利用者へ報告する。
+- stall は、`cycle-<n>.json` の `review.output_dir` の下のログの更新時刻で判定する。再実行の間（`review.rerun` があり、その `batch` が無い）は `review.rerun.output_dir` の下を見る（1 回目の出力は回収済み）。10 分間隔の確認で 2 回続けて変わらなければ stall を疑い、プロセスを止めずに利用者へ報告する。
 - 計画の工程はあなた自身の作業である。その中で起動する `run_roles.py` の待ち方は review-fix-planning に従う。
 
 ## 最終報告
 
 - PR の URL、run ID、`<review_dir>/loop/<run_id>/` の完全パス
+- 現在の Herdr ペインの名前を変えた結果（`run.json` の `herdr_pane` の `state`。`skipped`・`failed` は `reason` も）
 - サイクルごとに: HEAD、レビューの `mode`、レビュアーごとの状態・実際の担当・モデル、判断の記録（round とコメントの URL）、結果、push した commit
 - 最終の結果、`ended_by`、マージしたか、`stop_reason`
 - 関連 Issue は、finalize の結果に含まれる、更新後に観測した state を書く。GitHub 側の自動 close を含め、Issue が閉じたことを要件が完了したことの証明として扱わない（要件の評価は review-fix-planning の記録に従う）

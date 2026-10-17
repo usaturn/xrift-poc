@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 from collections.abc import Callable
@@ -595,6 +596,67 @@ def test_accept_allows_candidates_and_terms_the_verifier_appended(
     assert [c["id"] for c in json.loads(sidecar.read_text(encoding="utf-8"))["candidates"]] == ["S-1", "S-2"]
 
 
+def test_accept_does_not_attribute_a_disappeared_checkout_to_content_changes(
+    dispatch: Any, scenario: Scenario, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from tools.agent_runner.workspace import create_worktree
+
+    external = create_worktree(scenario.root, "HEAD", tmp_path / "external")
+
+    class Disappearing(PayloadAdapter):
+        def collect(self, context: AdapterContext, stdout_path: Path, stderr_path: Path) -> AdapterOutcome:
+            shutil.rmtree(external)
+            return super().collect(context, stdout_path, stderr_path)
+
+    result = dispatch.dispatch(
+        config("probe"),
+        scenario.request,
+        tmp_path / "run",
+        adapter_loader=loader_for(Disappearing(scenario.payload())),
+    )
+    assert result["batch"]["checkout_audit"][0]["kind"] == "unavailable_after"
+    assert accept(dispatch, tmp_path / "run") == 1
+    assert "cannot be audited" in capsys.readouterr().err
+    assert written(scenario.review_dir) == []
+
+
+@pytest.mark.parametrize("failure", ["missing", "locked", "moved"])
+def test_fix_check_environment_preflight_does_not_launch(
+    dispatch: Any,
+    scenario: Scenario,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    failure: str,
+) -> None:
+    from tools.agent_runner.workspace import CheckoutAuditError, create_worktree
+
+    external = create_worktree(scenario.root, "HEAD", tmp_path / "旧 checkout\n入力")
+    if failure == "locked":
+        subprocess.run(["git", "-C", str(scenario.root), "worktree", "lock", str(external)], check=True)
+    if failure == "moved":
+        external.rename(tmp_path / "移動済み")
+    else:
+        shutil.rmtree(external)
+    output = tmp_path / "run"
+    with pytest.raises(CheckoutAuditError):
+        dispatch.dispatch(config("probe"), scenario.request, output)
+    assert not output.exists()
+    assert written(scenario.review_dir) == []
+    code = dispatch.main(main_argv(tmp_path, scenario.request, "probe"))
+    assert code == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["category"] == "environment" and report["state"] == "failed"
+    assert report["checkout_audit"][0]["path"] == str(external)
+    assert report["checkout_audit"][0]["kind"] == "unavailable_before"
+    assert not output.exists()
+    if failure == "moved":
+        git(scenario.root, "worktree", "repair", str(tmp_path / "移動済み"))
+        run_dir = run_external(dispatch, scenario, tmp_path, scenario.payload())
+        result = json.loads((run_dir / "dispatch.json").read_text())
+        assert result["batch"]["checkout_audit"] == [] and result["batch"]["outside_changes"] == []
+        assert accept(dispatch, run_dir) == 0
+
+
 def test_accept_rejects_a_verifier_candidate_inserted_before_the_tool_candidates(
     dispatch: Any, scenario: Scenario, tmp_path: Path
 ) -> None:
@@ -633,6 +695,18 @@ def test_dispatch_main_exits_1_and_names_outside_changes(
     assert code == 1
     assert line["state"] == "success"
     assert line["outside_changes"]
+
+
+@pytest.mark.parametrize("diagnostics", [None, "unavailable", {}, [None]])
+def test_accept_rejects_malformed_checkout_diagnostics(
+    dispatch: Any, scenario: Scenario, tmp_path: Path, diagnostics: object
+) -> None:
+    run_dir = run_external(dispatch, scenario, tmp_path, scenario.payload())
+    saved = json.loads((run_dir / "dispatch.json").read_text())
+    saved["batch"]["checkout_audit"] = diagnostics
+    (run_dir / "dispatch.json").write_text(json.dumps(saved))
+    assert accept(dispatch, run_dir) == 1
+    assert written(scenario.review_dir) == []
 
 
 def test_accept_rejects_an_unconfirmed_stop(dispatch: Any, scenario: Scenario, tmp_path: Path) -> None:

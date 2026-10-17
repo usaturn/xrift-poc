@@ -16,14 +16,33 @@ from pathlib import Path
 
 from tools.agent_runner.adapters import LaunchSpec
 from tools.agent_runner.environ import literal_environ
+from tools.agent_runner.models import AuditReason, CheckoutAudit
 from tools.agent_runner.process import ProcessResult, execute
 
 
 class WorkspaceError(Exception):
     """Workspace operation failed without exposing Git diagnostics."""
 
-    def __init__(self) -> None:
+    def __init__(self, reason: AuditReason = "audit_unavailable") -> None:
         super().__init__("agent-runner workspace operation failed")
+        self.reason: AuditReason = reason
+
+
+class CheckoutSnapshot(dict[str, str | None]):
+    """Keep the historical mapping API while preserving checkout-local diagnostics."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.failures: dict[str, CheckoutAudit] = {}
+        self.flags: dict[str, tuple[bool, bool]] = {}
+
+
+class CheckoutAuditError(Exception):
+    """Strict callers reject an unauditable baseline before any paid work or reservation."""
+
+    def __init__(self, findings: list[CheckoutAudit]) -> None:
+        super().__init__("registered checkouts cannot be audited before execution")
+        self.findings = findings
 
 
 def _git(repository: Path, *arguments: str) -> bytes:
@@ -38,7 +57,7 @@ def _git(repository: Path, *arguments: str) -> bytes:
             env={key: value for key, value in literal_environ().items() if not key.startswith("GIT_")},
         ).stdout
     except OSError, ValueError, subprocess.SubprocessError:
-        raise WorkspaceError() from None
+        raise WorkspaceError("git_unavailable") from None
 
 
 def resolve_revision(repository: Path, revision: str = "HEAD") -> str:
@@ -115,8 +134,14 @@ def _fingerprint(checkout: Path) -> str:
         digest.update(len(data).to_bytes(8, "big"))
         digest.update(data)
 
-    if not checkout.is_dir():
-        raise WorkspaceError()
+    try:
+        mode = checkout.stat().st_mode
+    except FileNotFoundError:
+        raise WorkspaceError("checkout_missing") from None
+    except OSError:
+        raise WorkspaceError("filesystem_unavailable") from None
+    if not stat.S_ISDIR(mode):
+        raise WorkspaceError("not_directory")
     add(_git(checkout, "rev-parse", "--verify", "HEAD"))
     index = _git(checkout, "ls-files", "--stage", "-z")
     add(index)
@@ -158,40 +183,93 @@ def _fingerprint(checkout: Path) -> str:
             elif stat.S_ISDIR(mode) and (path / ".git").exists():
                 add(_fingerprint(path).encode())
     except OSError:
-        raise WorkspaceError() from None
+        raise WorkspaceError("filesystem_unavailable") from None
     return digest.hexdigest()
 
 
-def snapshot_checkouts(repository: Path) -> dict[str, str | None]:
-    """Fingerprint registered checkouts; None records a checkout-local audit failure."""
+def snapshot_checkouts(repository: Path) -> CheckoutSnapshot:
+    """Fingerprint all registered checkouts, retaining None and safe failure metadata."""
     records = _git(repository, "worktree", "list", "--porcelain", "-z").split(b"\x00\x00")
-    result: dict[str, str | None] = {}
+    result = CheckoutSnapshot()
     for record in records:
         fields = record.split(b"\x00")
         if b"bare" in fields:
             continue
+        locked = any(field == b"locked" or field.startswith(b"locked ") for field in fields)
+        prunable = any(field == b"prunable" or field.startswith(b"prunable ") for field in fields)
         for field in fields:
             if field.startswith(b"worktree "):
                 path = os.fsdecode(field[len(b"worktree ") :])
+                result.flags[path] = (locked, prunable)
                 try:
                     result[path] = _fingerprint(Path(path))
-                except WorkspaceError:
+                except WorkspaceError as error:
                     result[path] = None
+                    result.failures[path] = CheckoutAudit(
+                        path=path,
+                        kind="unavailable_before",
+                        reason=error.reason,
+                        locked=locked,
+                        prunable=prunable,
+                    )
     return result
 
 
-def changed_checkouts(before: dict[str, str | None]) -> list[str]:
-    """Recheck captured paths, warning if either snapshot is unavailable."""
-    changed: list[str] = []
-    for path, fingerprint in before.items():
+def require_auditable_checkouts(repository: Path) -> CheckoutSnapshot:
+    """Preflight for strict consumers; never repair, prune, reserve or launch."""
+    try:
+        snapshot = snapshot_checkouts(repository)
+    except WorkspaceError as error:
+        raise CheckoutAuditError(
+            [CheckoutAudit(path=str(repository), kind="unavailable_before", reason=error.reason)]
+        ) from None
+    if snapshot.failures:
+        raise CheckoutAuditError([snapshot.failures[path] for path in sorted(snapshot.failures)])
+    return snapshot
+
+
+def audit_checkouts(before: dict[str, str | None]) -> list[CheckoutAudit]:
+    """Distinguish unavailable baselines, later failures and observed content changes.
+
+    A recovered checkout cannot retroactively prove a run's missing baseline.
+    Ordinary historical dictionaries remain accepted with an unknown fixed reason.
+    Flags describe the captured registration, not permission to delete it.
+    """
+    findings: list[CheckoutAudit] = []
+    for path, fingerprint in sorted(before.items()):
+        locked, prunable = (
+            before.flags.get(path, (False, False)) if isinstance(before, CheckoutSnapshot) else (False, False)
+        )
         if fingerprint is None:
-            changed.append(path)
+            failure = before.failures.get(path) if isinstance(before, CheckoutSnapshot) else None
+            findings.append(failure or CheckoutAudit(path=path, kind="unavailable_before", reason="audit_unavailable"))
             continue
         try:
             current = _fingerprint(Path(path))
-        except WorkspaceError:
-            changed.append(path)
+        except WorkspaceError as error:
+            findings.append(
+                CheckoutAudit(
+                    path=path,
+                    kind="unavailable_after",
+                    reason=error.reason,
+                    locked=locked,
+                    prunable=prunable,
+                )
+            )
         else:
             if current != fingerprint:
-                changed.append(path)
-    return sorted(changed)
+                findings.append(
+                    CheckoutAudit(
+                        path=path,
+                        kind="content_changed",
+                        reason="content_changed",
+                        locked=locked,
+                        prunable=prunable,
+                    )
+                )
+    return findings
+
+
+def changed_checkouts(before: dict[str, str | None]) -> list[str]:
+    """Historical conservative warning list, without changing the audit boundary."""
+    return [finding.path for finding in audit_checkouts(before)]

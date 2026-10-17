@@ -37,6 +37,7 @@ ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT))
 
 from tools.agent_runner import (  # noqa: E402
+    Assignment,
     BatchResult,
     Config,
     ConfigError,
@@ -61,6 +62,8 @@ STOP_REASON = re.compile(r"(?:permission|environment|external): \S.*", re.DOTALL
 MAX_CYCLES_LIMIT = 10
 # 使い捨ての runner の出力を置く /tmp のディレクトリ名（AGENTS.md の「PR 修正ループの所有 worktree」と同じ接頭辞）
 TMP_PREFIX = "xrift-poc-pr-loop-"
+# start が現在の Herdr ペインの名前を変えるときの herdr の期限（秒）。応答が無くても start を待たせ続けない
+HERDR_TIMEOUT_SECONDS: float = 10
 _HISTORY_ROW = re.compile(
     r"^\|[^|\n]*\|\s*`?(?P<head>[0-9a-f]{12})`?\s*\|\s*(?:Initial|Update)\s*\|\s*$", re.MULTILINE
 )
@@ -79,6 +82,7 @@ target = _load("pr_review_fix_loop_review_target", ROOT / ".agents/scripts/revie
 records = _load("pr_review_fix_loop_review_records", ROOT / ".agents/scripts/review_records.py")
 findings = _load("pr_review_fix_loop_review_findings", ROOT / ".agents/scripts/review_findings.py")
 review_entry = _load("pr_review_fix_loop_review_run", ROOT / ".agents/skills/pr-review/scripts/review_run.py")
+run_roles = _load("pr_review_fix_loop_run_roles", ROOT / ".agents/skills/review-fix-planning/scripts/run_roles.py")
 
 
 class LoopError(Exception):
@@ -176,6 +180,15 @@ class RunResult(StrictModel):
     cycles: int
 
 
+class HerdrPane(StrictModel):
+    """start が現在の Herdr ペインの名前を変えた結果。"""
+
+    state: Literal["renamed", "skipped", "failed"]
+    pane_id: str | None
+    label: str
+    reason: str | None = None
+
+
 class RunRecord(StrictModel):
     schema_: Literal["pr-review-fix-loop/v1"] = Field(default="pr-review-fix-loop/v1", alias="schema")
     kind: Literal["run"] = "run"
@@ -193,6 +206,11 @@ class RunRecord(StrictModel):
     result: RunResult | None = None
     resources: list[Resource] = Field(default_factory=list[Resource])
     notes: list[str] = Field(default_factory=list[str])
+    # この項目より前に作った run には無い
+    herdr_pane: HerdrPane | None = None
+
+
+RejectedStage = Literal["runner", "payload", "binding", "head", "artifacts"]
 
 
 class ReviewerEntry(StrictModel):
@@ -212,6 +230,10 @@ class ReviewerEntry(StrictModel):
     cleanup: str | None = None
     warnings: list[str] = Field(default_factory=list[str])
     retained_paths: list[str] = Field(default_factory=list[str])
+    # 却下したときの段階と、却下した試行に実際に渡した指示（request.json の写し）。stdout・stderr は写さない
+    rejected_stage: RejectedStage | None = None
+    request_file: str | None = None
+    request_sha256: str | None = None
 
 
 class ReusedReview(StrictModel):
@@ -238,6 +260,22 @@ class CleanupInfo(StrictModel):
     retained: list[str]
 
 
+class RerunPart(StrictModel):
+    """runner は成功したが loop が受け付けなかったレビュアーの、同じサイクルでの 1 回だけの再実行。"""
+
+    agents: list[str]
+    # 再実行で置き換えた 1 回目の記録
+    replaced: list[ReviewerEntry]
+    output_dir: str | None = None
+    started_at: str | None = None
+    ended_at: str | None = None
+    seconds: float | None = None
+    batch: BatchInfo | None = None
+    after_run_started: bool = False
+    after_run: list[dict[str, Any]] | None = None
+    cleanup: CleanupInfo | None = None
+
+
 class ReviewPart(StrictModel):
     mode: Literal["run", "reuse"]
     output_dir: str | None = None
@@ -251,6 +289,7 @@ class ReviewPart(StrictModel):
     reviewers: list[ReviewerEntry] = Field(default_factory=list[ReviewerEntry])
     reused: list[ReusedReview] = Field(default_factory=list[ReusedReview])
     cleanup: CleanupInfo | None = None
+    rerun: RerunPart | None = None
 
 
 class RoleRun(StrictModel):
@@ -530,6 +569,43 @@ class GitHub:
         return self._api("--paginate", "--slurp", f"repos/{repository}/issues/{number}/comments")
 
 
+# --- Herdr --------------------------------------------------------------------------------------------------------
+
+
+def rename_pane(number: int) -> HerdrPane:
+    """Herdr のペインの中なら、現在のペイン（HERDR_PANE_ID）の名前を ``PR#<番号>`` に変える。
+
+    ほかのペインやフォーカスは変えない。ペインの名前は表示だけの情報なので、失敗しても例外にせず結果で返す。
+    """
+    label = f"PR#{number}"
+    pane_id = os.environ.get("HERDR_PANE_ID", "")
+    if os.environ.get("HERDR_ENV") != "1":
+        return HerdrPane(state="skipped", pane_id=None, label=label, reason="HERDR_ENV が 1 ではない（Herdr の外）")
+    if not pane_id.strip():
+        return HerdrPane(state="skipped", pane_id=None, label=label, reason="HERDR_PANE_ID が空")
+    try:
+        result = subprocess.run(
+            ["herdr", "pane", "rename", pane_id, label],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=HERDR_TIMEOUT_SECONDS,
+        )
+    except FileNotFoundError:
+        reason = "herdr が PATH に無い"
+    except subprocess.TimeoutExpired:
+        reason = f"herdr pane rename が {HERDR_TIMEOUT_SECONDS:g} 秒以内に終わらなかった"
+    except OSError as error:
+        reason = f"herdr を起動できない: {error}"
+    else:
+        if result.returncode == 0:
+            return HerdrPane(state="renamed", pane_id=pane_id, label=label)
+        detail = (result.stderr or "").strip()[:300]
+        reason = f"herdr pane rename が終了コード {result.returncode} で失敗した: {detail}"
+    return HerdrPane(state="failed", pane_id=pane_id, label=label, reason=reason)
+
+
 # --- 設定と割り当て -----------------------------------------------------------------------------------------------
 
 
@@ -572,7 +648,11 @@ def load_review_config(run: RunRecord) -> Config:
 def load_assignments(
     template: Path, config: Path | None, assign: Mapping[str, list[str]]
 ) -> dict[str, dict[str, Any]]:
-    """雛形 < 個人設定 < --assign で読み込み、review の inspect と fix の各役割の有効な割り当てを返す。"""
+    """雛形 < 個人設定 < --assign で読み込み、review の inspect と fix の各役割の有効な割り当てを返す。
+
+    run_roles.py が設定だけで拒否する fix の割り当て（DSH の self-review・fix-check など）は、レビューや implement の
+    後の run_roles の呼び出しを待たずにここで止める（#675）。判定と理由は run_roles の関数を使い、規則を写さない。
+    """
     personal = personal_config(config)
     inspect = {role: agents for role, agents in assign.items() if role == "inspect"}
     fix = {role: agents for role, agents in assign.items() if role in FIX_ROLES}
@@ -588,6 +668,16 @@ def load_assignments(
     missing = [role for role in FIX_ROLES if role not in fix_assignments]
     if missing:
         raise LoopError(2, "config", f"workflows.fix に {', '.join(missing)} の割り当てが無い")
+    try:
+        run_roles.project(fix_config, "implement")
+        run_roles.reject_dsh_review_agents(run_roles.project(fix_config, "self-review"))
+    except (ConfigError, run_roles.RoleInputError) as error:
+        raise LoopError(
+            2,
+            "config",
+            f"run_roles.py が拒否する fix の割り当て（{run_roles.failure_reason(error)}）。"
+            "--assign か、個人設定の workflows.fix・roles を直す",
+        ) from error
     return {
         "review": {"inspect": review_assignments["inspect"].model_dump(mode="json")},
         "fix": {role: fix_assignments[role].model_dump(mode="json") for role in FIX_ROLES},
@@ -722,6 +812,38 @@ def review_write_paths(run: RunRecord, runtimes: Mapping[str, str]) -> tuple[Pat
         raise LoopError(5, "sandbox", "DSH の必要保存先を安全に準備できない") from error
 
 
+def review_write_exceptions(run: RunRecord) -> tuple[str, ...]:
+    """pr-review の helper が管理する書き込み先。runner の作業範囲の指示に、呼び出し側が許可する例外として載せる。
+
+    inspect の writes=False は、レビュー対象・どの checkout の追跡ファイル・他のレビュアーの成果を変えないという
+    意味で、ここに挙げる helper の書き込みはそれに当たらない。パスを事前に決められるものは、パスを行の先頭に置く。
+    """
+    tool_root = Path(run.tool_root)
+    review_dir = Path(run.review_dir)
+    parent = review_dir.parents[3]
+    common = git_output(parent, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    number = run.pr.number
+    return (
+        f"{tool_root}: the source checkout named tool_root in the request. Read the pr-review skill and its "
+        "references there and run its helper from there; do not edit it",
+        f"{review_dir}: the run records and the saved review and candidates that the helper writes; "
+        "do not edit them by hand",
+        f"{common}: the helper's save lock (pr-review-save.lock) and the Git objects, refs and worktree "
+        "registrations that the helper adds and removes for its review worktree (a submodule's Git data is "
+        "here too; a repository without a checkout here is cloned inside the helper's session instead)",
+        f"{parent / 'tmp/agents'}/pr-review-scratch-{number}.*: one scratch directory created with "
+        "agent_tmp.py mkdir as pr-review allows; remove it when it is no longer needed",
+        f"the session that the helper's prepare creates (pr-review-{number}-* in the temporary directory, or "
+        "the DSH staging area): its review worktree, backup and state belong to the helper. Write only the "
+        "draft and findings_draft that prepare returns, and leave no files in the review worktree",
+        f"{tool_root / 'tools/devenv/.venv'} and uv's cache: the environment that "
+        "`uv run --project <tool_root>/tools/devenv --locked` maintains",
+        "files that the agent runtime or its extensions create by themselves in the directory you were launched in "
+        "(for example .pi-lens-probe-home/ from pi-lens): they belong to the runtime, not to you. Do not edit or "
+        "delete them, and do not count them as your modifications; the caller discards that directory",
+    )
+
+
 def discard_parent_input(path: Path) -> None:
     """この review が作り、まだどのレビュアーにも渡していない親入力だけを消す（同じサイクルで作り直せるように）。
 
@@ -754,7 +876,10 @@ def reviewer_prompt(
         "あなたは PR 修正ループのレビュアーとして、pr-review を非対話で 1 回だけ実行する。"
         "値は末尾の JSON ブロックを使う。\n\n"
         "1. 最初に `skill`（pr-review の SKILL.md）と、その参照文書（references/time-budget.md・evidence.md・"
-        "noninteractive.md）を全文読み、その手順に従う。別の checkout のスキルや helper を使わない。"
+        "noninteractive.md）を全文読み、その手順に従う。"
+        "`tool_root` は skill と helper の置き場所（source checkout）で、起動した cwd（runner の worktree）とは"
+        "別の checkout である。skill・参照文書・helper は `tool_root` の版だけを使い、起動した cwd や他の checkout に"
+        "ある同名のものは使わない（版の混用を防ぐため。`tool_root` の版を使うことはこの禁止に当たらない）。"
         "helper は `helper` を `uv run --project <tool_root>/tools/devenv --locked python` で実行する。\n"
         "2. prepare には `--pr <pr_url>`、`--runtime <runtimes の、自分の Request.agent_id の値>`、"
         "`--request <起動した cwd の親にある request.json>`、`--records-comments <records_comments>` を渡す。"
@@ -765,7 +890,11 @@ def reviewer_prompt(
         "（PR の HEAD が動いた）。\n"
         "4. してはいけないこと: 別のエージェントの起動・再委譲、追跡ファイルの変更、commit・push、"
         "GitHub への書き込み（コメントを含む）、他のレビュアーの成果を読むこと、"
-        "`./scripts/ci/verify.sh`・`./scripts/ci/verify-devenv.sh` の実行。\n"
+        "`./scripts/ci/verify.sh`・`./scripts/ci/verify-devenv.sh` の実行。"
+        "冒頭の runner の writes=False と「この worktree だけ」の指示は、"
+        "レビュー対象（prepare が作る review worktree の追跡ファイルを含む）・どの checkout の追跡ファイル・"
+        "他のレビュアーの成果を変えないという意味で、"
+        "冒頭に列挙された例外（helper が管理する実行記録・セッション・保存・ロックなど）はこれに当たらない。\n"
         "DSH は隔離 HOME/cache/temp と controller が許可した正式保存先・保存ロックだけが追加の書き込み対象。"
         "DSH prepare は Request 内の parent_pr_data を使い、GitHub API/token/remote fetch を呼ばない。"
         "DSH complete の staged は親が停止確認後に HEAD を再照合して保存・cleanup する。"
@@ -802,16 +931,17 @@ def verify_reviewer(
         identity=attempt.identity.model_dump(mode="json") if attempt is not None else {},
     )
 
-    def reject(reason: str) -> ReviewerEntry:
+    def reject(stage: RejectedStage, reason: str) -> ReviewerEntry:
+        entry.rejected_stage = stage
         entry.reason = reason
         return entry
 
     if attempt is None or not all(item.stop_confirmed for item in result.attempts):
-        return reject("runner が試行の停止を確認できていない")
+        return reject("runner", "runner が試行の停止を確認できていない")
     if result.state != "success" or attempt.state != "success" or attempt.exit_code != 0:
-        return reject(f"runner の結果が success ではない（{result.state}、終了コード {attempt.exit_code}）")
+        return reject("runner", f"runner の結果が success ではない（{result.state}、終了コード {attempt.exit_code}）")
     if not isinstance(attempt.payload, dict):
-        return reject("payload が JSON object ではない")
+        return reject("payload", "payload が JSON object ではない")
     payload = attempt.payload
     cleanup = payload.get("cleanup")
     entry.cleanup = cleanup if isinstance(cleanup, str) else None
@@ -822,42 +952,44 @@ def verify_reviewer(
     if isinstance(retained, list):
         entry.retained_paths = sorted({str(item) for item in cast(list[object], retained) if isinstance(item, str)})
     if payload.get("status") != "success":
-        return reject(f"pr-review の結果が success ではない（{payload.get('status')}: {payload.get('reason')}）")
+        return reject(
+            "payload", f"pr-review の結果が success ではない（{payload.get('status')}: {payload.get('reason')}）"
+        )
     if attempt.request_path is None:
-        return reject("試行の request.json が無い")
+        return reject("binding", "試行の request.json が無い")
     try:
         request = Request.model_validate_json(attempt.request_path.read_text(encoding="utf-8"))
     except OSError, ValidationError:
-        return reject("試行の request.json を読めない")
+        return reject("binding", "試行の request.json を読めない")
     for key in ("run_id", "request_id", "agent_id", "role"):
         if payload.get(key) != getattr(request, key):
-            return reject(f"payload の {key} が依頼と一致しない")
+            return reject("binding", f"payload の {key} が依頼と一致しない")
     if payload.get("agent_id") != result.actual_agent:
-        return reject("payload の agent_id が実際の担当と一致しない")
+        return reject("binding", "payload の agent_id が実際の担当と一致しない")
     if payload.get("repository") != pr.repository or payload.get("pr_number") != pr.number:
-        return reject("payload が別の PR を指す")
+        return reject("binding", "payload が別の PR を指す")
     if payload.get("pr_head") != head or payload.get("reviewed_head") != head:
-        return reject("レビューした HEAD がサイクルの HEAD と一致しない")
+        return reject("head", "レビューした HEAD がサイクルの HEAD と一致しない")
     review = _artifact(review_dir, payload.get("review_file"))
     candidates = _artifact(review_dir, payload.get("findings_file"))
     if review is None or candidates is None:
-        return reject("成果のパスが、レビューディレクトリの中の通常のファイルではない")
+        return reject("artifacts", "成果のパスが、レビューディレクトリの中の通常のファイルではない")
     if (
         review.resolve().parent != review_dir.resolve()
         or candidates.resolve().parent != (review_dir / "findings").resolve()
         or candidates.name != f"{review.stem}-{head[:12]}.json"
     ):
-        return reject("成果 2 件の置き場所・名前が pr-review の保存の規則と合わない")
+        return reject("artifacts", "成果 2 件の置き場所・名前が pr-review の保存の規則と合わない")
     try:
         document = cast(dict[str, Any], findings.validate_document(json.loads(candidates.read_text(encoding="utf-8"))))
         markdown = review.read_text(encoding="utf-8")
         if document["kind"] != "candidates" or document["reviewed_head"] != head or document["pr"] != pr.key():
-            return reject("候補一覧が別の対象を指す")
+            return reject("artifacts", "候補一覧が別の対象を指す")
         if last_history_head(markdown) != head[:12]:
-            return reject("レビューファイルの最後の Review history の HEAD がサイクルの HEAD と違う")
+            return reject("artifacts", "レビューファイルの最後の Review history の HEAD がサイクルの HEAD と違う")
         findings.check_pair(markdown, document)
     except (OSError, ValueError) as error:
-        return reject(f"成果 2 件の検査に失敗した: {str(error)[:200]}")
+        return reject("artifacts", f"成果 2 件の検査に失敗した: {str(error)[:200]}")
     if expected_runtime == "dsh" or document["reviewer"]["runtime"] == "dsh":
         reviewer = document["reviewer"]
         metadata = reviewer["provenance"]
@@ -867,7 +999,7 @@ def verify_reviewer(
             or reviewer != payload.get("reviewer")
             or payload.get("timing") != document["timing"]
         ):
-            return reject("DSH の成果と payload の reviewer/timing が一致しない")
+            return reject("artifacts", "DSH の成果と payload の reviewer/timing が一致しない")
         if (
             not identity.model
             or not identity.provider
@@ -875,14 +1007,14 @@ def verify_reviewer(
             or (reviewer["model"], metadata["provider"], metadata["effort"], metadata["session_id"])
             != (identity.model, identity.provider, identity.effort or "unknown", identity.session_id)
         ):
-            return reject("DSH のモデル識別が runner の実測値と一致しない")
+            return reject("artifacts", "DSH のモデル識別が runner の実測値と一致しない")
         if any(metadata[key] != getattr(request, key) for key in ("run_id", "request_id", "agent_id", "role")):
-            return reject("DSH reviewer の実行情報が request と一致しない")
+            return reject("artifacts", "DSH reviewer の実行情報が request と一致しない")
         # 識別行は最初の見出しより前の冒頭だけで数える。本文での引用は冒頭の識別行ではない
         preamble = itertools.takewhile(lambda line: not line.startswith("## "), markdown.splitlines())
         headers = [line for line in preamble if line.startswith("- レビュアー:")]
         if headers != [f"- レビュアー: {identity.model}（ランタイム: dsh）"]:
-            return reject("DSH の本文冒頭のモデル識別が実測値と一致しない")
+            return reject("artifacts", "DSH の本文冒頭のモデル識別が実測値と一致しない")
         blocks = re.findall(r"<!-- pr-review:execution -->\s*```json\s*\n(.*?)\n```", markdown, re.DOTALL)
         try:
             execution = json.loads(blocks[0]) if len(blocks) == 1 else None
@@ -893,12 +1025,12 @@ def verify_reviewer(
             or cast(dict[str, Any], execution).get("reviewer") != reviewer
             or cast(dict[str, Any], execution).get("timing") != document["timing"]
         ):
-            return reject("DSH の本文の実行情報が候補一覧と一致しない")
+            return reject("artifacts", "DSH の本文の実行情報が候補一覧と一致しない")
         if cleanup != "success":
-            return reject("DSH review の cleanup が成功していない")
+            return reject("artifacts", "DSH review の cleanup が成功していない")
     active = len(cast(list[Any], document["findings"]))
     if payload.get("active_findings") != active:
-        return reject("payload の active_findings が候補一覧と一致しない")
+        return reject("artifacts", "payload の active_findings が候補一覧と一致しない")
     reviewer = payload.get("reviewer")
     timing = payload.get("timing")
     entry.verdict = "accepted"
@@ -936,8 +1068,8 @@ def _stopped(batch: BatchResult) -> bool:
 
 
 def _registered_worktrees(root: Path) -> list[Path]:
-    listing = git_output(root, "worktree", "list", "--porcelain")
-    return [Path(line.removeprefix("worktree ")) for line in listing.splitlines() if line.startswith("worktree ")]
+    listing = git_output(root, "worktree", "list", "--porcelain", "-z")
+    return [Path(field.removeprefix("worktree ")) for field in listing.split("\x00") if field.startswith("worktree ")]
 
 
 def cleanup_output(
@@ -949,12 +1081,33 @@ def cleanup_output(
     （force のときだけ --force）。秘密が残りうる sensitive_paths は消さずに残して報告する。
     """
     parent = Path(resource.path)
-    if not parent.exists():
-        resource.state = "removed"
-        return []
     if not parent.name.startswith(TMP_PREFIX) or parent.is_symlink():
         resource.state = "retained"
         resource.reason = "記録した出力ディレクトリの名前・種類が想定と違うので消さない"
+        return [str(parent)]
+    try:
+        parent.lstat()
+    except FileNotFoundError:
+        try:
+            registrations = [
+                str(path)
+                for path in _registered_worktrees(tool_root)
+                if path.absolute().is_relative_to(parent.absolute())
+            ]
+        except LoopError:
+            resource.state = "retained"
+            resource.reason = "Git登録を照合できないので回収完了としない"
+            return [str(parent)]
+        if registrations:
+            resource.state = "retained"
+            resource.reason = "親ディレクトリは不在だがGit登録が残る。移動・所有・停止の確認が必要"
+            return registrations
+        resource.state = "removed"
+        resource.reason = reason
+        return []
+    except OSError:
+        resource.state = "retained"
+        resource.reason = "親ディレクトリを調べられないので回収完了としない"
         return [str(parent)]
     if not force and (batch is None or not _stopped(batch)):
         return [str(parent)]
@@ -989,10 +1142,13 @@ def audit_resources(run: RunRecord) -> list[str]:
     """停止を確認できない資源の完全パス。停止を確認できた資源は、ここで回収し直す。"""
     unconfirmed: list[str] = []
     for resource in run.resources:
-        if resource.state != "created":
+        if resource.state == "removed":
             continue
         if not Path(resource.path).exists():
-            resource.state = "removed"
+            if cleanup_output(Path(run.tool_root), resource, None):
+                unconfirmed.append(resource.path)
+            continue
+        if resource.state != "created":
             continue
         batch = _read_batch(_output_dir(resource) / "result.json")
         if batch is None or not _stopped(batch):
@@ -1060,7 +1216,7 @@ def start(
             controller=Controller(model=controller_model, runtime=controller_runtime),
             options=Options(
                 max_cycles=max_cycles,
-                hold_action=hold_action,
+                hold_action="skip" if hold_action is None else hold_action,
                 assign=requested,
                 template=str(template),
                 config=str(config) if config is not None else None,
@@ -1071,9 +1227,18 @@ def start(
             state="running",
         )
         save_run(run_dir, run)
+        # run を始めた後だけ変える（失敗する start や、別の run が使っている PR では変えない）
+        pane = rename_pane(pr.number)
+        run.herdr_pane = pane
+        save_run(run_dir, run)
     except BaseException:
         release_lock(review_dir, run_id)
         raise
+    if pane.state == "failed":
+        warnings.append(
+            f"現在の Herdr ペイン（{pane.pane_id}）の名前を {pane.label} に変えられなかった: {pane.reason}。"
+            "run は続ける"
+        )
     return {
         "status": "ok",
         "run_id": run_id,
@@ -1082,6 +1247,7 @@ def start(
         "pr": pr.model_dump(mode="json"),
         "head": pull.head_sha,
         "assignments": assignments,
+        "herdr_pane": pane.model_dump(mode="json"),
         "warnings": warnings,
         "next": command("cycle-begin", "--run", str(run_dir)),
     }
@@ -1343,6 +1509,7 @@ def _reviewer_summary(entry: ReviewerEntry) -> dict[str, Any]:
         "requested": entry.requested_agent,
         "verdict": entry.verdict,
         "reason": entry.reason,
+        "rejected_stage": entry.rejected_stage,
         "model": entry.identity.get("model"),
         "active_findings": entry.active_findings,
         "review_file": entry.review_file,
@@ -1368,25 +1535,47 @@ def _all_failed(run_dir: Path, entries: Sequence[ReviewerEntry]) -> LoopError:
     )
 
 
-def review(
+def keep_rejected_request(result: Result, entry: ReviewerEntry, directory: Path) -> None:
+    """却下した試行に実際に渡した指示（runner が書いた request.json）を ``<request_id>.json`` に写す。
+
+    runner の request.json は環境の値を含まない（tools/agent_runner/interfaces.rst）。通常のファイル（symlink でない）
+    だけを写し、秘密が残りうる stdout・stderr は写さない。
+    """
+    attempt = result.attempts[-1] if result.attempts else None
+    # 停止を確かめられない試行のファイルは、生きた書き手が差し替えうるので読まない（runner と同じ方針）
+    if entry.verdict != "rejected" or attempt is None or attempt.request_path is None or not attempt.stop_confirmed:
+        return
+    source = attempt.request_path
+    if source.is_symlink() or not source.is_file() or Path(result.request_id).name != result.request_id:
+        return
+    directory.mkdir(parents=True, exist_ok=True)
+    destination = directory / f"{result.request_id}.json"
+    shutil.copyfile(source, destination)
+    entry.request_file = str(destination)
+    entry.request_sha256 = sha256_file(destination)
+
+
+def _review_batch(
     run_dir: Path,
+    run: RunRecord,
+    cycle: CycleRecord,
+    part: ReviewPart | RerunPart,
     *,
-    github: GitHub | None = None,
-    adapter_loader: Callable[[str], Adapter] = load_adapter,
-    tmp_root: Path | None = None,
-) -> dict[str, Any]:
-    run = load_run(run_dir)
-    require_owner(run)
-    existing = load_cycles(run_dir)
-    if not existing or existing[-1].state != "reviewing" or run.result is not None:
-        raise LoopError(3, "state", "レビューの段階のサイクルが無い（reuse のサイクルではレビュアーを起動しない）")
-    cycle = existing[-1]
+    github: GitHub | None,
+    adapter_loader: Callable[[str], Adapter],
+    tmp_root: Path | None,
+) -> tuple[BatchResult, list[ReviewerEntry], list[str]]:
+    """runner の 1 回の実行（起動 → 親の確定・後処理 → 検査 → 回収）。part は 1 回目か再実行の記録。
+
+    途中で止まっても part の記録から同じ段を再開し、レビュアーを起動し直さない。戻り値は runner の結果、
+    検査した記録、回収できずに残ったパス。
+    """
+    rerun = part if isinstance(part, RerunPart) else None
+    prefix = "rerun-" if rerun is not None else ""
     review_dir = Path(run.review_dir)
-    if cycle.review.batch is not None:
-        # 前の review が全レビュアーの失敗で終わった。レビュアーを起動し直さず、同じ結果を返す
-        raise _all_failed(run_dir, cycle.review.reviewers)
-    if cycle.review.output_dir is not None:
-        output_dir = Path(cycle.review.output_dir)
+    work = cycle_dir(run_dir, cycle.cycle)
+    if part.output_dir is not None:
+        output_dir = Path(part.output_dir)
         batch = _read_batch(output_dir / "result.json")
         if batch is None:
             raise LoopError(
@@ -1413,15 +1602,21 @@ def review(
                 ),
             )
         config = review_config_without_github_tokens(load_review_config(run))
+        if rerun is not None:
+            # 受け付けなかった実担当だけを、同じ role の期限で起動し直す。fallback や別モデルへは切り替えない
+            config.workflows["review"].assignments["inspect"] = Assignment(agents=list(rerun.agents), fallback=[])
         inspect = config.workflows["review"].assignments["inspect"]
         runtimes = {name: config.agents[name].runtime for name in [*inspect.agents, *inspect.fallback]}
         write_paths = review_write_paths(run, runtimes)
-        work = cycle_dir(run_dir, cycle.cycle)
         work.mkdir(exist_ok=True)
-        comments_file = work / "comments.json"
-        write_json(comments_file, cast(Sequence[Any], github.comments(run.pr.repository, run.pr.number)))
+        if rerun is None:
+            comments_file = work / "comments.json"
+            write_json(comments_file, cast(Sequence[Any], github.comments(run.pr.repository, run.pr.number)))
+        else:
+            # 同じサイクルの計画の前なので、判断の記録は 1 回目と同じ。同じ入力を渡す
+            comments_file = Path(cast(str, cycle.review.comments_file))
         parent_pr_data = None
-        parent_input = work / "parent-pr-data"
+        parent_input = work / f"{prefix}parent-pr-data"
         if "dsh" in runtimes.values():
             try:
                 # 既存のディレクトリは拒否する。作りかけの領域は prepare_parent が自分で片付ける
@@ -1448,9 +1643,9 @@ def review(
         output_dir = _output_dir(resource)
         run.resources.append(resource)
         save_run(run_dir, run)
-        cycle.review.output_dir = str(output_dir)
+        part.output_dir = str(output_dir)
         cycle.review.comments_file = str(comments_file)
-        cycle.review.started_at = now()
+        part.started_at = now()
         save_cycle(run_dir, cycle)
         prompt = reviewer_prompt(
             tool_root=Path(run.tool_root),
@@ -1471,6 +1666,7 @@ def review(
                 output_dir=output_dir,
                 adapter_loader=adapter_loader,
                 sandbox_write_paths=write_paths,
+                write_exceptions=review_write_exceptions(run),
             )
         except (ConfigError, RunnerError) as error:
             if output_dir.exists():
@@ -1486,8 +1682,8 @@ def review(
                 discard_parent_input(parent_input)
             resource.state = "removed"
             resource.reason = f"runner が起動の前に拒否した（{type(error).__name__}）"
-            cycle.review.output_dir = None
-            cycle.review.started_at = None
+            part.output_dir = None
+            part.started_at = None
             save_run(run_dir, run)
             save_cycle(run_dir, cycle)
             raise LoopError(
@@ -1500,13 +1696,13 @@ def review(
         # 親の確定より前に runner の結果を残す。途中で止まっても、再開が同じ親の確定から続ける
         write_json(output_dir / "result.json", batch)
     config = load_review_config(run)
-    if cycle.review.after_run is None:
-        if cycle.review.after_run_started:
+    if part.after_run is None:
+        if part.after_run_started:
             raise LoopError(7, "after_run", "前回の後処理の停止・結果が未確認。再実行せず recover で回収する")
         # 新規・再開とも、停止済みの staged だけを親が同じ検査で正式成果に確定する（確定済みは触らない）
         review_entry.finalize_parent_batch(batch)
         write_json(output_dir / "result.json", batch)
-        cycle.review.after_run_started = True
+        part.after_run_started = True
         save_cycle(run_dir, cycle)
         reports = run_after_run(
             config.workflows["review"].after_run,
@@ -1518,15 +1714,15 @@ def review(
         for report in reports:
             for key in ("stdout_path", "stderr_path"):
                 source = Path(str(report[key]))
-                destination = cycle_dir(run_dir, cycle.cycle) / source.name
+                destination = work / f"{prefix}{source.name}"
                 if source.is_file():
                     shutil.copyfile(source, destination)
                     report[key] = str(destination)
-        cycle.review.after_run = cast(list[dict[str, Any]], reports)
+        part.after_run = cast(list[dict[str, Any]], reports)
         save_cycle(run_dir, cycle)
-    if any(report.get("stop_confirmed") is not True for report in cycle.review.after_run):
+    if any(report.get("stop_confirmed") is not True for report in part.after_run):
         raise LoopError(7, "after_run", "後処理の停止を確認できない。出力を保持して recover で回収する")
-    if any(report.get("state") != "success" for report in cycle.review.after_run):
+    if any(report.get("state") != "success" for report in part.after_run):
         raise LoopError(5, "after_run", "レビュー後処理が失敗した。結果とログを保持し、再実行しない")
     # 後処理は result.json を更新しうる。新規・再開とも、保存された結果をレビュアーの検査に使う
     saved = _read_batch(output_dir / "result.json")
@@ -1543,32 +1739,72 @@ def review(
         )
         for item in batch.results
     ]
-    result_copy = cycle_dir(run_dir, cycle.cycle) / "review-result.json"
+    # 回収で出力が消える前に、却下した試行に渡した指示を残す
+    for item, entry in zip(batch.results, entries, strict=True):
+        keep_rejected_request(item, entry, work / "requests")
+    result_copy = work / f"{prefix or 'review-'}result.json"
     write_json(result_copy, batch)
     resource = next((item for item in run.resources if _output_dir(item) == output_dir), None)
     retained = cleanup_output(Path(run.tool_root), resource, batch) if resource is not None else [str(output_dir)]
-    accepted = [entry for entry in entries if entry.verdict == "accepted"]
-    cycle.review.reviewers = entries
-    cycle.review.batch = BatchInfo(
+    part.batch = BatchInfo(
         run_id=batch.run_id,
         state=batch.state,
         assignments=batch.assignments,
         result_file=str(result_copy),
         outside_changes=batch.outside_changes,
     )
-    cycle.review.ended_at = now()
-    cycle.review.seconds = batch.elapsed_seconds
-    cycle.review.cleanup = CleanupInfo(
+    part.ended_at = now()
+    part.seconds = batch.elapsed_seconds
+    part.cleanup = CleanupInfo(
         state="removed" if resource is not None and resource.state == "removed" else "retained", retained=retained
     )
-    if accepted:
+    return batch, entries, retained
+
+
+def review(
+    run_dir: Path,
+    *,
+    github: GitHub | None = None,
+    adapter_loader: Callable[[str], Adapter] = load_adapter,
+    tmp_root: Path | None = None,
+) -> dict[str, Any]:
+    run = load_run(run_dir)
+    require_owner(run)
+    existing = load_cycles(run_dir)
+    if not existing or existing[-1].state != "reviewing" or run.result is not None:
+        raise LoopError(3, "state", "レビューの段階のサイクルが無い（reuse のサイクルではレビュアーを起動しない）")
+    cycle = existing[-1]
+    if cycle.review.batch is None:
+        batch, entries, retained = _review_batch(
+            run_dir, run, cycle, cycle.review, github=github, adapter_loader=adapter_loader, tmp_root=tmp_root
+        )
+        cycle.review.reviewers = entries
+        again = [entry for entry in entries if entry.verdict == "rejected" and entry.rejected_stage != "runner"]
+        # runner は成功したのに受け付けなかったレビュアー（レビューの未実施・成果の欠落・HEAD の不一致など）は、
+        # 同じサイクルで 1 回だけ起動し直す。runner の失敗（期限切れ・認証待ち・起動失敗）は再実行しない。
+        # 再実行は依存する仕事なので、別の担当でも停止を確かめられない試行があれば始めない（recover の経路に残す）
+        if again and _stopped(batch):
+            cycle.review.rerun = RerunPart(agents=[entry.actual_agent for entry in again], replaced=again)
+    elif cycle.review.rerun is not None and cycle.review.rerun.batch is None:
+        batch, entries, retained = _review_batch(
+            run_dir, run, cycle, cycle.review.rerun, github=github, adapter_loader=adapter_loader, tmp_root=tmp_root
+        )
+        rerun_entries = {entry.actual_agent: entry for entry in entries}
+        cycle.review.reviewers = [rerun_entries.get(entry.actual_agent, entry) for entry in cycle.review.reviewers]
+    else:
+        # 前の review（と再実行）が全レビュアーの失敗で終わった。レビュアーを起動し直さず、同じ結果を返す
+        raise _all_failed(run_dir, cycle.review.reviewers)
+    entries = cycle.review.reviewers
+    accepted = [entry for entry in entries if entry.verdict == "accepted"]
+    pending = cycle.review.rerun is not None and cycle.review.rerun.batch is None
+    if accepted and not pending:
         cycle.state = "planning"
     save_cycle(run_dir, cycle)
     save_run(run_dir, run)
-    if not accepted:
+    if not accepted and not pending:
         raise _all_failed(run_dir, entries)
     reviewer_retained = [path for entry in entries for path in entry.retained_paths]
-    return {
+    output: dict[str, Any] = {
         "status": "ok",
         "cycle": cycle.cycle,
         "head": cycle.head,
@@ -1576,9 +1812,15 @@ def review(
         "rejected": [_reviewer_summary(entry) for entry in entries if entry.verdict == "rejected"],
         "outside_changes": batch.outside_changes,
         "retained": retained + reviewer_retained,
-        "planning": planning_guidance(run),
-        "next": command("cycle-end", "--run", str(run_dir)),
     }
+    if cycle.review.rerun is not None:
+        output["rerun"] = {"agents": list(cycle.review.rerun.agents)}
+    if pending:
+        output["next"] = command("review", "--run", str(run_dir))
+        return output
+    output["planning"] = planning_guidance(run)
+    output["next"] = command("cycle-end", "--run", str(run_dir))
+    return output
 
 
 def recover(run_dir: Path, *, operator_confirmed_stopped: str | None = None) -> dict[str, Any]:
@@ -1694,8 +1936,9 @@ def _next_step(run: RunRecord, existing: Sequence[CycleRecord], run_dir: Path) -
     if not existing or existing[-1].state == "ended":
         return command("cycle-begin", "--run", str(run_dir))
     if existing[-1].state == "reviewing":
-        if existing[-1].review.batch is not None:
-            # 全レビュアーが失敗したサイクル。review をやり直さずに止める
+        rerun = existing[-1].review.rerun
+        if existing[-1].review.batch is not None and (rerun is None or rerun.batch is not None):
+            # 全レビュアーが失敗したサイクル（再実行の後を含む）。review をやり直さずに止める
             return command(
                 "finish", "--run", str(run_dir), f"--abort={_failed_review_reason(existing[-1].review.reviewers)}"
             )
@@ -1749,7 +1992,7 @@ def parser() -> argparse.ArgumentParser:
     begin.add_argument("--controller-model", required=True, help="司令塔の正確なモデル ID")
     begin.add_argument("--controller-runtime", required=True, choices=RUNTIMES)
     begin.add_argument("--max-cycles", type=int, default=3)
-    begin.add_argument("--hold-action", choices=("skip", "fix"))
+    begin.add_argument("--hold-action", choices=("skip", "fix"), default="skip", help="Hold の方針（既定: skip）")
     begin.add_argument("--assign", action="append", default=[], metavar="ROLE=AGENT[,AGENT]")
     begin.add_argument("--template", type=Path, default=DEFAULT_TEMPLATE)
     begin.add_argument("--config", type=Path)
