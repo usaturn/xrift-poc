@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -1138,3 +1139,74 @@ def test_verify_reviewer_rejects_artifacts_that_do_not_belong_to_this_head(
     entry = loop.verify_reviewer(result, pr=pr, head=head, review_dir=env.review_dir)
 
     assert entry.verdict == "rejected", case
+
+
+@pytest.mark.parametrize("entrypoint", ["cleanup", "audit"])
+@pytest.mark.parametrize("locked", [False, True])
+def test_missing_output_parent_does_not_hide_registered_worktrees(
+    loop: Any, env: Any, tmp_path: Path, entrypoint: str, locked: bool
+) -> None:
+    from tools.agent_runner.workspace import create_worktree
+
+    run_dir = Path(env.start()["run_dir"])
+    run = loop.load_run(run_dir)
+    parent = tmp_path / "xrift-poc-pr-loop-owned"
+    worktree = create_worktree(env.parent, "HEAD", parent / "child\n日本語" / "worktree")
+    if locked:
+        subprocess.run(["git", "-C", str(env.parent), "worktree", "lock", str(worktree)], check=True)
+    other = create_worktree(env.parent, "HEAD", tmp_path / "other-run" / "worktree")
+    (other / "untracked").write_text("do not remove")
+    resource = loop.Resource(path=str(parent), cycle=1, state="created")
+    run.resources.append(resource)
+    shutil.rmtree(parent)
+    if entrypoint == "cleanup":
+        assert loop.cleanup_output(env.parent, resource, None, force=True) == [str(worktree)]
+    else:
+        assert loop.audit_resources(run) == [str(parent)]
+        # A retained resource still requires stop evidence on later calls.
+        assert loop.audit_resources(run) == [str(parent)]
+    assert resource.state == "retained"
+    assert str(worktree) in [str(path) for path in loop._registered_worktrees(env.parent)]
+    assert (other / "untracked").read_text() == "do not remove"
+    assert not parent.exists()
+
+
+@pytest.mark.parametrize("entrypoint", ["cleanup", "audit"])
+@pytest.mark.parametrize("failure", ["inaccessible", "dangling", "git_unavailable"])
+def test_missing_output_checks_fail_closed(loop: Any, env: Any, tmp_path: Path, entrypoint: str, failure: str) -> None:
+    run = loop.load_run(Path(env.start()["run_dir"]))
+    ancestor = tmp_path / "protected"
+    ancestor.mkdir()
+    parent = ancestor / "xrift-poc-pr-loop-owned"
+    gitdir = env.parent / ".git"
+    moved_gitdir = env.parent / "hidden-git"
+    if failure == "inaccessible":
+        parent.mkdir()
+        ancestor.chmod(0)
+    elif failure == "dangling":
+        parent.symlink_to(tmp_path / "absent-target", target_is_directory=True)
+    else:
+        gitdir.rename(moved_gitdir)
+    resource = loop.Resource(path=str(parent), cycle=1, state="created")
+    run.resources.append(resource)
+    try:
+        result = (
+            loop.cleanup_output(env.parent, resource, None, force=True)
+            if entrypoint == "cleanup"
+            else loop.audit_resources(run)
+        )
+        assert result == [str(parent)] and resource.state != "removed"
+    finally:
+        if failure == "inaccessible":
+            ancestor.chmod(0o755)
+        elif failure == "git_unavailable":
+            moved_gitdir.rename(gitdir)
+
+
+@pytest.mark.parametrize("entrypoint", ["cleanup", "audit"])
+def test_missing_parent_with_no_registration_is_removed(loop: Any, env: Any, tmp_path: Path, entrypoint: str) -> None:
+    run = loop.load_run(Path(env.start()["run_dir"]))
+    resource = loop.Resource(path=str(tmp_path / "xrift-poc-pr-loop-gone"), cycle=1, state="created")
+    run.resources.append(resource)
+    result = loop.cleanup_output(env.parent, resource, None) if entrypoint == "cleanup" else loop.audit_resources(run)
+    assert result == [] and resource.state == "removed"

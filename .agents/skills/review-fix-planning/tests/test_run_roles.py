@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -318,6 +319,92 @@ def test_binding_mismatch_is_rejected_before_reservation(inputs: Any, tmp_path: 
     with pytest.raises(ValueError):
         launch(inputs, tmp_path, config())
     assert json.loads(inputs[1].read_text())["activities"] == []
+
+
+@pytest.mark.parametrize("phase", ["implement", "self-review"])
+@pytest.mark.parametrize("failure", ["missing", "locked", "moved"])
+def test_environment_preflight_does_not_launch_or_consume_review(
+    inputs: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    phase: str,
+    failure: str,
+) -> None:
+    from tools.agent_runner.workspace import CheckoutAuditError, create_worktree
+
+    request, planning, fix_input = inputs
+    root = Path(request["repository"])
+    external = create_worktree(root, "HEAD", tmp_path / "旧 checkout\n移動前")
+    if failure == "locked":
+        git(root, "worktree", "lock", str(external))
+    if failure == "moved":
+        external.rename(tmp_path / "移動済み")
+    else:
+        shutil.rmtree(external)
+    before = planning.read_bytes()
+    adapter = FakeAdapter()
+    output = tmp_path / "run"
+    with pytest.raises(CheckoutAuditError):
+        mod.run(
+            config("a", "b"),
+            phase,
+            request,
+            output,
+            planning_file=planning,
+            fix_input=fix_input,
+            adapter_loader=adapter,
+        )
+    assert adapter.requests == []
+    assert not output.exists()
+    assert planning.read_bytes() == before
+    assert not planning.with_suffix(".json.review-lock").exists()
+
+    def fixture_config(*args: object, **kwargs: object) -> Config:
+        return config()
+
+    monkeypatch.setattr(mod, "load_config", fixture_config)
+    request_file, fix_file = tmp_path / "request.json", tmp_path / "fix-input.json"
+    request_file.write_text(json.dumps(request))
+    fix_file.write_text(json.dumps(fix_input))
+    assert (
+        mod.main(
+            [
+                "--phase",
+                phase,
+                "--request",
+                str(request_file),
+                "--output-dir",
+                str(output),
+                "--planning-file",
+                str(planning),
+                "--fix-input",
+                str(fix_file),
+                "--config",
+                str(tmp_path / "personal.toml"),
+            ]
+        )
+        == 1
+    )
+    report = json.loads(capsys.readouterr().out)
+    assert report["state"] == "failed" and report["category"] == "environment"
+    assert report["checkout_audit"][0]["path"] == str(external)
+    assert report["checkout_audit"][0]["kind"] == "unavailable_before"
+    assert report["checkout_audit"][0]["locked"] is (failure == "locked")
+    assert planning.read_bytes() == before
+    assert not output.exists()
+    if failure == "moved":
+        git(root, "worktree", "repair", str(tmp_path / "移動済み"))
+        batch = mod.run(
+            config("a", "b"),
+            phase,
+            request,
+            output,
+            planning_file=planning,
+            fix_input=fix_input,
+            adapter_loader=adapter,
+        )
+        assert batch.state == "success" and batch.outside_changes == [] and batch.checkout_audit == []
 
 
 def test_role_projection_keeps_fallback_and_rejects_lost_constraints() -> None:

@@ -36,7 +36,12 @@ from tools.agent_runner import (  # noqa: E402
 from tools.agent_runner.adapters import Adapter, load_adapter  # noqa: E402
 from tools.agent_runner.config import validate_config  # noqa: E402
 from tools.agent_runner.models import BatchResult  # noqa: E402
-from tools.agent_runner.workspace import WorkspaceError, resolve_revision  # noqa: E402
+from tools.agent_runner.workspace import (  # noqa: E402
+    CheckoutAuditError,
+    WorkspaceError,
+    require_auditable_checkouts,
+    resolve_revision,
+)
 
 
 def load_module(name: str, path: Path) -> Any:
@@ -264,6 +269,7 @@ def run(
         if not data.prompt.get(role, "").strip():
             raise RoleInputError("each selected role needs a complete prompt")
         role_prompts[role] = data.prompt[role]
+    require_auditable_checkouts(repository)
     context = None
     if phase == "self-review":
         if planning_file is None or fix_input is None:
@@ -402,6 +408,18 @@ def main(argv: list[str] | None = None) -> int:
             fix_input=read_json(args.fix_input) if args.fix_input else None,
         )
         saved = read_json(batch.artifact_dir / "roles.json")
+    except CheckoutAuditError as error:
+        print(
+            json.dumps(
+                {
+                    "state": "failed",
+                    "category": "environment",
+                    "checkout_audit": [finding.model_dump() for finding in error.findings],
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 1
     except (ConfigError, RunnerError, OSError, ValueError, findings.FindingsError) as error:
         reason = str(error) if isinstance(error, RoleInputError) else verifier.failure_category(error)
         print(
@@ -416,6 +434,7 @@ def main(argv: list[str] | None = None) -> int:
                 "artifact_dir": str(batch.artifact_dir),
                 "pending_self": list(saved["self_prompts"]),
                 "outside_changes": batch.outside_changes,
+                "checkout_audit": [finding.model_dump() for finding in batch.checkout_audit],
                 "review_changes": saved["review_changes"],
             },
             ensure_ascii=False,

@@ -26,7 +26,7 @@ from tools.agent_runner.process import execute, redact_file
 from tools.agent_runner.receipts import read_receipt
 from tools.agent_runner.workspace import (
     WorkspaceError,
-    changed_checkouts,
+    audit_checkouts,
     prepare_worktree,
     resolve_revision,
     snapshot_checkouts,
@@ -532,12 +532,14 @@ def run_workflow(
         if all(result.state == "self" for result in results)
         else ("success" if successful == len(results) else "partial_success" if successful else "failed")
     )
+    checkout_audit = audit_checkouts(before)
     return BatchResult(
         run_id=run_id,
         state=state,
         assignments={role: list(assigned.agents) for role, assigned in selected.assignments.items()},
         results=results,
-        outside_changes=changed_checkouts(before),
+        outside_changes=[finding.path for finding in checkout_audit],
+        checkout_audit=checkout_audit,
         elapsed_seconds=time.monotonic() - started,
         artifact_dir=artifact_dir,
     )

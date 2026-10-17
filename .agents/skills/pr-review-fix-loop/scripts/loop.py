@@ -936,8 +936,8 @@ def _stopped(batch: BatchResult) -> bool:
 
 
 def _registered_worktrees(root: Path) -> list[Path]:
-    listing = git_output(root, "worktree", "list", "--porcelain")
-    return [Path(line.removeprefix("worktree ")) for line in listing.splitlines() if line.startswith("worktree ")]
+    listing = git_output(root, "worktree", "list", "--porcelain", "-z")
+    return [Path(field.removeprefix("worktree ")) for field in listing.split("\x00") if field.startswith("worktree ")]
 
 
 def cleanup_output(
@@ -949,12 +949,33 @@ def cleanup_output(
     （force のときだけ --force）。秘密が残りうる sensitive_paths は消さずに残して報告する。
     """
     parent = Path(resource.path)
-    if not parent.exists():
-        resource.state = "removed"
-        return []
     if not parent.name.startswith(TMP_PREFIX) or parent.is_symlink():
         resource.state = "retained"
         resource.reason = "記録した出力ディレクトリの名前・種類が想定と違うので消さない"
+        return [str(parent)]
+    try:
+        parent.lstat()
+    except FileNotFoundError:
+        try:
+            registrations = [
+                str(path)
+                for path in _registered_worktrees(tool_root)
+                if path.absolute().is_relative_to(parent.absolute())
+            ]
+        except LoopError:
+            resource.state = "retained"
+            resource.reason = "Git登録を照合できないので回収完了としない"
+            return [str(parent)]
+        if registrations:
+            resource.state = "retained"
+            resource.reason = "親ディレクトリは不在だがGit登録が残る。移動・所有・停止の確認が必要"
+            return registrations
+        resource.state = "removed"
+        resource.reason = reason
+        return []
+    except OSError:
+        resource.state = "retained"
+        resource.reason = "親ディレクトリを調べられないので回収完了としない"
         return [str(parent)]
     if not force and (batch is None or not _stopped(batch)):
         return [str(parent)]
@@ -989,10 +1010,13 @@ def audit_resources(run: RunRecord) -> list[str]:
     """停止を確認できない資源の完全パス。停止を確認できた資源は、ここで回収し直す。"""
     unconfirmed: list[str] = []
     for resource in run.resources:
-        if resource.state != "created":
+        if resource.state == "removed":
             continue
         if not Path(resource.path).exists():
-            resource.state = "removed"
+            if cleanup_output(Path(run.tool_root), resource, None):
+                unconfirmed.append(resource.path)
+            continue
+        if resource.state != "created":
             continue
         batch = _read_batch(_output_dir(resource) / "result.json")
         if batch is None or not _stopped(batch):

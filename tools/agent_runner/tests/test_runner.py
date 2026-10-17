@@ -219,6 +219,15 @@ def test_unavailable_registered_checkout_does_not_prevent_cli_run(repository: Pa
         assert attempt.exit_code == 0 and attempt.stop_confirmed
         assert "literal prompt" in str(attempt.payload)
         assert batch.outside_changes == [str(external)]
+        assert [item.model_dump() for item in batch.checkout_audit] == [
+            {
+                "path": str(external),
+                "kind": "unavailable_before",
+                "reason": "git_unavailable",
+                "locked": False,
+                "prunable": False,
+            }
+        ]
     finally:
         gitfile.write_bytes(original)
 
