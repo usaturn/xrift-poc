@@ -153,6 +153,10 @@ def main() -> int:
             time.sleep(600)
     reason: dict[str, object] = {"kind": "completed"}
     text = json.dumps({"ok": True, "prompt": prompt, "secret": key})
+    if mode == "github-token":
+        token = os.environ.get("GH_TOKEN")
+        text = json.dumps({"github_token": token, "unlisted": os.environ.get("UNLISTED_SECRET")})
+        (state / "session.jsonl").write_text(json.dumps({"tool": token}) + "\n")
     if mode == "auth":
         reason = {"kind": "error", "error": {"code": "MISSING_CREDENTIAL", "message": "missing"}}
         text = ""

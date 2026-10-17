@@ -7,8 +7,8 @@
 | 引数 | 意味 |
 |---|---|
 | `--pr` | 必須。番号・`#番号`は親origin、URLはそのrepo。非対話で欠けたらfailed。別repoの同じ番号を探さない |
-| `--runtime` | 必須。claude-code / devin / pi / codex / cursor / grok-build |
-| `--model-name` | 現runtimeが提示した正確なモデルだけ。Codexは省略。Piは省略すれば実PI_MODELを使うがPI_PROVIDERも必須。指定値の不一致は拒否 |
+| `--runtime` | 必須。claude-code / devin / pi / dsh / codex / cursor / grok-build |
+| `--model-name` | 現runtimeが提示した正確なモデルだけ。Codex/DSH標準headlessは省略。Piは省略すれば実PI_MODELを使うがPI_PROVIDERも必須。指定値の不一致は拒否 |
 | `--request` | runnerが渡した実Request JSON。run_id/request_id/agent_id/roleを使用し、work_dir=cwd、result_shape=jsonを照合。非runnerなら省略し未観測をunknownにする |
 | `--review-commit` | 任意の40桁SHA。省略はresolve時のPR head。明示指定はPR全体の対象commitであり、commit単体diffの指定ではない |
 | `--source-root` | 対象commitを持つmain checkout。origin設定がPR base repoと一致すること。linked worktreeのunpushed objectはmain checkoutで共有される。省略は登録checkoutか一時clone |
@@ -20,6 +20,19 @@
 runnerのrequestはそのattemptに渡されたものだけを読む。callerがpathを示せばそれを使う。既存runnerでは起動cwdの親の `request.json` がそれに当たる。別attemptのrequestを探索しない。completeも起動時と同じcwdで呼ぶ。レビュー用WTは別の隔離領域であり、そこへcdしたままrequest検査を実行しない。
 
 helperの実行にはpydanticを持つ既存の `tools/devenv` projectを使用する。`TOPLEVEL` は**読んだskillのsource checkoutのroot**、`RUN_HELPER`も同じ版。レビュー対象repoや今のcwdからhelperの置き場所を推測しない。例えばcallerがfeature版skillを指定したときは、そのfeature版のhelperを使う。uvのPythonは3.14以上、lockを変更しない。
+
+DSH 標準 headless の場合、runner は Linux Dev Container の bubblewrap で、隔離 HOME/TMPDIR と controller が確定した対象 PR の正式保存先・通常ファイルの保存ロックだけを追加許可する。共有 `.git` 全体は許可しない。uv の cache/仮想環境は隔離 HOME 内に固定され、request/state/patch は bash から読み取り可能なまま保護される。モデルは自身の DSH_SESSION_ID/cwd に結び付いた v4 session の request/assistant 記録から helper が確定し、complete 前にも再照合する。Git 操作は専用 clone 内で行う。`--source-root` / 指定 commit も共有 Git metadata を書き換えず専用 clone に取得する。保存名は provider ごとに分離する。CLI 版など観測できない値は unknown。
+
+`loop.py review` は共通 `prepare-parent` で PR metadata、PR/参照 Issue の本文・コメント、判断の記録、固定 HEAD/base/指定 commit の Git bundle を取得する。対象 PR 自身の取得失敗は止めるが、参照 Issue の取得・形の失敗では止めず、理由付きの未取得として渡す。`Request.prompt` 末尾の JSON に `parent_pr_data: {path, sha256}` を置き、子は snapshot/bundle の digest と対象を照合する。GitHub token は子へ渡さず、子の prepare/complete は GitHub API・remote fetch を呼ばない。snapshot は読み取り専用、存在するパスだけでは受理しない。認証値は保存しない。
+
+通常 runner の caller も、認証済み親で次を呼び、返された descriptor を依頼の末尾 JSON の `parent_pr_data` に入れる。必要な正式保存先・保存ロックを起動前に許可し、DSH の env へ GitHub token を追加しない。loop はこの準備を自動で行う。権限拒否・認証不足を別 HOME/cache/cwd やフルアクセスで回避しない。
+
+```bash
+uv run --project "$TOPLEVEL/tools/devenv" --locked python "$RUN_HELPER" prepare-parent \
+  --pr "$PR_ARG" --output-dir "$NEW_INPUT_DIR"
+```
+
+`NEW_INPUT_DIR` は新しい所有ディレクトリ。任意の `--source-root` / `--review-commit` / `--records-comments` は親準備に渡す。子には同じ review-commit を渡す。DSH は private clone/session を対象 PR directory の `.staging/<run>/<request>/<agent>/` に作る。既存の限定 grant の内側であり、共有 `.git` は許可しない。staged Git tree を runtime の秘密値除去対象に混ぜず、通常の tracked symlink を sensitive spill と取り違えない。
 
 ## prepare
 
@@ -34,9 +47,9 @@ uv run --project "$TOPLEVEL/tools/devenv" --locked python "$RUN_HELPER" prepare 
   --records-comments "$COMMENTS_JSON"
 ```
 
-Codexはmodel-nameを省き、Piも現在envから読むときは省く。通常headならreview-commitを省く。非runnerならrequestを省く。source-rootやrecords-commentsも省略できる。既存の `pr_review_workspace.py create --target` / legacy呼び方は他callerの互換のため残すが、このskillの別手順にはしない。
+Codex/DSH標準headlessはmodel-nameを省き、Piも現在envから読むときは省く。通常headならreview-commitを省く。非runnerならrequestを省く。source-rootやrecords-commentsも省略できる。既存の `pr_review_workspace.py create --target` / legacy呼び方は他callerの互換のため残すが、このskillの別手順にはしない。
 
-成功はexit0・`status: prepared`。返されたstate_file / worktree / draft / findings_draft / previous_review / destination / reviewer / reviewed_head / pr_head / base / records / diff_commandをそのまま使う。モデル名・パス・対象を作り直さない。prepareはresolve、origin/commit object照合、PR head fetch、API head照合、fresh detached worktree、destination snapshot、merge-base、v2候補scaffoldを作る。merge-base用のbase fetchは、そのfresh worktreeの専用refに固定し、共有の追跡ref・tag・FETCH_HEADを更新しない。専用refは既存helperのworktree cleanupで一緒に消える。
+成功はexit0・`status: prepared`。DSH は取得済み bundle を private clone に読み、PR/Issue の要件を返された `requirements.pr` / `requirements.issues` から読む。親が取得できなかった参照 Issue は `requirements.unavailable`（repository・number・reason）にあり、coverage の declined に書く。raw snapshot の comments や他モデルの成果を読まない。返されたstate_file / worktree / draft / findings_draft / previous_review / destination / reviewer / reviewed_head / pr_head / base / records / diff_commandをそのまま使う。モデル名・パス・対象を作り直さない。prepareはresolve、origin/commit object照合、PR head fetch、API head照合、fresh detached worktree、destination snapshot、merge-base、v2候補scaffoldを作る。merge-base用のbase fetchは、そのfresh worktreeの専用refに固定し、共有の追跡ref・tag・FETCH_HEADを更新しない。専用refは既存helperのworktree cleanupで一緒に消える。
 
 - 本体・参照の変数はprepareの値に対応する。WT=worktree、BASE=base、REVIEWED_HEAD=reviewed_head、PR_HEAD=pr_head、PREVIOUS_REVIEW=previous_review（nullなら空）。呼び出しを跨いでシェル変数が残るとは仮定しない。
 - `diff_command` は `git -C <WT> diff --find-renames <base>..<reviewed_head>`。全体を読み、変更ファイルは全文を読む。指定commitにliveのgh pr diffを混ぜない。
@@ -61,6 +74,8 @@ uv run --project "$TOPLEVEL/tools/devenv" --locked python "$RUN_HELPER" complete
 ```
 
 completeはrequestのbytes/hashとbinding、読んだ主要skillのhash、候補の固定項目とcoverageを検査する。同じv2 reviewer/provenance/timingを候補と本文の自動生成 `Review timing` に記録してから、既存helperのsave --findingsを呼ぶ。lock内でworktree commit、現在のPR head、destination fingerprint、候補schema/pairを検査し、両ファイルを保存する。候補コピー後に本文保存が失敗すれば既存のrollbackを使う。成功後だけhelperのcleanupを呼ぶ。
+
+DSH の子 complete は自身の Identity、Request、snapshot、coverage を検査し、draft の digest を固定して `status: staged`・state_file を返す。子は保存・cleanup せず、この JSON をそのまま最終応答にする。親の `finalize-parent --result <result.json>` が実試行の停止・sensitive cleanup・Request・runner Identity・対象・draft digest を照合し、同じ complete の通常 save/cleanup 部分を行う。API HEAD 検査は親の保存ロック内に残し、古い HEAD の正式成果は保存しない。snapshot を live HEAD 照合の代用にはしない。
 
 本文のReview timingを二重に手書きしない。全体予算・調査期限・phase内訳・委譲状態/省略理由・超過理由はReview coverageへ書き、自動生成の実測と区別する。timingはprepare開始からdraft確定までの実測UTC/経過秒数、waiting_secondsは未計測ならnull。save_seconds / cleanup_seconds / total_secondsは最終payloadの別計測であり、本文を保存後に追記しない。
 
@@ -97,7 +112,7 @@ stateがある場合は `--state "$STATE_FILE"` を追加する。非runnerな�
 ## callerが結果を回収するとき
 
 1. runnerの外側state、exit_code、stop_confirmedを確認する。missing_result/invalid_result/timed_out/停止未確認を空レビューにしない。
-2. payload.statusも確認する。外側がsuccessでもpayload.failedならレビュー成功ではない。prepared objectはレビュー完了ではない。
+2. payload.statusも確認する。外側がsuccessでもpayload.failedならレビュー成功ではない。prepared / staged object はレビュー完了ではない。DSH の停止済み staged は共通 `finalize-parent` を通し、更新された result.json の success だけを回収する。loop は親保存を必ず行い、通常 runner の雛形 after_run は finalize-parent → attach-runner の順。after_run を無効にした直接 caller は親保存を明示実行する。
 3. payloadのrun/request/agent/roleを実Request/実担当Resultへ照合し、repo/PR/対象commitも依頼と一致することを確かめる。要求した担当とfallback後の実担当を混同しない。
 4. successだけ成果2件とschema/pairを回収する。active件数だけでは完了の根拠にならない。保存済み成果を後から直接書き換えない。
 5. provider/effort/session/CLIの未観測を設定で補わない。runnerが事後に観測したIdentityは外側結果として別に保持し、workerが観測できなかった欄を実測済みと扱わない。主要skillのpath/hashとprovenance.skillsは同じ値。runnerの観測値は、下の `attach-runner` が実行記録の `runner` 欄にだけ書く。
@@ -113,6 +128,6 @@ runnerの `result.json` の各試行を、run_id/request_id/agent_id/roleが `re
 - 書き先は親のmain worktreeの `reviews/<owner>/<repo>/#<PR>-<branch>/runs/*.json` のうち、形式を満たし置き場所とPRが合う記録だけ。workerが返したパスは使わない。対象外のファイルは `skipped` に数えるだけ
 - 同じ値なら書かず `unchanged`。違う値が既にあれば、どのファイルにも書かずstatus=failed（終了コード1）
 - 一致する記録の無い試行（PRが決まる前の失敗など）は `unmatched` にIDとstateを並べるだけ
-- 雛形の workflow `review` は、runnerの後処理（`after_run`）でこのコマンドを自動で呼ぶ。個人設定で止めた場合は、runの後にcallerが呼ぶ
+- 雛形の workflow `review` は、runnerの後処理（`after_run`）で親の finalize-parent の後にこのコマンドを呼ぶ。個人設定で止めた直接 caller は、runの後に finalize-parent と attach-runner を順に呼ぶ。loop の親保存は after_run の無効化とは独立して必ず行う
 
 停止条件: API/認証失敗、model未観測、wrong repo、commit object無し、moving PR head、worktree commit変更、request変更、skill変更、destination変更、成果欠落/不整合、cleanup拒否。いずれも利用者への確認待ちにせずfailedで終了する。

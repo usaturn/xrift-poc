@@ -14,7 +14,7 @@ import tempfile
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TypedDict, cast
 
@@ -244,6 +244,8 @@ def run_workflow(
     output_dir: Path | None = None,
     cancel: threading.Event | None = None,
     adapter_loader: Callable[[str], Adapter] = load_adapter,
+    environment: Mapping[str, str] | None = None,
+    sandbox_write_paths: tuple[Path, ...] = (),
 ) -> BatchResult:
     """Execute a batch synchronously; keep every artifact/worktree, even on failure.
 
@@ -284,7 +286,8 @@ def run_workflow(
     # Checkout helpers inherit the safe Git environment, not the agent's
     # allowlist. Children inherit the literal exec environment; ambient
     # credentials from either source are scrubbed from retained artifacts.
-    secrets = secret_values(dict(os.environ)) | secret_values(literal_environ())
+    ambient = {**literal_environ(), **(environment or {})}
+    secrets = secret_values(dict(os.environ)) | secret_values(ambient)
 
     async def attempt(role_name: str, agent_id: str, request_id: str, number: int, until: float) -> Attempt:
         attempt_started = time.monotonic()
@@ -349,6 +352,11 @@ def run_workflow(
                 f"writes={role.writes}: {'changes are permitted here' if role.writes else 'do not modify files'}. "
                 "This is an instruction, not a sandbox.\n\n"
             )
+            if agent.runtime == "dsh":
+                instructions += (
+                    "Runtime-owned HOME/cache/temp and caller-authorized review outputs/lock are permitted "
+                    "write exceptions. Do not alter request/state/patch or retry sandbox denials.\n\n"
+                )
             request = Request(
                 run_id=run_id,
                 request_id=request_id,
@@ -360,15 +368,22 @@ def run_workflow(
                 result_shape=role.result_shape,
             )
             request_path.write_text(request.model_dump_json(), encoding="utf-8")
-            context = AdapterContext(request, agent, role, work_dir, directory / "receipt.json")
+            env = {"PATH": os.defpath}
+            env.update({name: ambient[name] for name in agent.env if name in ambient and not name.startswith("GIT_")})
+            context = AdapterContext(
+                request,
+                agent,
+                role,
+                work_dir,
+                directory / "receipt.json",
+                sandbox_write_paths if agent.runtime == "dsh" else (),
+                environment=env,
+            )
             spec = adapter.prepare(context)
             if context.receipt_path.exists() or context.receipt_path.is_symlink():
                 return finished("invalid_result")
             if not spec.argv or any(argument == prompt or request.prompt in argument for argument in spec.argv):
                 return finished("launch_failed")
-            env = {"PATH": os.defpath}
-            ambient = literal_environ()
-            env.update({name: ambient[name] for name in agent.env if name in ambient and not name.startswith("GIT_")})
             env.update({name: value for name, value in spec.env.items() if not name.startswith("GIT_")})
             secrets.update(secret_values(spec.env))
             env["AGENT_RUNNER_DEPTH"] = "1"

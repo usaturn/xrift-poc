@@ -221,9 +221,27 @@ DSH `0.2.0-rc.2` の `dsh --profile headless --patch <file> --json -` を使う
 その workflow の `run` に `--assign <role>=dsh-ccd` を付けて選ぶ。
 既存の `dshccd` / `dshgo`、pi agent、workflow の既定割り当ては変更しない。
 
-PR レビュー（workflow `review` の `inspect`）のレビュアーと PR 修正ループの司令塔には使えない。
-pr-review の helper の `--runtime` とループの `--controller-runtime` は `dsh` を受け付けず、
-標準 headless の JSONL からはレビューの記録に必要なモデル名を観測できない（後述の Identity）。
+PR レビュー（workflow `review` の `inspect`）では、個人設定に次を指定すれば
+通常の PR 修正ループから利用できる。追加の `--assign` や手動 DSH 起動は不要。
+
+```toml
+[workflows.review.assignments.inspect]
+agents = ["dsh-ccd", "dsh-go"]
+```
+
+pr-review は `--runtime dsh` を正式に扱い、自身の session 記録から正確なモデルを取得する。
+保存名は provider/model ごとに分離し、同じ経路の再レビューは既存 history・判断の記録を引き継ぐ。
+loop は通常 helper の prepare→complete→cleanup、成果 pair と実測 Identity の照合、after_run の成功を検査する。
+認証不足や後処理失敗、停止未確認を「指摘なし」や accepted にしない。
+DSH を PR 修正ループの司令塔にする対応は対象外で、`--controller-runtime dsh` は受け付けない。
+
+GitHub の照会は認証済み親で行う。loop と通常 runner の共通 `prepare-parent` が
+PR metadata・PR/参照 Issue の要件・コメント・Git bundle を固定 HEAD/base に結び付け、
+読み取り専用 snapshot の descriptor を Request.prompt に渡す。子に GitHub token は渡さない。
+子は digest/対象を照合してローカル bundle から private clone を作り、精読後に staged を返す。
+親が停止・実測 Identity・Request/draft と現在の PR HEAD を再確認して通常 save/cleanup を行う。
+staged や runner exit 0 はレビュー成功ではない。通常 runner の呼び方は
+[非対話入口](../.agents/skills/pr-review/references/noninteractive.md)を参照する。
 
 認証はそれぞれ `COMMANDCODE_API_KEY` / `OPENCODE_API_KEY` を起動元の環境に設定し、
 agent の `env` にその名前を指定する。値は TOML や argv に書かない。
@@ -254,6 +272,17 @@ agent の `env` にその名前を指定する。値は TOML や argv に書か�
 停止を確認できないあいだは `home/` も `tmp/` の中も削除しない。
 
 承認 policy は `never` とし、workspace-write のまま承認を必要とする操作を拒否する。
+Linux Dev Container では標準 sandbox-local の runnerCommand を使い、bubblewrap に
+attempt 所有の HOME/TMPDIR だけを追加 bind する。PR レビュー時は controller が確定した
+対象 PR の正式レビュー directory と保存ロックの通常ファイルだけも追加する。
+request/state/patch は読み取り専用 bind で、per-call の /tmp がそれらを隠さないようにする。
+共有 HOME・他 PR の保存先・共有 .git 全体は writable にしない。
+uv の UV_CACHE_DIR と UV_PROJECT_ENVIRONMENT は隔離 HOME 内へ固定する。
+Git 操作は対象 PR directory の Request ごとの `.staging/` に作る専用 clone 内で行い、
+親が通常 helper の保存・検査・cleanup を行う。正式保存先以外の新しい grant は加えない。
+追加 grant は起動前に固定し、read-only の呼び出しでは適用しない。
+bubblewrap 不在、不正 profile、リンク・欠落した grant は unconfined に fallback せず失敗する。
+拒否後に cache/cwd/sandbox を変えて再試行しない。
 承認待ちの入力には切り替えない。role の `writes` は共通仕様どおり指示であり、
 DSH を読み取り専用にする sandbox の保証ではない。
 対応 provider は上記の二つ。管理する起動設定の上書きを避けるため、
@@ -271,19 +300,25 @@ JSON の payload は、最終応答の全文、または本文中の `` ```json 
 この順に読み、最初に object として読めたものにする（pi・Claude Code・Devin の adapter と同じ候補順）。
 空の object、重複したキーや `NaN` を含む JSON、フェンスに入っていない前置き付きの JSON は成功にしない。
 text の payload は最終応答をそのまま返す。
-標準 headless の JSONL で観測できる Identity は `session_id` だけで、
-`model` / `provider` / `effort` / `cli_version` は `null`、`skill_versions` は空になる。
+自身の隔離 session.v4.jsonl の id/cwd と stdout の session_id を照合し、
+解決済み request header と assistant message source が一致する model/provider、同じ header の effort を観測する。
+`cli_version` は `null`、`skill_versions` は空。ログが無い一般用途は Identity の unknown/null を維持するが、
+通常の PR レビューでモデルが観測できなければ helper と loop は成功にしない。
 指定した設定値や親の `PI_PROVIDER` / `PI_MODEL` から推測しない。
 
 ### レビューの後処理
 
 雛形の workflow `review` は、run の終了後に後処理（`after_run`）として
-pr-review の `review_run.py attach-runner --result <result.json>` を呼ぶ。
+pr-review の `review_run.py finalize-parent --result <result.json>`、
+`attach-runner --result <result.json>` を順に呼ぶ。前者は DSH staged payload を親で保存・cleanup し、
+result.json の payload を更新する（プロセスの実測 state/exit は変えない）。
 各レビュアーの実行記録（`reviews/<owner>/<repo>/#<PR>-<branch>/runs/`）に、
 ランナーが観測した model・effort・session・CLI の版と試行の結果を書く（#601）。
-後処理が失敗・期限切れになっても run の終了コードと `result.json` は変わらず、
+後処理が失敗・期限切れになっても run の終了コード・プロセスの実測 state は変わらず、
 標準出力の JSON summary の `after_run` に結果とログのパスが出る。
-止めるときは個人設定に次を書き、必要なら run の後に同じコマンドを手で呼ぶ。
+止めるときは個人設定に次を書く。直接 runner を使う DSH caller は、run の後に
+finalize-parent と attach-runner を順に呼ぶ。loop は親保存を必ず行うため、この設定で止まるのは
+観測値の追記だけである。
 
 ```toml
 [workflows.review]

@@ -91,6 +91,46 @@ def test_real_process_state_and_stdin(
         _assert_stopped(pid)
 
 
+def test_explicit_provider_key_is_used_without_ambient_credentials(
+    config: Config, repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(environ, "_literal", {"PATH": os.defpath})
+    result = run_workflow(
+        config,
+        "test",
+        "respond",
+        repository,
+        output_dir=tmp_path / "run",
+        environment={"COMMANDCODE_API_KEY": "explicit-test-credential"},
+    )
+    assert result.state == "success"
+    attempt = result.results[0].attempts[0]
+    assert isinstance(attempt.payload, dict) and attempt.payload["secret"] == "[REDACTED]"
+    assert "explicit-test-credential" not in result.model_dump_json()
+
+
+def test_explicit_auth_environment_is_allowlisted_and_redacted(
+    config: Config, repository: Path, tmp_path: Path
+) -> None:
+    config.agents["a"].env.append("GH_TOKEN")
+    config.agents["a"].command[-1] = "github-token"
+    result = run_workflow(
+        config,
+        "test",
+        "respond",
+        repository,
+        output_dir=tmp_path / "run",
+        environment={"GH_TOKEN": "private-github-token", "UNLISTED_SECRET": "do-not-inherit"},
+    )
+    attempt = result.results[0].attempts[0]
+    assert attempt.state == "success" and attempt.stop_confirmed
+    assert attempt.payload == {"github_token": "[REDACTED]", "unlisted": None}
+    assert attempt.request_path is not None
+    assert "private-github-token" not in result.model_dump_json()
+    for name in ("stdout.log", "request.json", "dsh/state/session.jsonl"):
+        assert "private-github-token" not in (attempt.request_path.parent / name).read_text()
+
+
 def test_private_session_artifacts_are_redacted(config: Config, repository: Path, tmp_path: Path) -> None:
     result = run_workflow(config, "test", "respond", repository, output_dir=tmp_path / "run")
     attempt = result.results[0].attempts[0]

@@ -12,6 +12,7 @@ import pytest
 
 from tools.agent_runner.config import load_config
 from tools.agent_runner.models import Attempt, BatchResult, Identity, Request, Result
+from tools.test_support.dsh import write_session
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "review_run.py"
 ROOT = Path(__file__).resolve().parents[4]
@@ -117,6 +118,406 @@ def prepared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     }
 
 
+def parent_input(prepared: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    args = review_run.parser().parse_args(
+        [
+            "prepare-parent",
+            "--pr",
+            prepared["args"].pr,
+            "--source-root",
+            str(prepared["source"]),
+            "--records-comments",
+            str(prepared["comments"]),
+            "--output-dir",
+            str(tmp_path / "parent-input"),
+        ]
+    )
+    args.requirements = {"pr": {"body": "日本語のPR本文\n", "closingIssuesReferences": []}, "issues": []}
+    descriptor = review_run.prepare_parent(args)
+    request = Request.model_validate_json(prepared["request_path"].read_text())
+    request.prompt = "日本語の依頼\n```json\n" + json.dumps({"parent_pr_data": descriptor}) + "\n```\n"
+    prepared["request_path"].write_text(request.model_dump_json())
+    prepared["args"].runtime = "dsh"
+    prepared["args"].model_name = None
+    prepared["args"].temp_root = str(prepared["request_path"].parent / "dsh" / "tmp")
+    home = tmp_path / "identity"
+    write_session(home, prepared["caller"], provider="commandcode", model="actual/model")
+    for key, value in {
+        "DSH_HOME": str(home),
+        "DSH_SESSION_ID": "session-test",
+        "DSH_SHELL": "1",
+        "DSH_PROFILE": "headless",
+    }.items():
+        monkeypatch.setenv(key, value)
+    for key in ("GH_TOKEN", "GITHUB_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+    return descriptor
+
+
+def staged_batch(prepared: dict[str, Any], staged: dict[str, Any]) -> BatchResult:
+    request = Request.model_validate_json(prepared["request_path"].read_text())
+    return BatchResult(
+        run_id=request.run_id,
+        state="success",
+        assignments={"inspect": [request.agent_id]},
+        results=[
+            Result(
+                request_id=request.request_id,
+                role="inspect",
+                requested_agent=request.agent_id,
+                actual_agent=request.agent_id,
+                state="success",
+                attempts=[
+                    Attempt(
+                        agent_id=request.agent_id,
+                        state="success",
+                        identity=Identity(
+                            provider="commandcode", model="actual/model", effort="high", session_id="session-test"
+                        ),
+                        exit_code=0,
+                        elapsed_seconds=1.0,
+                        stop_confirmed=True,
+                        work_dir=prepared["caller"],
+                        request_path=prepared["request_path"],
+                        payload=staged,
+                    )
+                ],
+            )
+        ],
+        outside_changes=[],
+        elapsed_seconds=1.0,
+        artifact_dir=prepared["request_path"].parent,
+    )
+
+
+def test_parent_bundle_child_needs_no_github_and_parent_saves(
+    prepared: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent_input(prepared, tmp_path, monkeypatch)
+    target = review_run.workspace.load_review_target()
+    live = target.fetch_pull_request
+
+    def unavailable(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("child must not query GitHub")
+
+    monkeypatch.setattr(target, "fetch_pull_request", unavailable)
+    monkeypatch.setattr(review_run, "command", unavailable)
+    # Even removing the PR's remote ref must not break the local bundled input.
+    git(prepared["remote"], "update-ref", "-d", "refs/pull/7/head")
+    result = review_run.prepare(prepared["args"])
+    assert result["status"] == "prepared", result.get("reason")
+    assert result["base"] == git(prepared["source"], "rev-parse", "main")
+    mark_reviewed(result)
+    staged = review_run.complete(argparse.Namespace(state=result["state_file"]))
+    assert staged["status"] == "staged", staged
+    assert not Path(result["destination"]).exists()
+    assert Path(result["worktree"]).exists()
+    monkeypatch.setattr(target, "fetch_pull_request", live)
+    batch = staged_batch(prepared, staged)
+    review_run.finalize_parent_batch(batch)
+    completed = batch.results[0].attempts[0].payload
+    assert isinstance(completed, dict) and completed["status"] == "success", completed
+    assert completed["cleanup"] == "success"
+    assert Path(str(completed["review_file"])).is_file()
+    assert Path(str(completed["findings_file"])).is_file()
+    assert not Path(result["worktree"]).exists()
+
+
+def test_parent_bundle_from_shallow_checkout_is_complete(
+    prepared: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = prepared["source"]
+    for index in range(2):
+        (source / "README.md").write_text(f"change {index}\n")
+        git(source, "add", "README.md")
+        git(source, "commit", "-m", f"change {index}")
+    prepared["head"] = git(source, "rev-parse", "HEAD")
+    git(source, "push", str(prepared["remote"]), "+feature:feature", "+feature:refs/pull/7/head")
+    target = review_run.workspace.load_review_target()
+    original = target.fetch_pull_request
+
+    def current_pr(repository: str, number: int, **kwargs: Any) -> Any:
+        return original(repository, number, **kwargs)._replace(head_sha=prepared["head"])
+
+    monkeypatch.setattr(target, "fetch_pull_request", current_pr)
+    shallow = tmp_path / "shallow-source"
+    subprocess.run(
+        ["git", "clone", "--quiet", "--depth=1", "--no-single-branch", source.as_uri(), str(shallow)], check=True
+    )
+    git(shallow, "remote", "set-url", "origin", f"https://github.com/{REPOSITORY}.git")
+    before = (shallow / ".git" / "shallow").read_bytes()
+    prepared["source"] = shallow
+    parent_input(prepared, tmp_path, monkeypatch)
+    result = review_run.prepare(prepared["args"])
+    assert result["status"] == "prepared", result.get("reason")
+    assert (shallow / ".git" / "shallow").read_bytes() == before
+    mark_reviewed(result)
+    staged = review_run.complete(argparse.Namespace(state=result["state_file"]))
+    batch = staged_batch(prepared, staged)
+    review_run.finalize_parent_batch(batch)
+    payload = batch.results[0].attempts[0].payload
+    assert isinstance(payload, dict) and payload["status"] == "success", payload
+
+
+def test_parent_preparation_collects_pr_and_referenced_issues(
+    prepared: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def github(argv: list[str]) -> str:
+        if argv[:3] == ["gh", "pr", "view"]:
+            return json.dumps(
+                {
+                    "body": "Closes #42\n日本語\n背景色は `#999999` にする",
+                    "closingIssuesReferences": [{"number": 42, "url": f"https://github.com/{REPOSITORY}/issues/42"}],
+                }
+            )
+        if argv[:4] == ["gh", "issue", "view", "42"]:
+            return json.dumps({"body": "実入力の条件\n第二行", "comments": [{"body": "承認済み"}]})
+        if argv[:4] == ["gh", "issue", "view", "999999"]:
+            raise review_run.workspace.WorkspaceError("gh failed: GraphQL: Could not resolve to an issue")
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(review_run, "command", github)
+    args = review_run.parser().parse_args(
+        [
+            "prepare-parent",
+            "--pr",
+            prepared["args"].pr,
+            "--source-root",
+            str(prepared["source"]),
+            "--records-comments",
+            str(prepared["comments"]),
+            "--output-dir",
+            str(tmp_path / "requirements"),
+        ]
+    )
+    descriptor = review_run.prepare_parent(args)
+    snapshot = json.loads(Path(descriptor["path"]).read_text())
+    assert snapshot["requirements"]["pr"]["body"] == "Closes #42\n日本語\n背景色は `#999999` にする"
+    assert snapshot["requirements"]["issues"][0]["body"] == "実入力の条件\n第二行"
+    assert snapshot["requirements"]["issues"][0]["repository"] == REPOSITORY
+    # 色の #数字 は Issue として読めない。親準備は止めず、理由付きの未取得として子へ渡す
+    assert [(item["repository"], item["number"]) for item in snapshot["requirements"]["unavailable"]] == [
+        (REPOSITORY, 999999)
+    ]
+
+
+def fake_requirements_gh(pr: Any, issues: dict[tuple[str, str], Any]) -> tuple[Any, list[list[str]]]:
+    """parent_requirements の gh。値が例外なら送出し、文字列ならそのまま、それ以外は JSON にして返す。"""
+    calls: list[list[str]] = []
+
+    def answer(value: Any) -> str:
+        if isinstance(value, Exception):
+            raise value
+        return value if isinstance(value, str) else json.dumps(value)
+
+    def github(argv: list[str]) -> str:
+        calls.append(argv)
+        if argv[:3] == ["gh", "pr", "view"]:
+            return answer(pr)
+        if argv[:3] == ["gh", "issue", "view"]:
+            return answer(issues[(argv[argv.index("--repo") + 1], argv[3])])
+        raise AssertionError(argv)
+
+    return github, calls
+
+
+ACCEPTED_BODY = "日本語の説明\n複数行の本文\nCloses #42\nother/repo#333333 は別リポジトリの裸参照\n"
+ISSUE_42 = {"body": "受け入れ条件\n第二行", "comments": [{"body": "承認済み"}]}
+
+
+@pytest.mark.parametrize(
+    ("addition", "failing", "answer"),
+    [
+        (
+            "背景色は `#333333` にする\n",
+            (REPOSITORY, "333333"),
+            review_run.workspace.WorkspaceError("gh failed: GraphQL: Could not resolve (token ghp_secretvalue)"),
+        ),
+        (
+            "参照: https://github.com/usaturn/private-nonexistent-repo/issues/1\n",
+            ("usaturn/private-nonexistent-repo", "1"),
+            review_run.workspace.WorkspaceError("gh failed: GraphQL: Could not resolve to a Repository"),
+        ),
+        ("関連 #77\n", (REPOSITORY, "77"), "not JSON"),
+        ("関連 #77\n", (REPOSITORY, "77"), {"body": 5, "comments": []}),
+        ("関連 #77\n", (REPOSITORY, "77"), {"body": "本文だけ"}),
+        ("関連 #77\n", (REPOSITORY, "77"), {"comments": []}),
+        ("関連 #77\n", (REPOSITORY, "77"), ["not", "an", "object"]),
+    ],
+    ids=["color", "inaccessible-url", "not-json", "body-type", "comments-missing", "body-missing", "not-object"],
+)
+def test_parent_requirements_unavailable_issue_does_not_abort(
+    monkeypatch: pytest.MonkeyPatch, addition: str, failing: tuple[str, str], answer: Any
+) -> None:
+    github, calls = fake_requirements_gh(
+        {"body": ACCEPTED_BODY + addition, "closingIssuesReferences": []},
+        {(REPOSITORY, "42"): ISSUE_42, failing: answer},
+    )
+    monkeypatch.setattr(review_run, "command", github)
+    requirements = review_run.parent_requirements(f"https://github.com/{REPOSITORY}/pull/7", REPOSITORY, 7)
+    assert requirements["pr"]["body"] == ACCEPTED_BODY + addition
+    assert requirements["issues"] == [{"repository": REPOSITORY, "number": 42, **ISSUE_42}]
+    [unavailable] = requirements["unavailable"]
+    assert (unavailable["repository"], str(unavailable["number"])) == failing
+    assert isinstance(unavailable["reason"], str) and unavailable["reason"]
+    # gh の出力は理由に写さない（秘密値が混ざりうる）
+    assert "ghp_secretvalue" not in json.dumps(requirements)
+    # 別リポジトリの裸参照 owner/repo#N は取得しない
+    assert sorted(call[3] for call in calls if call[:3] == ["gh", "issue", "view"]) == sorted(["42", failing[1]])
+
+
+def test_parent_requirements_empty_nullable_bodies(monkeypatch: pytest.MonkeyPatch) -> None:
+    closing = [{"number": 42, "url": f"https://github.com/{REPOSITORY}/issues/42"}]
+    github, _calls = fake_requirements_gh(
+        {"body": None, "closingIssuesReferences": closing},
+        {(REPOSITORY, "42"): {"body": None, "comments": [{"body": "コメント"}]}},
+    )
+    monkeypatch.setattr(review_run, "command", github)
+    requirements = review_run.parent_requirements(f"https://github.com/{REPOSITORY}/pull/7", REPOSITORY, 7)
+    assert requirements["pr"] == {"body": "", "closingIssuesReferences": closing}
+    assert requirements["issues"] == [
+        {"repository": REPOSITORY, "number": 42, "body": "", "comments": [{"body": "コメント"}]}
+    ]
+    assert requirements["unavailable"] == []
+
+
+@pytest.mark.parametrize(
+    "pr",
+    [
+        review_run.workspace.WorkspaceError("gh failed: API unavailable"),
+        "not JSON",
+        ["not", "an", "object"],
+        {"body": 5, "closingIssuesReferences": []},
+        {"closingIssuesReferences": []},
+        {"body": "本文"},
+        {"body": "本文", "closingIssuesReferences": [{"url": "https://example.com/issues/1"}]},
+        {"body": "本文", "closingIssuesReferences": ["not an object"]},
+    ],
+    ids=[
+        "api",
+        "not-json",
+        "not-object",
+        "body-type",
+        "body-missing",
+        "closing-missing",
+        "closing-url",
+        "closing-entry",
+    ],
+)
+def test_parent_requirements_required_pr_failure_still_aborts(monkeypatch: pytest.MonkeyPatch, pr: Any) -> None:
+    github, _calls = fake_requirements_gh(pr, {})
+    monkeypatch.setattr(review_run, "command", github)
+    with pytest.raises(review_run.FAILURES):
+        review_run.parent_requirements(f"https://github.com/{REPOSITORY}/pull/7", REPOSITORY, 7)
+
+
+def test_staged_git_tree_does_not_pollute_runtime_sensitive_cleanup(
+    prepared: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tools.agent_runner.runner import _redact_runtime_tree  # pyright: ignore[reportPrivateUsage]
+
+    source = prepared["source"]
+    (source / "readme-link").symlink_to("README.md")
+    git(source, "add", "readme-link")
+    git(source, "commit", "-m", "tracked symbolic link")
+    prepared["head"] = git(source, "rev-parse", "HEAD")
+    git(source, "push", str(prepared["remote"]), "+feature:feature", "+feature:refs/pull/7/head")
+    target = review_run.workspace.load_review_target()
+    original = target.fetch_pull_request
+
+    def current_pr(repository: str, number: int, **kwargs: Any) -> Any:
+        return original(repository, number, **kwargs)._replace(head_sha=prepared["head"])
+
+    monkeypatch.setattr(target, "fetch_pull_request", current_pr)
+    parent_input(prepared, tmp_path, monkeypatch)
+    result = review_run.prepare(prepared["args"])
+    assert result["status"] == "prepared", result.get("reason")
+    mark_reviewed(result)
+    staged = review_run.complete(argparse.Namespace(state=result["state_file"]))
+    assert staged["status"] == "staged"
+    assert _redact_runtime_tree(prepared["request_path"].parent / "dsh", ()) == []
+    batch = staged_batch(prepared, staged)
+    review_run.finalize_parent_batch(batch)
+    payload = batch.results[0].attempts[0].payload
+    assert isinstance(payload, dict) and payload["status"] == "success", payload
+
+
+@pytest.mark.parametrize(
+    "changed", ["snapshot", "bundle", "request_pr", "request_head", "snapshot_symlink", "descriptor_missing"]
+)
+def test_parent_input_rejects_unbound_or_changed_data(
+    prepared: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changed: str
+) -> None:
+    descriptor = parent_input(prepared, tmp_path, monkeypatch)
+    snapshot = Path(descriptor["path"])
+    if changed == "snapshot":
+        snapshot.chmod(0o600)
+        snapshot.write_text("{}")
+    elif changed == "bundle":
+        bundle = snapshot.with_name("objects.bundle")
+        bundle.chmod(0o600)
+        bundle.write_bytes(b"broken bundle")
+    elif changed == "request_pr":
+        prepared["args"].pr = f"https://github.com/{REPOSITORY}/pull/8"
+    elif changed == "request_head":
+        request = Request.model_validate_json(prepared["request_path"].read_text())
+        request.prompt = "```json\n" + json.dumps({"parent_pr_data": descriptor, "pr_head": "0" * 40}) + "\n```\n"
+        prepared["request_path"].write_text(request.model_dump_json())
+    elif changed == "snapshot_symlink":
+        other = snapshot.with_name("other.json")
+        other.write_bytes(snapshot.read_bytes())
+        snapshot.unlink()
+        snapshot.symlink_to(other)
+    else:
+        request = Request.model_validate_json(prepared["request_path"].read_text())
+        request.prompt = "review without parent input"
+        prepared["request_path"].write_text(request.model_dump_json())
+    with pytest.raises((RuntimeError, ValueError, OSError)):
+        review_run.prepare(prepared["args"])
+    assert not list(prepared["parent"].glob("reviews/**/*.md"))
+
+
+@pytest.mark.parametrize("changed", ["head", "draft", "stage_metadata", "request", "stop", "identity"])
+def test_parent_finalize_refuses_stale_or_untrusted_staging(
+    prepared: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changed: str
+) -> None:
+    parent_input(prepared, tmp_path, monkeypatch)
+    result = review_run.prepare(prepared["args"])
+    assert result["status"] == "prepared", result.get("reason")
+    mark_reviewed(result)
+    staged = review_run.complete(argparse.Namespace(state=result["state_file"]))
+    assert staged["status"] == "staged"
+    batch = staged_batch(prepared, staged)
+    if changed == "head":
+
+        def changed_head(*args: Any) -> str:
+            return "0" * 40
+
+        monkeypatch.setattr(review_run.workspace, "current_pr_head", changed_head)
+    elif changed == "draft":
+        Path(result["draft"]).write_text("changed after staging")
+    elif changed == "stage_metadata":
+        draft = Path(result["draft"])
+        draft.write_text(draft.read_text() + "\n追記\n")
+        state_file = Path(result["state_file"])
+        state = json.loads(state_file.read_text())
+        state["run_context"]["staged"]["draft_sha256"] = hashlib.sha256(draft.read_bytes()).hexdigest()
+        state_file.write_text(json.dumps(state))
+    elif changed == "request":
+        request = Request.model_validate_json(prepared["request_path"].read_text())
+        request.request_id = "other-request"
+        prepared["request_path"].write_text(request.model_dump_json())
+    elif changed == "stop":
+        batch.results[0].attempts[0].stop_confirmed = False
+    else:
+        batch.results[0].attempts[0].identity.model = "other-model"
+    review_run.finalize_parent_batch(batch)
+    payload = batch.results[0].attempts[0].payload
+    assert isinstance(payload, dict) and payload["status"] == "failed", payload
+    assert not Path(result["destination"]).exists()
+    assert Path(result["worktree"]).exists()
+
+
 def mark_reviewed(result: dict[str, Any]) -> None:
     draft = Path(result["draft"])
     draft.write_text(
@@ -131,6 +532,76 @@ def mark_reviewed(result: dict[str, Any]) -> None:
     document = json.loads(findings.read_text(encoding="utf-8"))
     document["coverage"]["read"] = ["PR全体差分とREADME.md全文"]
     findings.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+
+
+@pytest.mark.parametrize("provider", ["commandcode", "opencode-go"])
+def test_dsh_prepare_complete_records_live_identity(
+    prepared: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str
+) -> None:
+    parent_input(prepared, tmp_path, monkeypatch)
+    home = tmp_path / "dsh"
+    write_session(home, prepared["caller"], provider=provider, model="actual/model")
+    for key, value in {
+        "DSH_HOME": str(home),
+        "DSH_SESSION_ID": "session-test",
+        "DSH_PROFILE": "headless",
+        "DSH_SHELL": "1",
+        "PI_PROVIDER": "parent",
+        "PI_MODEL": "wrong-parent",
+    }.items():
+        monkeypatch.setenv(key, value)
+    prepared["args"].runtime = "dsh"
+    prepared["args"].model_name = None
+    result = review_run.prepare(prepared["args"])
+    assert result["status"] == "prepared"
+    # A sandboxed reviewer must not mutate the shared source's Git directory.
+    state = json.loads(Path(result["state_file"]).read_text())
+    assert state["target_kind"] == "clone"
+    assert Path(state["target_root"]).is_relative_to(Path(result["state_file"]).parent)
+    reviewer = result["reviewer"]
+    assert reviewer["model"] == "actual/model"
+    assert reviewer["runtime"] == "dsh"
+    assert reviewer["provenance"]["provider"] == provider
+    assert reviewer["provenance"]["effort"] == "high"
+    assert reviewer["provenance"]["session_id"] == "session-test"
+    assert reviewer["review_file"] == f"{provider}-actual-model.md"
+    mark_reviewed(result)
+    staged = review_run.complete(argparse.Namespace(state=result["state_file"]))
+    assert staged["status"] == "staged", staged
+    batch = staged_batch(prepared, staged)
+    batch.results[0].attempts[0].identity.provider = provider
+    review_run.finalize_parent_batch(batch)
+    completed = batch.results[0].attempts[0].payload
+    assert isinstance(completed, dict) and completed["status"] == "success", completed
+    assert completed["cleanup"] == "success"
+    document = json.loads(Path(str(completed["findings_file"])).read_text())
+    assert document["reviewer"] == reviewer
+    execution_record = json.loads(Path(str(completed["run_record"])).read_text())
+    assert execution_record["reviewer"]["model"] == "actual/model"
+
+
+def test_dsh_complete_refuses_a_changed_live_route(
+    prepared: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent_input(prepared, tmp_path, monkeypatch)
+    home = tmp_path / "dsh"
+    write_session(home, prepared["caller"])
+    for key, value in {
+        "DSH_HOME": str(home),
+        "DSH_SESSION_ID": "session-test",
+        "DSH_PROFILE": "headless",
+        "DSH_SHELL": "1",
+    }.items():
+        monkeypatch.setenv(key, value)
+    prepared["args"].runtime = "dsh"
+    prepared["args"].model_name = None
+    result = review_run.prepare(prepared["args"])
+    mark_reviewed(result)
+    write_session(home, prepared["caller"], model="changed-model")
+    completed = review_run.complete(argparse.Namespace(state=result["state_file"]))
+    assert completed["status"] == "failed"
+    assert completed["cleanup"] == "not_attempted"
+    assert not Path(result["destination"]).exists()
 
 
 def test_prepare_binds_request_and_local_records(prepared: dict[str, Any]) -> None:
@@ -820,7 +1291,7 @@ def test_attach_runner_rejects_an_invalid_result_file(
     assert payload["result_file"] == str(source)
 
 
-def test_shipped_runner_template_calls_attach_runner() -> None:
+def test_shipped_runner_template_commands_accept_result_path() -> None:
     config = load_config(ROOT / ".devcontainer/agent-runner.toml")
     commands = config.workflows["review"].after_run
     assert commands
@@ -829,7 +1300,7 @@ def test_shipped_runner_template_calls_attach_runner() -> None:
         assert (ROOT / argv[script]).resolve() == SCRIPT.resolve()
         assert (ROOT / argv[argv.index("--project") + 1] / "pyproject.toml").is_file()
         rest = [argument.replace("{result}", "/tmp/result.json") for argument in argv[script + 1 :]]
-        assert review_run.parser().parse_args(rest).command == "attach-runner"
+        assert review_run.parser().parse_args(rest).result == Path("/tmp/result.json")
 
 
 def test_record_outputs_failure_after_save_keeps_the_review_result(

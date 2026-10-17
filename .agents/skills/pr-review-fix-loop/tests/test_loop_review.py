@@ -6,18 +6,38 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
+from tools.agent_runner.config import load_config
 from tools.agent_runner.models import Attempt, BatchResult, Identity, Request, Result
 
 pytest_plugins = ("tools.test_support.plugin",)
 # 偽の担当だけを起動するので、runner の担当（AGENT_RUNNER_DEPTH=1）の中でもテストの中だけ depth を外す
 pytestmark = pytest.mark.usefixtures("outside_runner")
+
+
+def test_dsh_review_grants_only_artifacts_and_regular_save_lock(loop: Any, env: Any) -> None:
+    started = env.start()
+    run = loop.load_run(Path(started["run_dir"]))
+    assert loop.review_write_paths(run, {"alpha": "pi"}) == ()
+    paths = loop.review_write_paths(run, {"alpha": "dsh"})
+    assert paths == (env.review_dir, env.parent / ".git" / "pr-review-save.lock")
+    assert paths[0].is_dir() and paths[1].is_file()
+    assert env.parent not in paths and env.parent / ".git" not in paths
+    protected = env.parent / ".git" / "protected"
+    protected.write_text("original")
+    paths[1].unlink()
+    paths[1].symlink_to(protected)
+    with pytest.raises(loop.LoopError):
+        loop.review_write_paths(run, {"alpha": "dsh"})
+    assert protected.read_text() == "original"
 
 
 def registered_worktrees(root: Path) -> list[str]:
@@ -171,6 +191,429 @@ def test_verify_reviewer_accepts_a_complete_payload_and_records_hashes(loop: Any
     assert entry.review_sha256 == loop.sha256_file(Path(entry.review_file))
     assert entry.findings_sha256 == loop.sha256_file(Path(entry.findings_file))
     assert entry.identity["model"] == "alpha-model"
+
+
+@pytest.mark.parametrize(
+    "mismatch",
+    [
+        None,
+        "quoted_in_body",
+        "model",
+        "provider",
+        "session_id",
+        "cleanup",
+        "payload",
+        "body_header",
+        "duplicate_header",
+        "missing_header",
+    ],
+)
+def test_dsh_pair_requires_observed_runner_identity(loop: Any, env: Any, tmp_path: Path, mismatch: str | None) -> None:
+    result, head = accepted_result(env, tmp_path)
+    attempt = result.attempts[0]
+    payload = cast(dict[str, Any], attempt.payload)
+    candidates = Path(payload["findings_file"])
+    document = read(candidates)
+    reviewer = document["reviewer"]
+    reviewer["runtime"] = "dsh"
+    reviewer["provenance"].update(
+        provider="actual-provider",
+        effort="high",
+        session_id="session-test",
+        run_id="run-1",
+        request_id="request-1",
+        agent_id="alpha",
+        role="inspect",
+    )
+    payload["reviewer"] = reviewer.copy()
+    candidates.write_text(json.dumps(document))
+    review = Path(payload["review_file"])
+    review.write_text(
+        review.read_text().replace("（ランタイム: pi）", "（ランタイム: dsh）")
+        + "\n## Review timing\n\n<!-- pr-review:execution -->\n```json\n"
+        + json.dumps({"reviewer": reviewer, "timing": document["timing"]})
+        + "\n```\n"
+    )
+    attempt.identity = Identity(
+        model="alpha-model", provider="actual-provider", effort="high", session_id="session-test"
+    )
+    if mismatch in {"model", "provider", "session_id"}:
+        setattr(attempt.identity, mismatch, "wrong-observation")
+    elif mismatch == "cleanup":
+        payload["cleanup"] = "failed"
+    elif mismatch == "payload":
+        payload["reviewer"] = {**reviewer, "model": "different-model"}
+    elif mismatch == "body_header":
+        review.write_text(review.read_text().replace("レビュアー: alpha-model", "レビュアー: parent-model"))
+    header = "- レビュアー: alpha-model（ランタイム: dsh）\n"
+    if mismatch == "quoted_in_body":
+        # 本文で担当行を引用しても、冒頭の識別行には数えない
+        quote = "\n- レビュアー: 引用した古い担当（ランタイム: pi）\n"
+        review.write_text(review.read_text().replace("## Summary\n\nテスト\n", "## Summary\n\nテスト\n" + quote))
+    elif mismatch == "duplicate_header":
+        review.write_text(review.read_text().replace(header, header * 2, 1))
+    elif mismatch == "missing_header":
+        review.write_text(review.read_text().replace(header, "", 1))
+    pr = loop.PrRef(repository="usaturn/xrift-poc", number=900, url="https://github.com/usaturn/xrift-poc/pull/900")
+    entry = loop.verify_reviewer(result, pr=pr, head=head, review_dir=env.review_dir)
+    assert entry.verdict == ("accepted" if mismatch in {None, "quoted_in_body"} else "rejected"), entry.reason
+
+
+def test_review_config_removes_only_dsh_github_tokens(loop: Any, env: Any) -> None:
+    config = load_config(env.template)
+    config.agents["alpha"].runtime = "dsh"
+    config.agents["alpha"].env = ["GH_TOKEN", "GITHUB_TOKEN", "COMMANDCODE_API_KEY", "PATH"]
+    config.agents["beta"].env = ["GH_TOKEN", "PATH"]
+    safe = loop.review_config_without_github_tokens(config)
+    assert safe.agents["alpha"].env == ["COMMANDCODE_API_KEY", "PATH"]
+    assert safe.agents["beta"].env == ["GH_TOKEN", "PATH"]
+    assert config.agents["alpha"].env == ["GH_TOKEN", "GITHUB_TOKEN", "COMMANDCODE_API_KEY", "PATH"]
+
+
+PR_URL = "https://github.com/usaturn/xrift-poc/pull/900"
+
+
+def dsh_parent_env(loop: Any, env: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """alpha を DSH にし、実際の親準備（prepare_parent）を bare remote と偽の gh で動かす。"""
+    template = env.template.read_text().replace('runtime = "pi"', 'runtime = "dsh"')
+    env.template.write_text(template)
+    subprocess.run(["git", "-C", str(env.remote), "update-ref", "refs/pull/900/head", env.gh.head()], check=True)
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", f"url.{env.remote.as_uri()}.insteadOf")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "https://github.com/usaturn/xrift-poc.git")
+
+    def api(argv: list[str]) -> subprocess.CompletedProcess[str]:
+        response = env.gh.runner([argument for argument in argv if argument != "-i"])
+        if "-i" in argv:
+            document = json.loads(response.stdout)
+            document["base"]["repo"]["clone_url"] = "https://github.com/usaturn/xrift-poc.git"
+            return subprocess.CompletedProcess(
+                argv, response.returncode, "HTTP/2 200 OK\n\n" + json.dumps(document), response.stderr
+            )
+        return response
+
+    env.github = loop.GitHub(api)
+    # 親の保存（save）も同じ偽の gh で現在の PR の HEAD を確かめる
+    target = loop.review_entry.workspace.load_review_target()
+    original = target.fetch_pull_request
+
+    def fetch_pull_request(repository: str, number: int, *, runner: Any = api) -> Any:
+        return original(repository, number, runner=runner)
+
+    monkeypatch.setattr(target, "fetch_pull_request", fetch_pull_request)
+
+    def metadata(argv: list[str]) -> str:
+        assert argv[:3] == ["gh", "pr", "view"]
+        return json.dumps({"body": "テストのPR", "closingIssuesReferences": []})
+
+    monkeypatch.setattr(loop.review_entry, "command", metadata)
+
+
+def no_reviewers(output: Path) -> BatchResult:
+    output.mkdir()
+    return BatchResult(
+        run_id="fixture-run",
+        state="failed",
+        assignments={"inspect": ["alpha", "beta"]},
+        results=[],
+        outside_changes=[],
+        elapsed_seconds=0.1,
+        artifact_dir=output,
+    )
+
+
+def dispatch_no_reviewers(*args: Any, **kwargs: Any) -> BatchResult:
+    return no_reviewers(kwargs["output_dir"])
+
+
+def test_loop_prepares_bound_bundle_before_dsh_dispatch(loop: Any, env: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    dsh_parent_env(loop, env, monkeypatch)
+    seen: list[dict[str, Any]] = []
+
+    def dispatch(config: Any, workflow: str, prompt: str, root: Path, **kwargs: Any) -> BatchResult:
+        descriptor = loop.review_entry.parent_data.descriptor_from_prompt(prompt)
+        snapshot = loop.review_entry.parent_data.load(
+            loop.review_entry.workspace, descriptor, "https://github.com/usaturn/xrift-poc/pull/900"
+        )
+        seen.append(snapshot)
+        return no_reviewers(kwargs["output_dir"])
+
+    monkeypatch.setattr(loop, "run_workflow", dispatch)
+    run_dir = Path(env.start()["run_dir"])
+    loop.cycle_begin(run_dir, github=env.github)
+    with pytest.raises(loop.LoopError) as error:
+        loop.review(run_dir, github=env.github, tmp_root=env.tmp_root)
+    assert error.value.code == 6
+    assert seen[0]["target"]["head_sha"] == env.gh.head()
+    assert seen[0]["target"]["number"] == 900
+    assert Path(seen[0]["bundle"]).is_file()
+
+
+def test_dsh_runner_refusal_before_launch_can_be_retried(loop: Any, env: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    dsh_parent_env(loop, env, monkeypatch)
+    dispatched: list[str] = []
+
+    def refused(*args: Any, **kwargs: Any) -> BatchResult:
+        raise loop.RunnerError()
+
+    def dispatch(config: Any, workflow: str, prompt: str, root: Path, **kwargs: Any) -> BatchResult:
+        descriptor = loop.review_entry.parent_data.descriptor_from_prompt(prompt)
+        loop.review_entry.parent_data.load(loop.review_entry.workspace, descriptor, PR_URL)
+        dispatched.append(descriptor["path"])
+        return no_reviewers(kwargs["output_dir"])
+
+    run_dir = Path(env.start()["run_dir"])
+    loop.cycle_begin(run_dir, github=env.github)
+    monkeypatch.setattr(loop, "run_workflow", refused)
+    with pytest.raises(loop.LoopError) as first:
+        loop.review(run_dir, github=env.github, tmp_root=env.tmp_root)
+    assert (first.value.code, first.value.stage) == (5, "runner")
+    assert first.value.next_command[-3:] == ["review", "--run", str(run_dir)]
+
+    monkeypatch.setattr(loop, "run_workflow", dispatch)
+    with pytest.raises(loop.LoopError) as second:
+        loop.review(run_dir, github=env.github, tmp_root=env.tmp_root)
+    # 案内どおりのやり直しは親準備で止まらず、レビュアーの起動まで進む
+    assert (second.value.code, second.value.stage) == (6, "review")
+    assert len(dispatched) == 1 and Path(dispatched[0]).is_file()
+
+
+def test_parent_preparation_failure_after_clone_can_be_retried(
+    loop: Any, env: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dsh_parent_env(loop, env, monkeypatch)
+    original = loop.review_entry.workspace.git
+    failures: list[str] = []
+
+    def transient(root: Path, *args: str, **kwargs: Any) -> Any:
+        if not failures and args[0] == "fetch" and any(item.endswith(":refs/pr-review-parent/base") for item in args):
+            failures.append(str(root))
+            raise loop.review_entry.workspace.WorkspaceError("simulated transient fetch failure")
+        return original(root, *args, **kwargs)
+
+    monkeypatch.setattr(loop.review_entry.workspace, "git", transient)
+    monkeypatch.setattr(loop, "run_workflow", dispatch_no_reviewers)
+    run_dir = Path(env.start()["run_dir"])
+    loop.cycle_begin(run_dir, github=env.github)
+    with pytest.raises(loop.LoopError) as first:
+        loop.review(run_dir, github=env.github, tmp_root=env.tmp_root)
+    assert (first.value.code, first.value.stage) == (5, "parent_preparation")
+    assert failures and not (run_dir / "cycle-1" / "parent-pr-data").exists()
+
+    with pytest.raises(loop.LoopError) as second:
+        loop.review(run_dir, github=env.github, tmp_root=env.tmp_root)
+    assert (second.value.code, second.value.stage) == (6, "review")
+    assert (run_dir / "cycle-1" / "parent-pr-data" / "snapshot.json").is_file()
+
+
+@pytest.mark.parametrize("kind", ["directory", "symlink"])
+def test_parent_preparation_keeps_an_existing_output(
+    loop: Any, env: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kind: str
+) -> None:
+    dsh_parent_env(loop, env, monkeypatch)
+    monkeypatch.setattr(loop, "run_workflow", dispatch_no_reviewers)
+    run_dir = Path(env.start()["run_dir"])
+    loop.cycle_begin(run_dir, github=env.github)
+    output = run_dir / "cycle-1" / "parent-pr-data"
+    other = tmp_path / "third-party"
+    other.mkdir()
+    (other / "keep.txt").write_text("third party", encoding="utf-8")
+    if kind == "directory":
+        output.mkdir()
+        (output / "keep.txt").write_text("third party", encoding="utf-8")
+    else:
+        output.symlink_to(other, target_is_directory=True)
+    with pytest.raises(loop.LoopError) as error:
+        loop.review(run_dir, github=env.github, tmp_root=env.tmp_root)
+    assert (error.value.code, error.value.stage) == (5, "parent_preparation")
+    assert (output / "keep.txt").read_text(encoding="utf-8") == "third party"
+    assert sorted(path.name for path in other.iterdir()) == ["keep.txt"]
+    assert output.is_symlink() is (kind == "symlink")
+
+
+DSH_MODEL = "actual/model"
+
+
+def staged_reviewer(loop: Any, env: Any, monkeypatch: pytest.MonkeyPatch, *, case: str | None) -> Any:
+    """実際の pr-review prepare/complete で DSH の staged を作る偽の runner（子の起動と停止の観測だけを模す）。"""
+    from tools.test_support.dsh import write_session
+
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+    launched: list[str] = []
+
+    def dispatch(config: Any, workflow: str, prompt: str, root: Path, **kwargs: Any) -> BatchResult:
+        output: Path = kwargs["output_dir"]
+        work = output / "request-1" / "attempt-1" / "worktree"
+        work.mkdir(parents=True)
+        launched.append("alpha")
+        request = Request(
+            run_id="fixture-run",
+            request_id="request-1",
+            agent_id="alpha",
+            role="inspect",
+            work_dir=work,
+            prompt=prompt,
+            deadline_seconds=60.0,
+            result_shape="json",
+        )
+        request_path = work.parent / "request.json"
+        request_path.write_text(request.model_dump_json(), encoding="utf-8")
+        home = work.parent / "dsh" / "state"
+        write_session(home, work, provider="commandcode", model=DSH_MODEL)
+        environment = {"DSH_HOME": str(home), "DSH_SESSION_ID": "session-test", "DSH_SHELL": "1"}
+        for key, value in {**environment, "DSH_PROFILE": "headless"}.items():
+            monkeypatch.setenv(key, value)
+        monkeypatch.chdir(work)
+        parameters = loop.review_entry.parent_data.parameters_from_prompt(prompt)
+        prepared = loop.review_entry.prepare(
+            argparse.Namespace(
+                pr=parameters["pr_url"],
+                runtime="dsh",
+                model_name=None,
+                request=str(request_path),
+                review_commit=None,
+                source_root=None,
+                records_comments=parameters["records_comments"],
+                temp_root=None,
+            )
+        )
+        assert prepared["status"] == "prepared", prepared
+        head = prepared["reviewed_head"][:12]
+        Path(prepared["draft"]).write_text(
+            f"- 対象: PR #900 / head {head} / 2026-10-14\n- レビュアー: {DSH_MODEL}（ランタイム: dsh）\n\n"
+            "## Review history\n\n| Reviewed at (UTC) | HEAD | Mode |\n|---|---|---|\n"
+            f"| 2026-10-14T00:00:00Z | `{head}` | Initial |\n\n## Summary\n\n全体差分を確認した。\n",
+            encoding="utf-8",
+        )
+        findings = Path(prepared["findings_draft"])
+        document = json.loads(findings.read_text(encoding="utf-8"))
+        document["coverage"]["read"] = ["PR 全体の差分と change.txt の全文"]
+        findings.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+        staged = loop.review_entry.complete(argparse.Namespace(state=prepared["state_file"]))
+        assert staged["status"] == "staged", staged
+        identity = Identity(provider="commandcode", model=DSH_MODEL, effort="high", session_id="session-test")
+        if case == "identity":
+            identity.model = "other-model"
+        attempt = Attempt(
+            agent_id="alpha",
+            state="success",
+            identity=identity,
+            exit_code=0,
+            elapsed_seconds=1.0,
+            stop_confirmed=case != "unstopped",
+            work_dir=work,
+            request_path=request_path,
+            payload=staged,
+        )
+        result = Result(
+            request_id="request-1",
+            role="inspect",
+            requested_agent="alpha",
+            actual_agent="alpha",
+            state="success",
+            attempts=[attempt],
+        )
+        return BatchResult(
+            run_id="fixture-run",
+            state="success",
+            assignments={"inspect": ["alpha"]},
+            results=[result],
+            outside_changes=[],
+            elapsed_seconds=1.0,
+            artifact_dir=output,
+        )
+
+    monkeypatch.setattr(loop, "run_workflow", dispatch)
+    return launched
+
+
+@pytest.mark.parametrize("case", [None, "unstopped", "identity"])
+def test_resumed_staged_review_is_finalized_without_hooks(
+    loop: Any, env: Any, monkeypatch: pytest.MonkeyPatch, case: str | None
+) -> None:
+    dsh_parent_env(loop, env, monkeypatch)
+    launched = staged_reviewer(loop, env, monkeypatch, case=case)
+    run_dir = Path(env.start()["run_dir"])
+    loop.cycle_begin(run_dir, github=env.github)
+    real = loop.review_entry.finalize_parent_batch
+
+    def interrupted(batch: BatchResult) -> None:
+        raise KeyboardInterrupt
+
+    # 子が staged で停止した後、親の確定の前に helper が止まった
+    monkeypatch.setattr(loop.review_entry, "finalize_parent_batch", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        loop.review(run_dir, github=env.github, tmp_root=env.tmp_root)
+    monkeypatch.setattr(loop.review_entry, "finalize_parent_batch", real)
+    saved = env.review_dir / "commandcode-actual-model.md"
+    assert not saved.exists()
+
+    if case is None:
+        reviewed = loop.review(run_dir, github=env.github, tmp_root=env.tmp_root)
+        assert [item["agent"] for item in reviewed["accepted"]] == ["alpha"]
+        assert Path(reviewed["accepted"][0]["review_file"]) == saved and saved.is_file()
+    else:
+        with pytest.raises(loop.LoopError) as error:
+            loop.review(run_dir, github=env.github, tmp_root=env.tmp_root)
+        assert (error.value.code, error.value.stage) == (6, "review")
+        assert not saved.exists()
+    assert launched == ["alpha"]
+    assert read(run_dir / "cycle-1.json")["review"]["after_run"] == []
+
+
+@pytest.mark.parametrize("change", ["payload_failed", "payload_unchanged"])
+def test_after_run_result_is_reloaded_before_reviewer_validation(
+    loop: Any, env: Any, tmp_path: Path, change: str
+) -> None:
+    # 後処理（after_run）が result.json を更新したら、レビュアーの検査はその保存された結果を使う
+    program = (
+        "import json,pathlib,sys; path=pathlib.Path(sys.argv[1]); batch=json.loads(path.read_text())\n"
+        "for item in batch['results']:\n"
+        "    if item['actual_agent'] == 'alpha' and " + repr(change) + " == 'payload_failed':\n"
+        "        item['attempts'][-1]['payload'].update(status='failed', reason='後処理が保存を拒否した')\n"
+        "path.write_text(json.dumps(batch))\n"
+    )
+    with env.template.open("a") as stream:
+        stream.write(
+            "\n[workflows.review]\nafter_run = " + json.dumps([[sys.executable, "-c", program, "{result}"]]) + "\n"
+        )
+    run_dir = Path(env.start()["run_dir"])
+    loop.cycle_begin(run_dir, github=env.github)
+    adapter = env.reviewers({"alpha": "success", "beta": "failed"})
+    if change == "payload_unchanged":
+        reviewed = loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
+        assert [item["agent"] for item in reviewed["accepted"]] == ["alpha"]
+        return
+    with pytest.raises(loop.LoopError) as error:
+        loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
+    assert (error.value.code, error.value.stage) == (6, "review")
+    reviewers = read(run_dir / "cycle-1.json")["review"]["reviewers"]
+    alpha = next(item for item in reviewers if item["actual_agent"] == "alpha")
+    assert alpha["verdict"] == "rejected" and "後処理が保存を拒否した" in alpha["reason"]
+    saved = read(run_dir / "cycle-1" / "review-result.json")
+    saved_alpha = next(item for item in saved["results"] if item["actual_agent"] == "alpha")
+    assert saved_alpha["attempts"][-1]["payload"]["status"] == "failed"
+
+
+def test_review_executes_after_run_against_saved_result(loop: Any, env: Any, tmp_path: Path) -> None:
+    marker = tmp_path / "hook-result.json"
+    program = f"import pathlib,sys; pathlib.Path({str(marker)!r}).write_bytes(pathlib.Path(sys.argv[1]).read_bytes())"
+    with env.template.open("a") as stream:
+        stream.write(
+            "\n[workflows.review]\nafter_run = " + json.dumps([[sys.executable, "-c", program, "{result}"]]) + "\n"
+        )
+    run_dir = Path(env.start()["run_dir"])
+    loop.cycle_begin(run_dir, github=env.github)
+    reviewed = loop.review(
+        run_dir,
+        github=env.github,
+        adapter_loader=env.reviewers({"alpha": "success", "beta": "success"}),
+        tmp_root=env.tmp_root,
+    )
+    assert len(reviewed["accepted"]) == 2
+    assert read(marker)["state"] == "success"
+    reports = read(run_dir / "cycle-1.json")["review"]["after_run"]
+    assert reports[0]["state"] == "success" and reports[0]["stop_confirmed"]
 
 
 def test_reuse_counts_only_pairs_for_the_current_head(loop: Any, env: Any, kit: Any) -> None:
