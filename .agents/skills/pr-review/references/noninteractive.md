@@ -25,7 +25,7 @@ DSH 標準 headless の場合、runner は Linux Dev Container の bubblewrap �
 
 `loop.py review` は共通 `prepare-parent` で PR metadata、PR/参照 Issue の本文・コメント、判断の記録、固定 HEAD/base/指定 commit の Git bundle を取得する。対象 PR 自身の取得失敗は止めるが、参照 Issue の取得・形の失敗では止めず、理由付きの未取得として渡す。`Request.prompt` 末尾の JSON に `parent_pr_data: {path, sha256}` を置き、子は snapshot/bundle の digest と対象を照合する。GitHub token は子へ渡さず、子の prepare/complete は GitHub API・remote fetch を呼ばない。snapshot は読み取り専用、存在するパスだけでは受理しない。認証値は保存しない。
 
-通常 runner の caller も、認証済み親で次を呼び、返された descriptor を依頼の末尾 JSON の `parent_pr_data` に入れる。必要な正式保存先・保存ロックを起動前に許可し、DSH の env へ GitHub token を追加しない。loop はこの準備を自動で行う。権限拒否・認証不足を別 HOME/cache/cwd やフルアクセスで回避しない。
+通常 runner の caller も、認証済み親で次を呼び、返された descriptor を依頼の末尾 JSON の `parent_pr_data` に入れる。必要な正式保存先・保存ロックを起動前に許可し（`run_workflow` の `sandbox_write_paths`。CLI の `run` には渡す手段が無いので、CLI から DSH をレビュアーにしない）、DSH の env へ GitHub token を追加しない。loop はこの準備を自動で行う。権限拒否・認証不足を別 HOME/cache/cwd やフルアクセスで回避しない。
 
 ```bash
 uv run --project "$TOPLEVEL/tools/devenv" --locked python "$RUN_HELPER" prepare-parent \

@@ -243,6 +243,10 @@ PR metadata・PR/参照 Issue の要件・コメント・Git bundle を固定 HE
 親が停止・実測 Identity・Request/draft と現在の PR HEAD を再確認して通常 save/cleanup を行う。
 staged や runner exit 0 はレビュー成功ではない。通常 runner の呼び方は
 [非対話入口](../.agents/skills/pr-review/references/noninteractive.md)を参照する。
+保存先と保存ロックへの書き込みの許可は `run_workflow` の `sandbox_write_paths` でだけ渡せる。
+CLI（`python -m tools.agent_runner run`）には渡す手段が無く、CLI から DSH をレビュアーにすると
+helper の書き込みが sandbox に拒否されて失敗する。DSH のレビュアーは PR 修正ループか、
+`sandbox_write_paths` を渡す Python の caller から使う。
 
 認証はそれぞれ `COMMANDCODE_API_KEY` / `OPENCODE_API_KEY` を起動元の環境に設定し、
 agent の `env` にその名前を指定する。値は TOML や argv に書かない。
