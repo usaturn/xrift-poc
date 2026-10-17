@@ -62,6 +62,23 @@ provider = "google-vertex"
 effort = "high"
 env = ["HOME", "PATH", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"]
 
+# DSH 標準 headless。共有 profile と追加プラグインは読み込まない。
+[agents.dsh-ccd]
+runtime = "dsh"
+command = ["dsh"]
+model = "deepseek/deepseek-v4.1-flash"
+provider = "commandcode"
+effort = "max"
+env = ["PATH", "COMMANDCODE_API_KEY"]
+
+[agents.dsh-go]
+runtime = "dsh"
+command = ["dsh"]
+model = "deepseek-v4.1-flash"
+provider = "opencode-go"
+effort = "max"
+env = ["PATH", "OPENCODE_API_KEY"]
+
 # codex exec --json。実測既定モデルは gpt-6.1-sol（openai）。
 [agents.codex]
 runtime = "codex"

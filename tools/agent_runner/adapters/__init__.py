@@ -53,6 +53,7 @@ _MODULES = {
     "codex": "codex",
     "cursor": "cursor",
     "grok-build": "grok_build",
+    "dsh": "dsh",
 }
 
 

@@ -8,6 +8,8 @@ it. Adapters are trusted integrations, not a security sandbox.
 import asyncio
 import os
 import re
+import shutil
+import stat
 import tempfile
 import threading
 import time
@@ -62,6 +64,126 @@ def _scrub(value: object, secrets: set[str]) -> object:
     if isinstance(value, list):
         return [_scrub(child, secrets) for child in cast(list[object], value)]
     return value
+
+
+def _redact_runtime_tree(root: Path, secrets: tuple[str, ...]) -> list[Path]:
+    """Redact a stopped runtime's owned tree without opening links or special files."""
+    unsafe: list[Path] = []
+    pending = [root]
+    while pending:
+        path = pending.pop()
+        try:
+            mode = path.lstat().st_mode
+            if stat.S_ISDIR(mode):
+                pending.extend(sorted(path.iterdir(), reverse=True))
+            elif not stat.S_ISREG(mode) or not redact_file(path, secrets):
+                unsafe.append(path)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            unsafe.append(path)
+    return unsafe
+
+
+_NOFOLLOW_DIRECTORY = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+def _dispose_home(runtime_root: Path) -> bool:
+    """Remove a stopped runtime's disposable ``home`` without following any link.
+
+    Only a real directory owned by this user, on the runtime root's device, is
+    removed through descriptors relative to that root. False leaves the rest in
+    place for the caller to report and redact.
+    """
+    try:
+        root = os.open(runtime_root, _NOFOLLOW_DIRECTORY)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    try:
+        owner, device = os.getuid(), os.fstat(root).st_dev
+        try:
+            home = os.stat("home", dir_fd=root, follow_symlinks=False)
+        except FileNotFoundError:
+            return True
+        if not stat.S_ISDIR(home.st_mode) or home.st_uid != owner or home.st_dev != device:
+            return False
+        # Tool caches such as Go modules leave read-only directories; fwalk
+        # opens each without following links before the owner's access is restored.
+        for _, _, _, descriptor in os.fwalk("home", dir_fd=root):
+            info = os.fstat(descriptor)
+            if info.st_uid == owner and (info.st_mode & 0o700) != 0o700:
+                os.fchmod(descriptor, stat.S_IMODE(info.st_mode) | 0o700)
+        shutil.rmtree("home", dir_fd=root)
+        return True
+    except OSError:
+        return False
+    finally:
+        os.close(root)
+
+
+def _unlink_special_entries(directory: int, owner: int, device: int) -> list[str]:
+    """Unlink owned non-regular entries of an open directory; return its subdirectories."""
+    subdirectories: list[str] = []
+    special: list[str] = []
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                info = entry.stat(follow_symlinks=False)
+                if stat.S_ISDIR(info.st_mode):
+                    subdirectories.append(entry.name)
+                elif not stat.S_ISREG(info.st_mode) and info.st_uid == owner and info.st_dev == device:
+                    special.append(entry.name)
+    except OSError:
+        pass
+    # Unlink after the listing is closed: the link itself goes, never its target.
+    for name in special:
+        try:
+            os.unlink(name, dir_fd=directory)
+        except OSError:
+            pass
+    return subdirectories
+
+
+def _prune_scratch(runtime_root: Path) -> None:
+    """Unlink links and special files from a stopped runtime's ``tmp`` scratch.
+
+    Tools such as pytest leave ``*current`` links and fixture FIFOs in TMPDIR;
+    they hold no output to retain and cannot be inspected. Only owned entries
+    inside owned real directories on the runtime root's device are unlinked,
+    relative to their parent descriptor; nothing is followed or opened. Regular
+    files stay for strict redaction, which reports anything left here.
+    """
+    try:
+        root = os.open(runtime_root, _NOFOLLOW_DIRECTORY)
+    except OSError:
+        return
+    owner = os.getuid()
+    # Only the directories on the current path stay open: depth + 1 descriptors.
+    stack: list[tuple[int, list[str]]] = [(root, ["tmp"])]
+    try:
+        device = os.fstat(root).st_dev
+        while stack:
+            descriptor, pending = stack[-1]
+            if not pending:
+                stack.pop()
+                os.close(descriptor)
+                continue
+            try:
+                child = os.open(pending.pop(), _NOFOLLOW_DIRECTORY, dir_fd=descriptor)
+            except OSError:
+                continue
+            children: list[str] = []
+            stack.append((child, children))
+            info = os.fstat(child)
+            if info.st_uid == owner and info.st_dev == device:
+                children.extend(_unlink_special_entries(child, owner, device))
+    except OSError:
+        pass
+    finally:
+        for descriptor, _ in stack:
+            os.close(descriptor)
 
 
 def _collect(adapter: Adapter, context: AdapterContext, stdout: Path, stderr: Path) -> tuple[State, Identity, Payload]:
@@ -272,7 +394,19 @@ def run_workflow(
         sensitive_paths: list[Path] = []
         export_path = context.receipt_path.parent / "export.json" if agent.runtime == "devin" else None
         export_unsafe = False
+        runtime_root = context.receipt_path.parent / "dsh" if agent.runtime == "dsh" else None
         if process.stop_confirmed:
+            if runtime_root is not None:
+                # HOME only holds tool caches (uv links, read-only Go modules) and is
+                # not retained. TMPDIR is scratch: links and special files that tools
+                # such as pytest leave there are unlinked, while its regular spills stay
+                # with state and the patch under strict redaction. That pass reports
+                # anything left unsafe, including a HOME that could not be removed.
+                if not _dispose_home(runtime_root):
+                    sensitive_paths.append(runtime_root / "home")
+                _prune_scratch(runtime_root)
+                unsafe = _redact_runtime_tree(runtime_root, tuple(secrets))
+                sensitive_paths.extend(path for path in unsafe if path not in sensitive_paths)
             # Devin leaves an ATIF export next to the receipt; inherited values can
             # be repeated in the final answer, history, and tool arguments. Redact
             # it like the receipt, before any collection reads it.
@@ -293,6 +427,8 @@ def run_workflow(
             sensitive_paths.append(context.receipt_path)
             if export_path is not None:
                 sensitive_paths.append(export_path)
+            if runtime_root is not None:
+                sensitive_paths.append(runtime_root)
         if process.state in {"timed_out", "launch_failed"}:
             state = process.state
         elif event.is_set() or process.state == "interrupted":
