@@ -1581,7 +1581,7 @@ def _review_attempts(review: ReviewPart) -> list[tuple[Literal["first", "rerun"]
 
 
 def _review_retained(review: ReviewPart) -> list[str]:
-    """サイクルの 1 回目と再実行の、回収で残した runner の出力と、レビュアーが報告した残存パス。"""
+    """サイクルの 1 回目と再実行の、回収で残した runner の出力・親入力と、レビュアーが報告した残存パス。"""
     parts = (review, review.rerun) if review.rerun is not None else (review,)
     paths = [path for part in parts if part.cleanup is not None for path in part.cleanup.retained]
     paths += [path for _, entry in _review_attempts(review) for path in entry.retained_paths]

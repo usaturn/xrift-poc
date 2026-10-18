@@ -25,8 +25,10 @@
 ```text
 reviews/<owner>/<repo>/#<PR>-<ブランチ>/
 ├── <model>.md                                  # レビューファイル（今までと同じ）
+├── .staging/                                   # DSH のレビュアーの pr-review helper のセッション（下の箇条書き）
 ├── findings/
 │   └── <model>-<HEAD 先頭 12 文字>.json          # 候補一覧
+├── loop/                                       # PR 修正ループの記録（下の箇条書き）
 ├── runs/
 │   └── <開始時刻>-<model>-<接尾辞>.json         # 実行記録（1 実行 1 ファイル。4.1 節）
 └── verified/
@@ -40,6 +42,7 @@ reviews/<owner>/<repo>/#<PR>-<ブランチ>/
 
 - 保存先のパスは、短く書くとき `findings/<model>-<HEAD 先頭 12 文字>.json`、`verified/<HEAD 先頭 12 文字>.json`、`verified/<修正後 HEAD 先頭 12 文字>.fix-check.json`、`verified/<修正後 HEAD 先頭 12 文字>.statement-candidates.json`、`verified/<HEAD 先頭 12 文字>.planning.json` と書く。
 - 直下には `<model>.md` 以外のファイルを置かない。旧 PR 修正ループの成果物の監視（`tools/herdr_pr_review/artifacts.py`。#571 で削除）と `tools/review_triage` は直下の `*.md` だけを読むので、`findings/`・`verified/`・`runs/` はその動きを変えない（`review_triage` はディレクトリを読み飛ばした項目として数える）。保存前の検査（`<model>.md` の fingerprint）もファイル単位なので、`runs/` が増えても保存先の変化とはみなさない。新しい PR 修正ループは、自分の記録（ロック・run・サイクル）を `loop/` の下に置く（形式は `.agents/skills/pr-review-fix-loop/references/records.md`）。
+- DSH のレビュアーの pr-review helper は、セッション（private clone・worktree・state・draft）を `.staging/<run>/<request>/<agent>/`（`<run>` は runner の run ID）に作る。DSH の sandbox はツールの呼び出しごとに `/tmp` を新しい tmpfs にするので、セッションは書き込みを許された保存先の中にしか置けない。保存できたら DSH を起動した側（PR 修正ループの helper など）が消し、保存できなかったものは残る。置き場所と片付けの規則は AGENTS.md の「コミットしないファイルの置き場所」に従う。
 - 候補一覧はサイクルごとに別のファイルになる（HEAD が名前に入る）。レビューファイルは今までどおり上書きする。
 - PR 修正ループも、通常の pr-review と同じ `reviews/<owner>/<repo>/#<PR>-<ブランチ>/` を使う。
 

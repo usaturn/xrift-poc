@@ -17,6 +17,8 @@ reviews/<owner>/<repo>/#<PR>-<ブランチ>/
         ├── cycle-<n>.json          # サイクルごとの記録
         └── cycle-<n>/
             ├── comments.json       # レビュアーに渡した PR の全コメント（gh api --paginate --slurp の出力）
+            ├── parent-pr-data/     # レビュアーに DSH がいるときだけ。DSH のレビュアーに渡す入力（snapshot.json・objects.bundle）
+            ├── rerun-parent-pr-data/  # 再実行のレビュアーに DSH がいるときだけ。再実行で渡す入力
             ├── review-result.json  # runner の結果（BatchResult）の写し
             ├── rerun-result.json   # 再実行したときだけ。再実行の runner の結果の写し
             └── requests/
@@ -24,6 +26,7 @@ reviews/<owner>/<repo>/#<PR>-<ブランチ>/
 ```
 
 - レビューディレクトリの直下には `<model>.md` 以外のファイルを置かない（`.agents/review-findings.md` 2 章）。`loop/` はサブディレクトリである。
+- `parent-pr-data/`・`rerun-parent-pr-data/` は、helper が `review_run.py` の `prepare_parent` で作り、DSH のレビュアーは `Request.prompt` の `parent_pr_data`（path と SHA-256）で受け取る。DSH の sandbox はホストの `/tmp` を隠すので、`/tmp` には置けない。そのレビュー（1 回目か再実行）が確定し（runner の結果の保存・`finalize_parent_batch` による確定・後処理・検査・runner の出力の回収）、受け付けたレビュアーがいて、DSH の試行がどれも受け付けた結果の最後の試行なら、helper が消す（`settle_parent_input`）。それ以外（DSH の試行の失敗・却下、受け付けたレビュアーが無い、確定する前の停止）は、そのレビュアーに渡した証拠として残す。検査まで進んだレビューでは、残したパスを `review.cleanup.retained`（再実行は `review.rerun.cleanup.retained`）に載せる。残ったものを消す時点は AGENTS.md の「コミットしないファイルの置き場所」に従う
 - runner の worktree と出力は、`${TMPDIR:-/tmp}/xrift-poc-pr-loop-XXXXXX/cycle-<n>-review/` に一意に作る。停止を確認した後に helper が回収する（`run.json` の `resources`）。
 
 ## 2. ロック（`lock.json`）
@@ -79,7 +82,7 @@ reviews/<owner>/<repo>/#<PR>-<ブランチ>/
 | `review.rerun` | 再実行したときだけ。`agents`（起動し直した実担当）、`replaced`（置き換えた 1 回目の `reviewers[]` の記録）、再実行の `output_dir`・`started_at`・`ended_at`・`seconds`・`batch`・`after_run`・`cleanup`。`review.reviewers` は再実行の結果で置き換えた後の記録 |
 | `review.reused[]` | 再利用した成果 2 件のパスと SHA-256、`model`・`runtime`・`reviewed_head`・`active_findings` |
 | `review.batch` | runner の run ID・state・assignments・`result_file`（写し）・`outside_changes` |
-| `review.output_dir`・`comments_file`・`started_at`・`ended_at`・`seconds`・`cleanup` | レビューの実行と回収 |
+| `review.output_dir`・`comments_file`・`started_at`・`ended_at`・`seconds`・`cleanup` | レビューの実行と回収。`cleanup` は `{"state", "retained"}` で、`retained` は回収で残した runner の出力と、残した `parent-pr-data`（1 章）。何も残さなければ `state` は `removed`、残せば `retained` |
 | `planning` | `round`・`comment_id`・`posted`、`outcome`・`commit`・`stop_reason`・`merged`、判断の件数（`state` 別・`change` 別）、`planning_file`・`verified_file` とその SHA-256、`finalize`（結果の内容・`result_file`・`round_dir`）、`role_runs[]`（`run_roles.py` の出力ごとの実際の担当と状態）、`ended_at` |
 
 レビュー・確認・判断の中身は写さない。参考データ（`.agents/review-findings.md` の識別情報・時間）は、パスで参照する成果の側にある。
@@ -109,7 +112,7 @@ reviews/<owner>/<repo>/#<PR>-<ブランチ>/
 
 | キー | 値 |
 | --- | --- |
-| `retained` | 1 回目と再実行の回収で残したパス（`review.cleanup.retained`・`review.rerun.cleanup.retained`）と、全試行のレビュアーが報告した `retained_paths`（現在の `review.reviewers` と、再実行で置き換えた `review.rerun.replaced`）。順序を保って重複を除く |
+| `retained` | 1 回目と再実行の回収で残したパス（`review.cleanup.retained`・`review.rerun.cleanup.retained`。runner の出力と、残した `parent-pr-data`）と、全試行のレビュアーが報告した `retained_paths`（現在の `review.reviewers` と、再実行で置き換えた `review.rerun.replaced`）。順序を保って重複を除く |
 | `outside_changes` | 1 回目と再実行の runner の結果の `outside_changes`。順序を保って重複を除く |
 
 `finish`・`status` の `cycles[]` の各要素にも、同じ集約の `outside_changes` がある。
