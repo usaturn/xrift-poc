@@ -293,7 +293,8 @@ API は既存 asyncio event loop 内からは呼ばない。
 ``write_exceptions`` は、呼び出し側が作業範囲の指示（``Work in this worktree only`` と ``writes=...``）への
 例外として許可するものの列。runner は空でなければ、その 2 行の直後に見出しと ``- <値>`` の行を順に置くだけで、
 内容を解釈・強制しない（sandbox ではない。DSH の ``sandbox_write_paths`` とは別）。
-例えば PR レビューの loop は、pr-review の helper が書く実行記録・保存先・保存ロックなどを渡す。
+例えば PR レビューの loop と review-fix-planning の self-review は、pr-review の helper が書く実行記録・保存先・保存ロックなどを、
+review-verify の fix-check は一時ディレクトリ・再現用 worktree の登録などを渡す。
 見出しは ``Caller-authorized exceptions to the rules above (only these; everything else stays forbidden):`` で、
 一覧に無い書き込みは禁止と読まれる。プロンプトの本文にだけ書いた許可も禁止と読まれうるので、
 例外を渡すときは、許可する書き込みをすべてこの一覧に並べる。

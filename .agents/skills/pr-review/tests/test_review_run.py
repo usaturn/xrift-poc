@@ -1329,3 +1329,46 @@ def test_payloads_without_a_record_still_name_the_run_record_key(
     assert review_run.main(argv) == 1
     failed = json.loads(capsys.readouterr().out)
     assert failed["status"] == "failed" and failed["run_record"] is None
+
+
+def _granted(lines: tuple[str, ...], path: object) -> int:
+    """``path`` で始まる行（``<path>: <説明>`` か ``<path> and ...``）の数。"""
+    return sum(line.startswith((f"{path}:", f"{path} ")) for line in lines)
+
+
+@pytest.mark.parametrize("separate", [False, True])
+def test_helper_write_exceptions_grant_git_data_only_where_the_helper_writes_it(
+    tmp_path: Path, separate: bool
+) -> None:
+    """--source-root が親と別の repository なら、親の Git ディレクトリには保存ロックだけを許可する（#658）。"""
+    from tools.agent_runner.runner import _single_line  # pyright: ignore[reportPrivateUsage]
+
+    tool_root, parent = tmp_path / "tool", tmp_path / "parent"
+    parent_git, source_git = parent / ".git", tmp_path / "project" / ".git"
+    review_dir = f"{parent}/reviews/example/syncer/#7-*"
+    lines = review_run.helper_write_exceptions(
+        tool_root=tool_root,
+        parent=parent,
+        parent_git=parent_git,
+        review_dir=review_dir,
+        number=7,
+        source_git=source_git if separate else None,
+    )
+    expected = [tool_root, review_dir, f"{parent}/tmp/agents/pr-review-scratch-7.*", tool_root / "tools/devenv/.venv"]
+    expected += [parent_git / "pr-review-save.lock", source_git] if separate else [parent_git]
+    assert [_granted(lines, path) for path in expected] == [1] * len(expected)
+    assert sum(line.startswith("/") for line in lines) == len(expected)
+    if separate:
+        assert _granted(lines, parent_git) == 0
+    same = review_run.helper_write_exceptions(
+        tool_root=tool_root,
+        parent=parent,
+        parent_git=parent_git,
+        review_dir=review_dir,
+        number=7,
+        source_git=parent_git,
+    )
+    assert same == review_run.helper_write_exceptions(
+        tool_root=tool_root, parent=parent, parent_git=parent_git, review_dir=review_dir, number=7
+    )
+    assert all(_single_line(line) for line in lines)

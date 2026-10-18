@@ -498,3 +498,29 @@ def test_git_preparation_stops_term_resistant_child_of_exited_hook(repository: P
             current = process._read_proc(pid)  # pyright: ignore[reportPrivateUsage] - identity-safe fixture cleanup
             if current is not None and current.starttime == start and current.state not in ("Z", "X"):
                 os.kill(pid, signal.SIGKILL)
+
+
+# Callers list where a writes=False agent may write in a checkout's shared Git data (Issue #658).
+def test_git_common_dir_of_a_linked_worktree_is_the_main_git_directory(repository: Path, tmp_path: Path) -> None:
+    linked = create_worktree(repository, "HEAD", tmp_path / "linked")
+    expected = (repository / ".git").resolve()
+    assert workspace.git_common_dir(repository) == expected
+    assert workspace.git_common_dir(linked) == expected
+
+
+def test_git_common_dir_ignores_ambient_git_routing(
+    repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    other = tmp_path / "other"
+    other.mkdir()
+    git(other, "init", "-q")
+    monkeypatch.setenv("GIT_DIR", str(other / ".git"))
+    monkeypatch.setattr(environ, "_literal", environ.literal_environ() | {"GIT_DIR": str(other / ".git")})
+    assert workspace.git_common_dir(repository) == (repository / ".git").resolve()
+
+
+def test_git_common_dir_of_a_non_repository_is_a_workspace_error(tmp_path: Path) -> None:
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    with pytest.raises(WorkspaceError):
+        workspace.git_common_dir(plain)

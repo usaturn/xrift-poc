@@ -19,7 +19,7 @@
 
 runnerのrequestはそのattemptに渡されたものだけを読む。callerがpathを示せばそれを使う。既存runnerでは起動cwdの親の `request.json` がそれに当たる。別attemptのrequestを探索しない。completeも起動時と同じcwdで呼ぶ。レビュー用WTは別の隔離領域であり、そこへcdしたままrequest検査を実行しない。
 
-runnerの役割が `writes=false`（`inspect` など）のとき、その指示はレビュー対象（review用WTの追跡ファイルを含む）・どのcheckoutの追跡ファイル・他担当の成果を変更しないという意味である。helperが管理する実行記録・セッション（WT・backup・draft・state）・正式保存・保存ロック・Gitのworktree登録とref・uvの環境への書き込みはこれに当たらず、callerがrunnerの作業範囲の指示に「Caller-authorized exceptions」として列挙する（loopは自動で列挙する）。
+runnerの役割が `writes=false`（`inspect` など）のとき、その指示はレビュー対象（review用WTの追跡ファイルを含む）・どのcheckoutの追跡ファイル・他担当の成果を変更しないという意味である。helperが管理する実行記録・セッション（WT・backup・draft・state）・正式保存・保存ロック・Gitのworktree登録とref・uvの環境への書き込みはこれに当たらず、callerがrunnerの作業範囲の指示に「Caller-authorized exceptions」として列挙する。列挙は `scripts/review_run.py` の `helper_write_exceptions` にだけ定義し、loop（inspect）とreview-fix-planningの `run_roles.py`（外部に割り当てたself-review）はそれを使って自動で列挙する。DSH以外で `--source-root` のcheckoutが親と別のrepositoryなら、helperはreview用WT・ref・objectをそのcheckoutのGit共有ディレクトリに書き、親のGitディレクトリには保存ロックだけを書く（DSHは下のとおり専用cloneに取得し、checkoutのGitには書かない）。
 
 helperの実行にはpydanticを持つ既存の `tools/devenv` projectを使用する。`TOPLEVEL` は**読んだskillのsource checkoutのroot**、`RUN_HELPER`も同じ版。レビュー対象repoや今のcwdからhelperの置き場所を推測しない。例えばcallerがfeature版skillを指定したときは、そのfeature版のhelperを使う。uvのPythonは3.14以上、lockを変更しない。
 

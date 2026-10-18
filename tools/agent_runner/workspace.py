@@ -69,6 +69,14 @@ def resolve_revision(repository: Path, revision: str = "HEAD") -> str:
     return result.decode("ascii").strip()
 
 
+def git_common_dir(repository: Path) -> Path:
+    """The Git directory a checkout shares with its linked worktrees (the main checkout's ``.git``)."""
+    if not repository.is_dir():
+        raise WorkspaceError()
+    result = _git(repository, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    return Path(os.fsdecode(result.rstrip(b"\n"))).resolve()
+
+
 def create_worktree(repository: Path, revision: str, destination: Path) -> Path:
     """Create a new detached checkout; retain it even if creation fails partway."""
     commit = resolve_revision(repository, revision)
