@@ -15,6 +15,7 @@ import pytest
 from tools.agent_runner import Config, ConfigError
 from tools.agent_runner.adapters import AdapterContext, AdapterOutcome, Capabilities, LaunchSpec
 from tools.agent_runner.models import Agent, Assignment, Identity, Receipt, Role, Runtime, Workflow
+from tools.agent_runner.runner import EXCEPTIONS_HEADING
 
 pytest_plugins = ("tools.test_support.plugin",)
 # 偽の担当だけを起動するので、runner の担当（AGENT_RUNNER_DEPTH=1）の中でもテストの中だけ depth を外す
@@ -182,6 +183,99 @@ def launch(
     return mod.run(
         selected, "self-review", request, tmp_path / "run", planning_file=planning, fix_input=fix_input, **kwargs
     )
+
+
+SELF_REVIEW, FIX_CHECK = " (self-review role only)", " (fix-check role only)"
+
+
+def exception_lines(prompt: str) -> list[str]:
+    """runner の作業範囲の指示（最初の空行まで）のうち、例外の見出しの後の行。"""
+    scope = prompt.split("\n\n", 1)[0].splitlines()
+    return [line.removeprefix("- ") for line in scope[scope.index(EXCEPTIONS_HEADING) + 1 :]]
+
+
+def granted(lines: list[str], path: object) -> int:
+    """``path`` で始まる行（``<path>: <説明>`` か ``<path> and ...``）の数。"""
+    return sum(line.startswith((f"{path}:", f"{path} ")) for line in lines)
+
+
+@pytest.fixture
+def parent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """親の main worktree。fixture の repository とは別の Git ディレクトリ（プロジェクトの PR と同じ形）。"""
+    root = tmp_path / "parent"
+    root.mkdir()
+    git(root, "init", "-q")
+    monkeypatch.setattr(mod.review_target, "default_parent_root", lambda: root)
+    return root
+
+
+def test_external_review_roles_list_their_write_exceptions_with_the_role(
+    inputs: tuple[dict[str, Any], Path, dict[str, Any]], tmp_path: Path, parent: Path
+) -> None:
+    """runner は全役割に同じ一覧を付けるので、各行は末尾で役割を名指しする（#658）。"""
+    adapter = FakeAdapter()
+    launch(inputs, tmp_path, config("a", "b"), adapter_loader=adapter)
+    prompts = [exception_lines(request.prompt) for request in adapter.requests]
+    assert len(prompts) == 2 and prompts[0] == prompts[1]
+    lines = prompts[0]
+    assert all(line.endswith((SELF_REVIEW, FIX_CHECK)) for line in lines)
+    source_git = (Path(inputs[0]["repository"]) / ".git").resolve()
+    review = [line for line in lines if line.endswith(SELF_REVIEW)]
+    expected = (
+        mod.ROOT,
+        f"{parent}/reviews/usaturn/xrift-poc/#900-*",
+        (parent / ".git").resolve() / "pr-review-save.lock",
+        source_git,
+        f"{parent}/tmp/agents/pr-review-scratch-900.*",
+        mod.ROOT / "tools/devenv/.venv",
+    )
+    assert [granted(review, path) for path in expected] == [1] * len(expected)
+    check = [line for line in lines if line.endswith(FIX_CHECK)]
+    assert [granted(check, path) for path in (mod.ROOT, source_git)] == [1, 1]
+
+
+@pytest.mark.parametrize("assigned", [("self", "b"), ("a", "self")])
+def test_only_the_externally_assigned_role_lists_exceptions(
+    inputs: tuple[dict[str, Any], Path, dict[str, Any]], tmp_path: Path, parent: Path, assigned: tuple[str, str]
+) -> None:
+    adapter = FakeAdapter()
+    launch(inputs, tmp_path, config(*assigned), adapter_loader=adapter)
+    lines = exception_lines(adapter.requests[0].prompt)
+    external = SELF_REVIEW if assigned[0] != "self" else FIX_CHECK
+    assert lines and all(line.endswith(external) for line in lines)
+
+
+def test_self_review_roles_ask_for_no_write_exceptions(
+    inputs: tuple[dict[str, Any], Path, dict[str, Any]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def forbidden(*_: object) -> Any:
+        raise AssertionError("self must not ask for write exceptions")
+
+    calls: list[dict[str, Any]] = []
+    original = mod.run_workflow
+
+    def recorded(*args: Any, **kwargs: Any) -> Any:
+        calls.append(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(mod.review_target, "default_parent_root", forbidden)
+    monkeypatch.setattr(mod.verifier, "fix_check_write_exceptions", forbidden)
+    monkeypatch.setattr(mod, "run_workflow", recorded)
+    launch(inputs, tmp_path, config(), adapter_loader=FakeAdapter())
+    assert [call["write_exceptions"] for call in calls] == [()]
+
+
+def test_unresolved_parent_stops_before_reserving_the_review(
+    inputs: tuple[dict[str, Any], Path, dict[str, Any]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unresolved() -> Path:
+        raise mod.review_target.TargetError(2, "no parent main worktree")
+
+    monkeypatch.setattr(mod.review_target, "default_parent_root", unresolved)
+    with pytest.raises(mod.RoleInputError):
+        launch(inputs, tmp_path, config("a", "self"), adapter_loader=FakeAdapter())
+    assert json.loads(inputs[1].read_text())["activities"] == []
+    assert not (tmp_path / "run").exists()
 
 
 @pytest.mark.parametrize("assigned", [("self", "self"), ("a", "b"), ("a", "self")])

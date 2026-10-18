@@ -842,31 +842,23 @@ def review_write_paths(run: RunRecord, runtimes: Mapping[str, str]) -> tuple[Pat
 
 
 def review_write_exceptions(run: RunRecord) -> tuple[str, ...]:
-    """pr-review の helper が管理する書き込み先。runner の作業範囲の指示に、呼び出し側が許可する例外として載せる。
+    """inspect のレビュアーに、runner の作業範囲の指示への例外として載せる書き込み先。
 
-    inspect の writes=False は、レビュー対象・どの checkout の追跡ファイル・他のレビュアーの成果を変えないという
-    意味で、ここに挙げる helper の書き込みはそれに当たらない。パスを事前に決められるものは、パスを行の先頭に置く。
+    helper が管理する書き込み先は pr-review の ``review_run.helper_write_exceptions`` が定める（review-fix-planning の
+    self-review と同じ一覧）。最後の行（ランタイムが自分で作るファイル。loop が回収でディレクトリごと捨てる）は
+    loop だけのもの。
     """
-    tool_root = Path(run.tool_root)
     review_dir = Path(run.review_dir)
     parent = review_dir.parents[3]
     common = git_output(parent, "rev-parse", "--path-format=absolute", "--git-common-dir")
-    number = run.pr.number
     return (
-        f"{tool_root}: the source checkout named tool_root in the request. Read the pr-review skill and its "
-        "references there and run its helper from there; do not edit it",
-        f"{review_dir}: the run records and the saved review and candidates that the helper writes; "
-        "do not edit them by hand",
-        f"{common}: the helper's save lock (pr-review-save.lock) and the Git objects, refs and worktree "
-        "registrations that the helper adds and removes for its review worktree (a submodule's Git data is "
-        "here too; a repository without a checkout here is cloned inside the helper's session instead)",
-        f"{parent / 'tmp/agents'}/pr-review-scratch-{number}.*: one scratch directory created with "
-        "agent_tmp.py mkdir as pr-review allows; remove it when it is no longer needed",
-        f"the session that the helper's prepare creates (pr-review-{number}-* in the temporary directory, or "
-        "the DSH staging area): its review worktree, backup and state belong to the helper. Write only the "
-        "draft and findings_draft that prepare returns, and leave no files in the review worktree",
-        f"{tool_root / 'tools/devenv/.venv'} and uv's cache: the environment that "
-        "`uv run --project <tool_root>/tools/devenv --locked` maintains",
+        *review_entry.helper_write_exceptions(
+            tool_root=Path(run.tool_root),
+            parent=parent,
+            parent_git=Path(common),
+            review_dir=str(review_dir),
+            number=run.pr.number,
+        ),
         "files that the agent runtime or its extensions create by themselves in the directory you were launched in "
         "(for example .pi-lens-probe-home/ from pi-lens): they belong to the runtime, not to you. Do not edit or "
         "delete them, and do not count them as your modifications; the caller discards that directory",

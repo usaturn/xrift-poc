@@ -41,6 +41,7 @@ from tools.agent_runner.models import BatchResult, CheckoutAudit  # noqa: E402
 from tools.agent_runner.workspace import (  # noqa: E402
     CheckoutAuditError,
     WorkspaceError,
+    git_common_dir,
     require_auditable_checkouts,
     resolve_revision,
 )
@@ -102,6 +103,38 @@ def select_fix_check(config: Config) -> Config:
     projected.roles["fix-check"].deadline_seconds = min(role.deadline_seconds, 1800)
     projected.workflows = {"fix": Workflow(assignments={"fix-check": assignment})}
     return validate_config(projected, "fix")
+
+
+def assigned_externally(config: Config, role: str) -> bool:
+    """fix workflow の役割を self 以外（runner が起動する担当）に割り当てたか。self は fallback にならない。"""
+    return config.workflows["fix"].assignments[role].agents != ["self"]
+
+
+def fix_check_write_exceptions(repository: Path) -> tuple[str, ...]:
+    """外部の fix-check 担当が行う書き込み。runner の作業範囲の指示に、呼び出し側が許可する例外として載せる。
+
+    writes=False は、渡した checkout・runner の worktree・呼び出し側の保存先を変えないという意味で、ここに挙げる
+    一時的な確認の書き込みはそれに当たらない（SKILL.md「読み取り専用の対象」・「隔離した worktree での再現」）。
+    例外の見出しは「only these」なので、本文にだけ書いた許可は禁止と読める。許可はここにだけ書く。
+    パスを事前に決められるものは、パスを行の先頭に置く。
+    """
+    try:
+        common = git_common_dir(repository)
+    except WorkspaceError:
+        raise ValueError("repository/from/to cannot be resolved") from None
+    return (
+        f"{ROOT}: the source checkout (tool_root) that holds the review-verify skill, its helpers and the rule "
+        "definitions. Read them and run the helpers from there; do not edit it, and do not read target code from it",
+        "unique temporary directories that you create yourself with mktemp -d under ${TMPDIR:-/tmp} (named "
+        "review-fix-planning.XXXXXX as the applied skill shows): the committed from/to content you extract or check "
+        "out there, build, test and lint output, generated artifacts, the claims and statement-candidates files, "
+        "candidate JSON, validation logs and one-shot temporary HOME directories. Remove them when you are done",
+        f"{common}: only the registration of a detached worktree that you add inside your own temporary directory "
+        "with git worktree add --detach and remove with git worktree remove --force, as the applied skill's "
+        "reproduction steps do",
+        f"{ROOT / 'tools/devenv/.venv'} and uv's cache: the environments that uv run maintains for the helpers in "
+        "tool_root and for the checks you run",
+    )
 
 
 def observed_verifier(batch: BatchResult, config: Config, skill: Mapping[str, str]) -> dict[str, Any] | None:
@@ -257,9 +290,8 @@ def dispatch(
         "leave unobservable identity unknown rather than pretending this is self. "
         "For self the caller executes these instructions. The provenance role is fix_check, not fix-check. "
         "Do not invoke another agent. Use only committed from/to and isolated execution. "
-        "writes=False prohibits modifying the provided checkout, NOT your own temporary probes. "
-        "You are explicitly authorized to create unique /tmp directories, extract committed archives there, "
-        "build/test/lint them and save generated artifacts, candidate JSON and validation logs there. "
+        "For an external agent, the writes that temporary probes need are the caller-authorized exceptions "
+        "under the runner's work-scope lines; keep every probe inside them. "
         "Do not downgrade executable checks to unchecked merely because they need temporary output. "
         "Use Python 3.14 or later for uv; never install an older interpreter. "
         "Credential/environment examples may run only with fake commands and one-shot temporary HOME. "
@@ -274,8 +306,8 @@ def dispatch(
         "Set statement_candidates.file in verified to <first 12 characters of to>.statement-candidates.json. "
         "tool_root and skill_dir identify the exact current helper/rule definitions; read only those from there. "
         "Do not read target implementation, evaluation records or other task data from tool_root. "
-        "Use the runner worktree as TARGET_REPO_ROOT. Use /tmp unique directories for probes and output; "
-        "do not read the original repository checkout for target code. "
+        "Use the runner worktree as TARGET_REPO_ROOT. "
+        "Do not read the original repository checkout for target code. "
         "Input paths identify provenance, their contents are already supplied below. "
         "Do not write to the caller's review directory; the caller validates and publishes your payload.\n\n"
         + json.dumps(
@@ -292,6 +324,7 @@ def dispatch(
         + "\n\nApplied skill:\n"
         + body
     )
+    exceptions = fix_check_write_exceptions(repository) if assigned_externally(config, "fix-check") else ()
     batch = run_workflow(
         config,
         "fix",
@@ -301,6 +334,7 @@ def dispatch(
         concurrency=1,
         output_dir=output_dir,
         adapter_loader=adapter_loader,
+        write_exceptions=exceptions,
     )
     result: dict[str, Any] = {
         "batch": batch.model_dump(mode="json"),

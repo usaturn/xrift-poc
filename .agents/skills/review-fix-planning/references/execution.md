@@ -78,6 +78,8 @@ self-review・fix-checkには、runtimeが `dsh` の担当（`dsh-ccd`・`dsh-go
 
 run_rolesは投影の直後、requestの検査とGitの照会より前にexit 2で止まり、planningの予約、`--output-dir`、起動のどれも行わない（stderrに理由を出す）。DSHをself-review・fix-checkに使うには、run_rolesにloopと同じ親側の準備（prepare_parent・書き込みの許可・stagedの保存）を足す別の変更が要る。implementは対象外（runnerのworktreeの中に書く役割で、pr-reviewのDSHの手順を使わない）。
 
+外部の担当（self以外）に割り当てた役割には、その役割の書き込みをrunnerの作業範囲の指示の例外（Caller-authorized exceptions）として渡す。self-reviewはpr-reviewのhelperの書き込み先（`pr-review/scripts/review_run.py` の `helper_write_exceptions`。保存先はブランチ名を使わず `#<PR>-*`、Gitの書き込み先はrequestの `repository` の共有ディレクトリ）、fix-checkは `review-verify/scripts/dispatch.py` の `fix_check_write_exceptions`。runnerは全役割に同じ一覧を付けるので、各行の末尾に `(self-review role only)` / `(fix-check role only)` を付ける。selfの役割には何も求めず渡さない。self-reviewの一覧を作れない（親のmain worktreeを解決できない）ときは、1回枠を予約する前にexit 2で止まる。
+
 ### 回数と受け取り
 
 - PLANNING_JSONは司令塔が起動前に作る仮のv2 planning（SKILL.md 5節の手順5）。形は `.agents/review-findings.md` 6章のv2例と同じで、`outcome` は仮の `stopped`、`comment_id` はnull、`activities` に `pre_push_review` を入れない。共有定義の「サイクルの最後に書く」は、最後に同じファイルを更新することで満たす（共有定義は変えない）。

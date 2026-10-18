@@ -11,7 +11,7 @@ from typing import cast, get_args
 
 import pytest
 
-from tools.agent_runner import cli, hooks
+from tools.agent_runner import cli, hooks, runner
 from tools.agent_runner.adapters import (
     AdapterContext,
     AdapterOutcome,
@@ -52,6 +52,31 @@ def template(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return path
 
 
+@pytest.fixture
+def repository(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "fixture",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return repo
+
+
 def command(template: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "-m", "tools.agent_runner", "--template", str(template), *args],
@@ -87,6 +112,8 @@ def test_check_list_report_support_state_without_configuration_values(template: 
         ["run", "--unknown-secret-flag"],
         ["run"],
         ["run", "--workflow", "audit", "--assign", "bad-secret-assignment"],
+        # argparse は -x のような値を別の引数に書くとオプションと読む。誤りになっても値は出さない
+        ["run", "--workflow", "audit", "--write-exception", "-secret-value"],
     ],
 )
 def test_invalid_arguments_are_sanitized(template: Path, args: list[str]) -> None:
@@ -284,33 +311,17 @@ def test_sigint_saves_interrupted_batch_and_restores_handler(
 
 
 def test_unsupported_run_persists_result(
-    template: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    template: Path,
+    repository: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     # Stand-in modules without ADAPTER keep "unsupported" reachable in-process
     # even after every fixed runtime ships an implementation.
     for module in ("pi", "codex"):
         name = f"tools.agent_runner.adapters.{module}"
         monkeypatch.setitem(sys.modules, name, ModuleType(name))
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True)
-    subprocess.run(
-        [
-            "git",
-            "-C",
-            str(repo),
-            "-c",
-            "user.name=Test",
-            "-c",
-            "user.email=test@example.invalid",
-            "commit",
-            "--allow-empty",
-            "-qm",
-            "fixture",
-        ],
-        check=True,
-        capture_output=True,
-    )
     prompt = tmp_path / "prompt"
     prompt.write_text("task")
     output = tmp_path / "unsupported"
@@ -323,7 +334,7 @@ def test_unsupported_run_persists_result(
                 "--workflow",
                 "audit",
                 "--repository",
-                str(repo),
+                str(repository),
                 "--prompt-file",
                 str(prompt),
                 "--output-dir",
@@ -515,3 +526,123 @@ def test_after_run_internal_error_is_reported_without_changing_the_exit_code(
     assert code == 0
     report = cast(list[dict[str, object]], document(capsys.readouterr().out)["after_run"])[0]
     assert (report["state"], report["exit_code"], report["stop_confirmed"]) == ("response_failed", None, False)
+
+
+# --- write_exceptions（Issue #656） --------------------------------------------------------------------------------
+
+_BODY = "review the change"
+# 受け取った依頼の prompt を receipt の payload に写す。実際のエージェントの CLI は起動しない
+_ECHO = (
+    "import json, pathlib, sys; request = json.loads(sys.stdin.read()); "
+    "receipt = {key: request[key] for key in ('schema_version', 'run_id', 'request_id', 'agent_id', 'role')}; "
+    "receipt.update(status='success', payload={'prompt': request['prompt']}); "
+    "pathlib.Path(sys.argv[1]).write_text(json.dumps(receipt))"
+)
+
+
+class EchoAdapter:
+    capabilities = Capabilities()
+
+    def prepare(self, context: AdapterContext) -> LaunchSpec:
+        argv = (sys.executable, "-c", _ECHO, str(context.receipt_path))
+        return LaunchSpec(argv, context.request.model_dump_json().encode())
+
+    def collect(self, context: AdapterContext, stdout_path: Path, stderr_path: Path) -> AdapterOutcome:
+        return AdapterOutcome()
+
+
+def run_echo(template: Path, repository: Path, output: Path, monkeypatch: pytest.MonkeyPatch, *options: str) -> int:
+    """実際の run_workflow を通し、pi の adapter だけを EchoAdapter に差し替えて CLI の run を実行する。"""
+    module = ModuleType("tools.agent_runner.adapters.pi")
+    module.__dict__["ADAPTER"] = EchoAdapter()
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    prompt = output.with_name(f"{output.name}-prompt.txt")
+    prompt.write_text(_BODY)
+    argv = ["--template", str(template), "run", "--workflow", "audit", "--repository", str(repository)]
+    return cli.main([*argv, "--prompt-file", str(prompt), "--output-dir", str(output), *options])
+
+
+def prompt_lines(output: Path) -> list[str]:
+    """最後の試行が受け取った prompt を、実行ごとに違う work_dir を置き換えて行に分ける。"""
+    results = cast(list[dict[str, object]], document((output / "result.json").read_text())["results"])
+    attempt = cast(list[dict[str, object]], results[0]["attempts"])[-1]
+    prompt = cast(dict[str, str], attempt["payload"])["prompt"]
+    return prompt.replace(cast(str, attempt["work_dir"]), "<work_dir>").split("\n")
+
+
+def test_write_exceptions_follow_the_work_scope_lines_in_order(
+    template: Path,
+    repository: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    values = ["/x/#7-feat-日本語\u3000名前: run records", "-x/notes", "uv cache with spaces"]
+    plain_code = run_echo(template, repository, tmp_path / "plain", monkeypatch)
+    capsys.readouterr()
+    granted_code = run_echo(
+        template,
+        repository,
+        tmp_path / "granted",
+        monkeypatch,
+        "--write-exception",
+        values[0],
+        f"--write-exception={values[1]}",
+        "--write-exception",
+        values[2],
+    )
+    captured = capsys.readouterr()
+    summary = json.dumps(document(captured.out), ensure_ascii=False)
+    assert plain_code == granted_code == 0
+    assert captured.err == ""
+    plain, granted = prompt_lines(tmp_path / "plain"), prompt_lines(tmp_path / "granted")
+    # --write-exception を付けない呼び出しの指示は、作業範囲の 2 行と空行のまま
+    assert runner.EXCEPTIONS_HEADING not in plain
+    assert [line.split(":", 1)[0].split("=", 1)[0] for line in plain[:2]] == ["Work in this worktree only", "writes"]
+    assert plain[2:] == ["", _BODY]
+    assert granted == [*plain[:2], runner.EXCEPTIONS_HEADING, *(f"- {value}" for value in values), *plain[2:]]
+    assert not any(value in summary for value in values)
+
+
+@pytest.mark.parametrize(
+    ("value", "code"),
+    [
+        pytest.param("notes may change", 0, id="valid"),
+        pytest.param("", 2, id="empty"),
+        pytest.param(" a", 2, id="leading-space"),
+        pytest.param("a ", 2, id="trailing-space"),
+        pytest.param("\u3000a", 2, id="leading-ideographic"),
+        pytest.param("a\u00a0", 2, id="trailing-nbsp"),
+        pytest.param("private-value\nb", 2, id="newline"),
+        pytest.param("a\rb", 2, id="carriage-return"),
+        pytest.param("a\u2028b", 2, id="unicode-line-separator"),
+        pytest.param("a\tb", 2, id="tab"),
+        pytest.param("a\x00b", 2, id="nul"),
+        pytest.param("a\u3000b\u00a0c", 0, id="internal-unicode-space"),
+        pytest.param("\u200b", 0, id="format-character"),
+        pytest.param("a\ue000b\u0378c", 0, id="private-unassigned"),
+        # 別の引数に書いた -x は argparse がオプションと読む。値は --write-exception=-x と書く
+        pytest.param("-x", 2, id="dash-separate-token"),
+    ],
+)
+def test_invalid_write_exceptions_are_rejected_before_any_output(
+    template: Path,
+    repository: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    value: str,
+    code: int,
+) -> None:
+    output = tmp_path / "output"
+    assert run_echo(template, repository, output, monkeypatch, "--write-exception", value) == code
+    captured = capsys.readouterr()
+    # 正しい値なら同じ呼び出しが成功するので、拒否は値によるもので引数の未定義によるものではない
+    assert output.exists() is (code == 0)
+    if code == 2:
+        assert captured.out == json.dumps({"error": "invalid_input"}) + "\n"
+        assert "--write-exception" in captured.err
+        assert "private-value" not in captured.out + captured.err
+        assert ("--write-exception=-x" if value == "-x" else "one line") in captured.err
+    else:
+        assert captured.err == ""

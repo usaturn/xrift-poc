@@ -21,6 +21,7 @@ import pytest
 from tools.agent_runner import Config, ConfigError
 from tools.agent_runner.adapters import AdapterContext, AdapterOutcome, Capabilities, LaunchSpec
 from tools.agent_runner.models import Identity
+from tools.agent_runner.runner import EXCEPTIONS_HEADING
 
 pytest_plugins = ("tools.test_support.plugin",)
 # 偽の担当だけを起動するので、runner の担当（AGENT_RUNNER_DEPTH=1）の中でもテストの中だけ depth を外す
@@ -154,6 +155,62 @@ def test_external_runs_only_fix_check_and_preserves_observed_identity(
         assert result["verifier"]["provenance"]["request_id"] == result["batch"]["results"][0]["request_id"]
     else:
         assert result["verifier"] is None
+
+
+class RecordingAdapter(ReceiptAdapter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.requests: list[Any] = []
+
+    def prepare(self, context: AdapterContext) -> LaunchSpec:
+        self.requests.append(context.request)
+        return super().prepare(context)
+
+
+def exception_lines(prompt: str) -> list[str]:
+    """runner の作業範囲の指示（最初の空行まで）のうち、例外の見出しの後の行。"""
+    scope = prompt.split("\n\n", 1)[0].splitlines()
+    return [line.removeprefix("- ") for line in scope[scope.index(EXCEPTIONS_HEADING) + 1 :]]
+
+
+def test_external_fix_check_request_lists_its_write_exceptions(
+    dispatch: Any, verification_input: dict[str, Any], tmp_path: Path
+) -> None:
+    """本文にだけ書いた許可は「only these」で禁止と読めるので、許可は runner の例外の一覧に並ぶ（#658）。"""
+    adapter = RecordingAdapter()
+
+    def adapter_loader(runtime: str) -> RecordingAdapter:
+        return adapter
+
+    dispatch.dispatch(config("probe"), verification_input, tmp_path / "run", adapter_loader=adapter_loader)
+    lines = exception_lines(adapter.requests[0].prompt)
+    repository = Path(verification_input["repository"])
+    granted = (dispatch.ROOT, (repository / ".git").resolve())
+    assert [sum(line.startswith(f"{path}:") for line in lines) for path in granted] == [1, 1]
+    assert lines == list(dispatch.fix_check_write_exceptions(repository))
+
+
+def test_self_fix_check_asks_for_no_write_exceptions(
+    dispatch: Any, verification_input: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def forbidden(*_: object) -> tuple[str, ...]:
+        raise AssertionError("self must not ask for write exceptions")
+
+    def no_launch(runtime: str) -> Any:
+        raise AssertionError("self must not load adapters")
+
+    calls: list[dict[str, Any]] = []
+    original = dispatch.run_workflow
+
+    def recorded(*args: Any, **kwargs: Any) -> Any:
+        calls.append(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(dispatch, "fix_check_write_exceptions", forbidden)
+    monkeypatch.setattr(dispatch, "run_workflow", recorded)
+    result = dispatch.dispatch(config(), verification_input, tmp_path / "run", adapter_loader=no_launch)
+    assert result["batch"]["state"] == "self"
+    assert [call["write_exceptions"] for call in calls] == [()]
 
 
 @pytest.mark.parametrize("mutation", ["multi", "writes", "text"])

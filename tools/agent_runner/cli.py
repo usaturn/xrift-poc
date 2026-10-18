@@ -4,12 +4,14 @@ import argparse
 import json
 import os
 import signal
+import sys
 import tempfile
 import threading
 from pathlib import Path
 from types import FrameType
 from typing import NoReturn, cast, get_args
 
+from tools.agent_runner import runner
 from tools.agent_runner.adapters import load_adapter
 from tools.agent_runner.config import ConfigError, check_depth, load_config, resolve_config_path
 from tools.agent_runner.hooks import run_after_run
@@ -23,6 +25,11 @@ _ROOT = Path(__file__).resolve().parents[2]
 class _Parser(argparse.ArgumentParser):
     def error(self, message: str) -> NoReturn:
         # argparse's normal diagnostics echo values (including secrets).
+        if "--write-exception" in message:
+            print(
+                "--write-exception requires a value; use --write-exception=-x for values starting with '-'.",
+                file=sys.stderr,
+            )
         raise RunnerError("invalid_input")
 
 
@@ -37,6 +44,19 @@ class _Arguments(argparse.Namespace):
     concurrency: int
     output_dir: Path | None
     assign: list[str]
+    write_exception: list[str]
+
+
+def _write_exception(value: str) -> str:
+    # Use the API's predicate rather than maintaining a second set of Unicode rules.
+    if not runner._single_line(value):  # pyright: ignore[reportPrivateUsage]
+        print(
+            "--write-exception must be nonempty, have no surrounding whitespace, occupy one line, "
+            "and contain no control characters.",
+            file=sys.stderr,
+        )
+        raise RunnerError("invalid_input")
+    return value
 
 
 def _parse(argv: list[str] | None) -> _Arguments:
@@ -54,6 +74,8 @@ def _parse(argv: list[str] | None) -> _Arguments:
     run.add_argument("--concurrency", type=int, default=2)
     run.add_argument("--output-dir", type=Path)
     run.add_argument("--assign", action="append", default=[])
+    # run_workflow checks API inputs too, before anything is created.
+    run.add_argument("--write-exception", action="append", type=_write_exception, default=[])
     return cast(_Arguments, parser.parse_args(argv))
 
 
@@ -135,6 +157,7 @@ def _run(arguments: _Arguments, config: Config) -> int:
             concurrency=arguments.concurrency,
             output_dir=arguments.output_dir,
             cancel=cancel,
+            write_exceptions=arguments.write_exception,
         )
         result_path = _save(batch)
         after_run = run_after_run(

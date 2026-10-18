@@ -157,7 +157,7 @@ dispatch の終了コードは次のとおり。出力の JSON 行は `state`・
 
 ### 読み取り専用の対象
 
-`writes=false` は呼び出し側 checkout と提供 worktree の変更を禁止する。**担当が作る一意の一時ディレクトリでの生成物・検査用ファイル・候補 JSON・validate ログの作成は禁止しない。** from/to のコミット済み内容をそこへ展開し、そこでビルド・lint・テストを実行する。生成物を要することを未実施の理由にしない。資格情報や環境変数の例は fake CLI と `env HOME="$TMP_HOME" ...` のワンショットだけで試す。実環境の資格情報や実サービスを使わない。uv は Python 3.14 以上で実行する。元 checkout の修正・commit・push や他者の作業領域への書き込みはしない。
+`writes=false` は呼び出し側 checkout と提供 worktree の変更を禁止する。**担当が作る一意の一時ディレクトリでの生成物・検査用ファイル・候補 JSON・validate ログの作成は禁止しない。** from/to のコミット済み内容をそこへ展開し、そこでビルド・lint・テストを実行する。生成物を要することを未実施の理由にしない。資格情報や環境変数の例は fake CLI と `env HOME="$TMP_HOME" ...` のワンショットだけで試す。実環境の資格情報や実サービスを使わない。uv は Python 3.14 以上で実行する。元 checkout の修正・commit・push や他者の作業領域への書き込みはしない。外部の担当には、dispatch（と review-fix-planning の `run_roles.py`）が、これらの書き込み（一意の一時ディレクトリ、再現用 worktree の登録、`tool_root` の helper の実行、uv の環境）を runner の作業範囲の指示の例外（`dispatch.py` の `fix_check_write_exceptions`）として渡す。例外の見出しは「only these」なので、許可は依頼の本文ではなくこの一覧に並べる。
 
 ### 主張と変更ファイルの一覧
 

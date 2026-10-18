@@ -39,6 +39,7 @@ from tools.agent_runner.models import BatchResult  # noqa: E402
 from tools.agent_runner.workspace import (  # noqa: E402
     CheckoutAuditError,
     WorkspaceError,
+    git_common_dir,
     require_auditable_checkouts,
     resolve_revision,
 )
@@ -54,6 +55,8 @@ def load_module(name: str, path: Path) -> Any:
 
 verifier = load_module("planning_fix_dispatch", ROOT / ".agents/skills/review-verify/scripts/dispatch.py")
 findings = verifier.load_review_findings()
+review_target = load_module("planning_review_target", ROOT / ".agents/scripts/review_target.py")
+review_entry = load_module("planning_review_run", ROOT / ".agents/skills/pr-review/scripts/review_run.py")
 
 
 class RoleInputError(ValueError):
@@ -210,6 +213,39 @@ def reserve_review(path: Path, data: RoleInput) -> None:
             lock.unlink()
 
 
+def write_exceptions(config: Config, data: RoleInput) -> tuple[str, ...]:
+    """外部の担当に割り当てた self-review・fix-check の書き込み。runner の作業範囲の指示への例外として渡す。
+
+    self は起動しないので求めない（既定の流れを変えない）。runner は workflow のすべての役割に同じ一覧を付けるので、
+    各行の末尾にその役割を書く。self-review は未 push の commit を ``--source-root`` で pr-review に渡すので、
+    helper の Git の書き込み先は RoleInput.repository の共有ディレクトリになる。保存先はブランチ名を知らないので
+    ``#<PR>-*`` のパターンにする。
+    """
+    lines: list[str] = []
+    if verifier.assigned_externally(config, "self-review"):
+        try:
+            parent = review_target.default_parent_root()
+            reviews = review_target.repository_reviews_root(parent, data.pr.repository)
+            helper = review_entry.helper_write_exceptions(
+                tool_root=ROOT,
+                parent=parent,
+                parent_git=git_common_dir(parent),
+                review_dir=f"{reviews}/#{data.pr.number}-*",
+                number=data.pr.number,
+                source_git=git_common_dir(Path(data.repository)),
+            )
+        except review_target.TargetError, WorkspaceError:
+            raise RoleInputError(
+                "self-review write exceptions need the parent main worktree and its Git data"
+            ) from None
+        lines += [f"{line} (self-review role only)" for line in helper]
+    if verifier.assigned_externally(config, "fix-check"):
+        lines += [
+            f"{line} (fix-check role only)" for line in verifier.fix_check_write_exceptions(Path(data.repository))
+        ]
+    return tuple(lines)
+
+
 def fix_context(request: Mapping[str, Any], data: RoleInput, config: Config) -> dict[str, Any]:
     fixed = verifier.FixInput.model_validate(request)
     if (
@@ -270,6 +306,8 @@ def run(
             raise RoleInputError("each selected role needs a complete prompt")
         role_prompts[role] = data.prompt[role]
     require_auditable_checkouts(repository)
+    # 1 回枠の予約より前に求める。求められなければ枠を消費せずに止まる
+    exceptions = write_exceptions(selected, data) if phase == "self-review" else ()
     context = None
     if phase == "self-review":
         if planning_file is None or fix_input is None:
@@ -281,7 +319,7 @@ def run(
             "Use only committed from/to in the runner worktree, "
             "never target code from the original checkout/tool_root. "
             "No nested agent, GitHub writes, push, commit, repair, network probes, or caller review_dir writes. "
-            "writes=False allows unique temporary probes; use Python 3.14+ and fake commands with one-shot HOME. "
+            "Use Python 3.14+ and fake commands with one-shot HOME. "
             "Observe time_limits between checks; record remaining unchecked checks and return before deadline_at. "
             "Run statement-candidates into unique temporary storage. Preserve all tool candidates/claims/terms; "
             "only append discoveries. "
@@ -316,6 +354,7 @@ def run(
         concurrency=1 if phase == "implement" else 2,
         output_dir=output_dir,
         adapter_loader=adapter_loader,
+        write_exceptions=exceptions,
     )
     stopped = all(attempt.stop_confirmed for result in batch.results for attempt in result.attempts)
     changes = (
