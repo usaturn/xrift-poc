@@ -86,7 +86,8 @@ jq -n --slurpfile comments "$SESSION/comments.json" --slurpfile state "$SESSION/
 
   ```bash
   # zsh では "$VAR:r" などが修飾子になるため、: の前の変数は ${VAR} で区切る
-  REPRO_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/review-carry-over-followup.XXXXXX")"
+  # 接頭辞は review-verify と同じ（AGENTS.md が /tmp に認める場所で、残骸は cleanup-workspace.bash が片付ける）
+  REPRO_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/review-fix-planning.XXXXXX")"
   BASE_REF="$(jq -r .baseRefName "$SESSION/pr.json")"
   git -C "$TARGET_ROOT" fetch --no-tags origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}" \
     "+pull/${PR_NUMBER}/head:refs/carry-over/${PR_NUMBER}"
@@ -136,7 +137,7 @@ check_body() (
     env -u GITLEAKS_CONFIG -u GITLEAKS_CONFIG_TOML gitleaks dir --no-banner --redact --ignore-gitleaks-allow \
         --config "$scan/config.toml" --gitleaks-ignore-path "$scan/ignore" "$body" >&2
     if rg -n -e '<!-- review-fix-planning:' -e '<!-- review-records:' \
-        -e '/home/' -e '/workspaces/' -e '/tmp/' -e '/root/' -e '/Users/' "$body" >&2; then
+        -e '/(home|workspaces|tmp|root|Users)/' "$body" >&2; then
         printf 'check_body: 記録のマーカーかローカルの絶対パスがある\n' >&2
         return 1
     fi
