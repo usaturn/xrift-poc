@@ -259,6 +259,91 @@ def test_parent_bundle_from_shallow_checkout_is_complete(
     assert isinstance(payload, dict) and payload["status"] == "success", payload
 
 
+def maintenance_launches(trace: Path) -> list[str]:
+    """GIT_TRACE2 の記録から、git が起動した ``git maintenance run`` の行を拾う（#64）。"""
+    return [line for line in trace.read_text(encoding="utf-8").splitlines() if "maintenance run" in line]
+
+
+def test_parent_preparation_does_not_start_auto_maintenance(
+    prepared: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 親入力の repo（clone して fetch）と bundle-check（init して bundle を fetch）は、作った直後に消す
+    trace = tmp_path / "trace2.txt"
+    monkeypatch.setenv("GIT_TRACE2", str(trace))
+
+    parent_input(prepared, tmp_path, monkeypatch)
+
+    assert "cmd_name fetch" in trace.read_text(encoding="utf-8")
+    assert maintenance_launches(trace) == []
+
+
+def test_dsh_child_preparation_does_not_start_auto_maintenance(
+    prepared: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent_input(prepared, tmp_path, monkeypatch)
+    trace = tmp_path / "trace2.txt"
+    monkeypatch.setenv("GIT_TRACE2", str(trace))
+
+    # 子のセッションの repo は、親入力の bundle を git init したリポジトリへ fetch して作る
+    result = review_run.prepare(prepared["args"])
+
+    assert result["status"] == "prepared", result.get("reason")
+    assert "cmd_name fetch" in trace.read_text(encoding="utf-8")
+    assert maintenance_launches(trace) == []
+
+
+def test_private_clone_session_does_not_start_auto_maintenance(
+    prepared: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = review_run.workspace._target_call("resolve", prepared["args"].pr, parent_root=prepared["parent"])
+    trace = tmp_path / "trace2.txt"
+    monkeypatch.setenv("GIT_TRACE2", str(trace))
+
+    # 親入力の無い private_clone は、checkout を --no-local で clone し、PR の head を fetch する
+    review_run.workspace.create(
+        argparse.Namespace(
+            target=json.dumps(target),
+            model_name="observed-model",
+            review_commit=None,
+            source_root=str(prepared["source"]),
+            private_clone=True,
+            parent_input=None,
+            temp_root=str(tmp_path / "sessions"),
+            session_dir=None,
+        )
+    )
+
+    assert "cmd_name fetch" in trace.read_text(encoding="utf-8")
+    assert maintenance_launches(trace) == []
+
+
+def test_parent_preparation_failure_leaves_nothing_and_retry_succeeds(
+    prepared: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = review_run.workspace.load_review_target()
+    live = target.fetch_pull_request
+    calls = 0
+
+    def head_moves_during_preparation(repository: str, number: int, **kwargs: Any) -> Any:
+        # 1 回目は resolve、2 回目は一時のリポジトリへの fetch を終えた後の照会
+        nonlocal calls
+        calls += 1
+        pull = live(repository, number, **kwargs)
+        return pull._replace(head_sha="b" * 40) if calls == 2 else pull
+
+    monkeypatch.setattr(target, "fetch_pull_request", head_moves_during_preparation)
+    with pytest.raises(ValueError, match="PR head changed during parent preparation"):
+        parent_input(prepared, tmp_path, monkeypatch)
+    assert calls == 2
+    assert not (tmp_path / "parent-input").exists()
+
+    monkeypatch.setattr(target, "fetch_pull_request", live)
+    descriptor = parent_input(prepared, tmp_path, monkeypatch)
+
+    snapshot = review_run.parent_data.load(review_run.workspace, descriptor, prepared["args"].pr)
+    assert snapshot["target"]["head_sha"] == prepared["head"]
+
+
 def test_parent_preparation_collects_pr_and_referenced_issues(
     prepared: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

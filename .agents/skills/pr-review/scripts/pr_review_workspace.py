@@ -215,6 +215,12 @@ def git(repo: Path, *args: str, binary: bool = False) -> str | bytes:
     return result.stdout.decode("utf-8", errors="strict").strip()
 
 
+def init_temporary_repository(cwd: Path, path: Path) -> None:
+    """自分で作って消す一時のリポジトリを作り、以後の操作で自動 maintenance を起動させない（#64）。"""
+    git(cwd, "init", "--quiet", str(path))
+    git(path, "config", *load_review_target().NO_AUTO_MAINTENANCE)
+
+
 def git_path(repo: Path, argument: str) -> Path:
     value = Path(str(git(repo, "rev-parse", argument)))
     if not value.is_absolute():
@@ -523,7 +529,7 @@ def create_from_target(args: argparse.Namespace, target_value: str) -> dict[str,
             source = session_dir / "repo"
             with target_errors() as review_target:
                 if parent_input is not None:
-                    git(parent, "init", "--quiet", str(source))
+                    init_temporary_repository(parent, source)
                     git(source, "remote", "add", "origin", clone.clone_url)
                     git(
                         source,
@@ -541,7 +547,17 @@ def create_from_target(args: argparse.Namespace, target_value: str) -> dict[str,
                     review_target.clone_repository(clone, source, checkout_branch=False)
                 else:
                     # Copy objects through upload-pack, never hardlink shared Git metadata.
-                    git(checkout, "clone", "--quiet", "--no-local", "--no-checkout", str(checkout), str(source))
+                    git(
+                        checkout,
+                        "clone",
+                        "--quiet",
+                        "--config",
+                        "=".join(review_target.NO_AUTO_MAINTENANCE),
+                        "--no-local",
+                        "--no-checkout",
+                        str(checkout),
+                        str(source),
+                    )
                     git(source, "remote", "set-url", "origin", clone.clone_url)
                     review_target.fetch_pull_head(source, number, pr_head)
                     if review_commit is not None:

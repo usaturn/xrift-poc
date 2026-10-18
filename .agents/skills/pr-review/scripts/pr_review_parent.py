@@ -161,7 +161,7 @@ def _populate(
     bundle = directory / "objects.bundle"
     workspace.git(source, "bundle", "create", str(bundle), head_ref, base_ref, commit_ref)
     validation = directory / "bundle-check"
-    workspace.git(source, "init", "--quiet", str(validation))
+    workspace.init_temporary_repository(source, validation)
     workspace.git(
         validation,
         "fetch",
