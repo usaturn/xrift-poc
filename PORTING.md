@@ -192,6 +192,13 @@
 - #37: 応答の記録が無い DSH の試行で、認証不足の分類が `response_failed` に上書きされる（#24 の PR で見つかった）
 - #38: DSH のレビューが `reviews/` に作る作業領域（`.staging`・`parent-pr-data`）の置き場所と後片付け
 
+## 移植漏れの補完（2026-10、Issue #53）
+
+- 移植元: `usaturn/agent-workspace` の PR #719（Issue #718）、commit `0ddc82f0b85220e4f91f93937b7ce2c7d63d98af`。`tools/agent_runner/tests/test_process.py` の `alive()` が、`/proc/<pid>/stat` を開いた後、読む前に PID が回収された場合の `ProcessLookupError`（ESRCH）を停止として扱う差分（+2 −1）を取り込んだ
+- #19（PR #33）の `2c75b26` では、同じ PR の `test_runner.py` 側だけを先に取り込んでいた。今回、そのとき漏れた `test_process.py` 側を補い、読み取り時に例外が発生する回帰テストを追加した。上の first parent 44 件の集計は、その当時の範囲の記録として変えていない
+- xrift-poc での追加修正: `test_runner.py` の子の停止確認と、`tests/adapters/dsh/test_runner.py` の `_assert_stopped()` も `alive()` を再利用する。存在確認と読み取りの間の同じ競合を避け、Z/X を停止として扱う。権限エラーなど、消滅以外の読み取り失敗は隠さない
+- 取り込みはこの差分だけで、移植元のファイル全体による置き換えや、実装本体の停止処理の変更はしていない
+
 ## 更新の方法
 
 - エージェント、XRift CLI、XRift 公式スキルの更新は、README の「更新」の節に書いてある（手順を二重に書かない）。更新したら、この文書の「検証の記録」に確かめた版を追記する

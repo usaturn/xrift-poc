@@ -14,6 +14,7 @@ from tools.agent_runner import environ, runner
 from tools.agent_runner.models import Agent, Assignment, Config, Role, Workflow
 from tools.agent_runner.process import ProcessResult
 from tools.agent_runner.runner import run_workflow
+from tools.agent_runner.tests.test_process import alive
 from tools.agent_runner.tests.test_runner import set_when, written
 from tools.test_support.repos import create_env_repo
 
@@ -301,9 +302,7 @@ def test_home_removal_failure_is_reported_not_success(
 
 
 def _assert_stopped(pid: int) -> None:
-    path = Path(f"/proc/{pid}/stat")
-    if path.exists():
-        assert path.read_text().rsplit(")", 1)[1].split()[0] == "Z"
+    assert not alive(pid)
 
 
 @pytest.mark.parametrize("interrupt", [False, True])

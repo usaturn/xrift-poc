@@ -969,8 +969,7 @@ def test_checkout_preparation_is_supervised(
             assert "[REDACTED]" in attempt.stderr_path.read_text()
         for marker in markers.glob("child-*"):
             pid = int(marker.name.removeprefix("child-"))
-            record = Path(f"/proc/{pid}/stat")
-            assert not record.exists() or record.read_bytes().rsplit(b")", 1)[1].split()[0] in (b"Z", b"X")
+            assert not alive(pid)
     finally:
         for marker in [*markers.glob("child-*"), *markers.glob("hook-*")]:
             try:
