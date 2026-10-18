@@ -117,7 +117,7 @@ herdr-agent-task set "Issue #$NUMBER 実装・PR作成"
 
 `superpowers:subagent-driven-development` を読み、Task を実装するサブエージェントの代わりに、`implement_task.py` で runner の担当に Task を 1 つずつ順に依頼する（並行しない）。runner の担当は入れ子に agent を起動できないので、Plan 全体を 1 回で渡さない。
 
-1. **出力先:** 親の main worktree で `agent_tmp.py mkdir issue-<N>-implement` のセッションディレクトリを作り、依頼ごとにその下の存在しないパス（例: `<SESSION>/task-2-attempt-1`）を `RUN_DIR` にする。`/tmp` の下に置かない（DSH の bwrap のテストが失敗する。ログを後で参照する）
+1. **出力先:** 親の main worktree で `agent_tmp.py mkdir issue-<N>-implement` のセッションディレクトリを作り、依頼ごとにその下の存在しないパス（例: `<SESSION>/task-2-attempt-1`）を `RUN_DIR` にする。`/tmp` の下に置かない（担当のログと残したもの（`retained`）を、ledger と最終報告から後で参照する。AGENTS.md の「コミットしないファイルの置き場所」）
 2. **依頼の JSON（`REQUEST_JSON`）:** 次の 6 項目だけを書く。
    - `repository`: feature worktree の root の絶対パス。`revision`: その HEAD の完全な SHA（未 commit の変更を残さない）
    - `task`: 1 行の Task 名。`allowed_files`: Plan のその Task の担当ファイル（root からの相対パス。`/` で終わればディレクトリ）
