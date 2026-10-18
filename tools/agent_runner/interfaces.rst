@@ -264,10 +264,18 @@ CLI と API
      --config /path/to/personal.toml run --workflow audit \
      --repository /path/to/repository --revision HEAD \
      --prompt-file /path/to/prompt.txt --concurrency 2 \
-     --assign inspect=agent-a,agent-b --output-dir /tmp/unique-new-directory
+     --assign inspect=agent-a,agent-b --output-dir /tmp/unique-new-directory \
+     --write-exception '/path/to/notes: the notes this run may write'
 
 グローバルの --template / --config はサブコマンドの前に置く。
 output-dir は既存 directory/symlink を拒否する。省略時は /tmp 内の一意の directory。
+``--write-exception`` は API の ``write_exceptions`` の 1 件にあたる。繰り返し指定でき、指定した順に並ぶ。
+workflow のすべての役割に同じ例外が付く（役割ごとには分けない）。
+値の条件と拒否は下の API の段落に従う。CLI は API と同じ検査を使い、値を含まない拒否理由を stderr に出す。
+stdout のエラー JSON と終了コード 2 は維持する。API の入力は run_workflow が検査する。
+``-`` で始まる値は、argparse が別の引数をオプションと読むことがある（``--write-exception -x`` は invalid_input になる）ので、
+``--write-exception=-x`` のように ``=`` でつないで書く。
+値は CLI が標準出力に出す JSON（結果の要約・エラー）には出さないが、request.json のプロンプトには残る。
 check/list はコマンドや環境変数の値を表示せず、設定と導入状態を JSON で返す。
 六ランタイムが未導入でも、設定自体が妥当なら check/list は終了コード 0。
 run は同期で全依頼の終了・停止確認まで待つ。
@@ -286,8 +294,23 @@ API は既存 asyncio event loop 内からは呼ばない。
 例外として許可するものの列。runner は空でなければ、その 2 行の直後に見出しと ``- <値>`` の行を順に置くだけで、
 内容を解釈・強制しない（sandbox ではない。DSH の ``sandbox_write_paths`` とは別）。
 例えば PR レビューの loop は、pr-review の helper が書く実行記録・保存先・保存ロックなどを渡す。
-各値は 1 行の印字可能な文字列で、空・前後の空白・改行・タブを含む値は何も作る前に RunnerError で拒否する。
-空なら指示は従来と同じ文字列になる。
+見出しは ``Caller-authorized exceptions to the rules above (only these; everything else stays forbidden):`` で、
+一覧に無い書き込みは禁止と読まれる。プロンプトの本文にだけ書いた許可も禁止と読まれうるので、
+例外を渡すときは、許可する書き込みをすべてこの一覧に並べる。
+
+各値は、次の条件をすべて満たす文字列とする（実装は ``runner.py`` の ``_single_line``）。
+
+- 空でない
+- 前後に空白が無い。ここでの空白は ``str.strip()`` が取り除く Unicode の空白で、
+  全角空白（U+3000）・NBSP（U+00A0）を含み、ゼロ幅文字などの Cf（U+200B など）は含まない
+- ``str.splitlines()`` で 1 行になる（LF・CR・U+2028 などの改行類を含まない）
+- Unicode の Cc（制御文字。タブ・NUL を含む）を含まない
+
+行の途中の全角空白・NBSP と、Cf・Co（私用領域）・Cn（未割り当て）の文字は受け付ける。
+Cf は前後にあっても受け付けるので、ゼロ幅文字 1 文字だけの値も通る（指示に空に見える行が 1 行増える）。
+条件に合わない値と、列の代わりに文字列を 1 つそのまま渡した場合は、出力ディレクトリなど何も作る前に
+RunnerError で拒否する（CLI では ``{"error": "invalid_input"}``、終了コード 2）。
+列が空なら（CLI で ``--write-exception`` を付けなければ）、指示は従来と同じ文字列になる。
 ``adapter_loader`` はテスト用に差し替えられる。既定は固定モジュールの loader。
 run_workflow は外部 checkout の警告を含む完全な結果を返すが、自動保存は CLI の責務。
 

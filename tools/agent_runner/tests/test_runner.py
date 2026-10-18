@@ -660,7 +660,7 @@ def test_write_exceptions_follow_the_work_scope_lines(repository: Path) -> None:
         return [line.split(":", 1)[0].split("=", 1)[0] for line in lines]
 
     scope = _scope_lines(prompts[0], body)
-    # 例外を渡さない呼び出し（fix-check・self-review・CLI）の指示は作業範囲の 2 行のまま
+    # 例外を渡さない呼び出し（fix-check・self-review・--write-exception を付けない CLI）の指示は作業範囲の 2 行のまま
     assert kinds(scope) == ["Work in this worktree only", "writes"]
     lines = _scope_lines(prompts[1], body)
     assert kinds(lines[:2]) == kinds(scope) and lines[1] == scope[1]
@@ -669,9 +669,16 @@ def test_write_exceptions_follow_the_work_scope_lines(repository: Path) -> None:
 
 
 def test_write_exceptions_keep_non_ascii_spaces_inside_a_line(repository: Path) -> None:
-    # 全角空白・NBSP を含むブランチ名は正しいレビューディレクトリ名になる（git check-ref-format を通る）
+    # 全角空白・NBSP を含むブランチ名は正しいレビューディレクトリ名になる（git check-ref-format を通る）。
+    # 全角空白・NBSP は行の途中なら、Cf・Co・Cn は前後を含めて受け付ける（interfaces.rst の値の条件）
     body = "review the change"
-    exceptions = ("/x/#7-feat-日本語\u3000名前: run records", "/y/a\u00a0b: lock")
+    exceptions = (
+        "/x/#7-feat-日本語\u3000名前: run records",
+        "/y/a\u00a0b: lock",
+        "a\u200bb\u202ec\ufeffd: zero-width (Cf) inside",
+        "a\ue000b\u0378c: private use (Co) and unassigned (Cn)",
+        "\u200b/z/edge\u200b: zero-width at both ends",
+    )
     batch = run_workflow(
         configuration(), "audit", body, repository, adapter_loader=lambda _: FakeAdapter(), write_exceptions=exceptions
     )
@@ -679,7 +686,25 @@ def test_write_exceptions_keep_non_ascii_spaces_inside_a_line(repository: Path) 
     assert _scope_lines(prompt, body)[3:] == [f"- {item}" for item in exceptions]
 
 
-@pytest.mark.parametrize("value", ["a\nb", "a\rb", "a\u2028b", "a\x85b", "a\tb", "a\x00b", " a", "a ", "", 1])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "a\nb",
+        "a\rb",
+        "a\u2028b",
+        "a\x85b",
+        "a\tb",
+        "a\x00b",
+        " a",
+        "a ",
+        "\u3000a",
+        "a\u3000",
+        "\u00a0a",
+        "a\u00a0",
+        "",
+        1,
+    ],
+)
 def test_invalid_write_exceptions_are_rejected_before_any_output(
     repository: Path, tmp_path: Path, value: object
 ) -> None:
