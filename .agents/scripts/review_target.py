@@ -6,6 +6,7 @@
 - ``resolve <PR>``: PR を GitHub に照会し、保存先と Git 操作の対象を JSON で出す（pr-review が使う）
 - ``review-dir <PR|パス> [--for-planning]``: 保存済みのレビューディレクトリを探す（review-fix-planning・review-verify）
 - ``clone --target <JSON> --dest <パス> [--checkout-branch]``: 対象の PR のリポジトリを一時 clone する
+- ``scan-context --target <JSON> --checkout <パス>``: push 前に PR と checkout を照合し base/head ref を返す
 
 PR の指定は、番号（``3``・``#3``。親の origin のリポジトリの PR）か PR の URL（そのリポジトリの PR）。
 保存先は親の main worktree（``agent_tmp.py root`` と同じ）の
@@ -166,7 +167,10 @@ def require_parent_root(path: Path) -> Path:
     if toplevel.returncode or common.returncode or Path(toplevel.stdout.strip()).resolve() != root:
         raise TargetError(EXIT_PARENT, f"親の main worktree ではありません: {root}")
     if Path(common.stdout.strip()).resolve() != (root / ".git").resolve():
-        raise TargetError(EXIT_PARENT, f"親の main worktree ではありません（linked worktree か submodule）: {root}")
+        raise TargetError(
+            EXIT_PARENT,
+            f"親の main worktree ではありません（linked worktree か submodule）: {root}",
+        )
     if _git(root, "check-ignore", "-q", f"{REVIEWS_DIR}/.review-target-probe").returncode != 0:
         raise TargetError(EXIT_PARENT, f"{root} では {REVIEWS_DIR}/ が git に無視されていません")
     return root
@@ -231,9 +235,19 @@ def registered_submodules(parent_root: Path) -> list[tuple[Path, str]]:
     """親の ``.gitmodules`` に登録された submodule の（checkout のパス、URL）。"""
     if not (parent_root / ".gitmodules").is_file():
         return []
-    result = _git(parent_root, "config", "-f", ".gitmodules", "--get-regexp", r"^submodule\..*\.(path|url)$")
+    result = _git(
+        parent_root,
+        "config",
+        "-f",
+        ".gitmodules",
+        "--get-regexp",
+        r"^submodule\..*\.(path|url)$",
+    )
     if result.returncode not in (0, 1):
-        raise TargetError(EXIT_PARENT, f"{parent_root / '.gitmodules'} を読めません: {result.stderr.strip()}")
+        raise TargetError(
+            EXIT_PARENT,
+            f"{parent_root / '.gitmodules'} を読めません: {result.stderr.strip()}",
+        )
     entries: dict[str, dict[str, str]] = {}
     for line in result.stdout.splitlines():
         key, _, value = line.partition(" ")
@@ -291,7 +305,10 @@ def parse_pull_request_argument(text: str) -> PullRequestArgument:
     url = _PULL_URL.fullmatch(value)
     if url is not None:
         return PullRequestArgument(validate_repository(f"{url['owner']}/{url['repo']}"), int(url["number"]))
-    raise TargetError(EXIT_USAGE, f"PR の指定を解釈できません（番号、#番号、PR の URL で指定してください）: {text!r}")
+    raise TargetError(
+        EXIT_USAGE,
+        f"PR の指定を解釈できません（番号、#番号、PR の URL で指定してください）: {text!r}",
+    )
 
 
 class PullRequest(NamedTuple):
@@ -323,7 +340,10 @@ def _object(value: object) -> dict[str, Any] | None:
 
 def _parse_pull_request(body: str, repository: str, number: int) -> PullRequest:
     def broken(what: str) -> TargetError:
-        return TargetError(EXIT_API, f"GitHub の応答を読めません（{repository} の PR #{number}: {what}）")
+        return TargetError(
+            EXIT_API,
+            f"GitHub の応答を読めません（{repository} の PR #{number}: {what}）",
+        )
 
     try:
         data = _object(json.loads(body))
@@ -392,7 +412,8 @@ def fetch_pull_request(repository: str, number: int, *, runner: Runner = _run) -
         )
     reason = f"HTTP {status}" if status is not None else (detail or "応答がありません")
     raise TargetError(
-        EXIT_API, f"GitHub への照会に失敗したため、{repository} の PR #{number} を確認できません（{reason}）"
+        EXIT_API,
+        f"GitHub への照会に失敗したため、{repository} の PR #{number} を確認できません（{reason}）",
     )
 
 
@@ -421,7 +442,12 @@ def resolve(argument: str, *, parent_root: Path, runner: Runner = _run) -> dict[
     repository = parsed.repository or parent_repository(parent_root)
     pr = fetch_pull_request(repository, parsed.number, runner=runner)
     target_root = target_checkout(parent_root, pr.repository)
-    return describe(parent_root, pr, review_directory(parent_root, pr.repository, pr.number, pr.head_ref), target_root)
+    return describe(
+        parent_root,
+        pr,
+        review_directory(parent_root, pr.repository, pr.number, pr.head_ref),
+        target_root,
+    )
 
 
 # レビューディレクトリの探索
@@ -473,7 +499,8 @@ def _identity_from_layout(parent_root: Path, directory: Path) -> DirectoryIdenti
             repository = github_repository(url)
             if repository is None:
                 raise TargetError(
-                    EXIT_PARENT, f"submodule {checkout} の URL を GitHub のリポジトリとして解決できません: {url}"
+                    EXIT_PARENT,
+                    f"submodule {checkout} の URL を GitHub のリポジトリとして解決できません: {url}",
                 )
             return DirectoryIdentity(repository, number, check_name=True)
     return None
@@ -533,7 +560,8 @@ def _from_path(argument: str, *, parent_root: Path, for_planning: bool, runner: 
     path = Path(argument)
     if not path.is_dir():
         raise TargetError(
-            EXIT_USAGE, f"PR の指定（番号、#番号、PR の URL）でも、存在するディレクトリでもありません: {argument!r}"
+            EXIT_USAGE,
+            f"PR の指定（番号、#番号、PR の URL）でも、存在するディレクトリでもありません: {argument!r}",
         )
     directory = path.resolve()
     identity = identify_review_directory(parent_root, directory)
@@ -606,7 +634,10 @@ class CloneTarget(NamedTuple):
         """``resolve``・``review-dir`` の JSON から読む。``clone_url`` は対象リポジトリの GitHub の URL に限る。"""
         data = _object(value)
         if data is None:
-            raise TargetError(EXIT_USAGE, "--target は resolve・review-dir の JSON オブジェクトにしてください")
+            raise TargetError(
+                EXIT_USAGE,
+                "--target は resolve・review-dir の JSON オブジェクトにしてください",
+            )
         repository = data.get("repository")
         number = data.get("number")
         head_ref = data.get("head_ref")
@@ -624,10 +655,16 @@ class CloneTarget(NamedTuple):
             or (head_repository is not None and not isinstance(head_repository, str))
             or not isinstance(clone_url, str)
         ):
-            raise TargetError(EXIT_USAGE, "--target に repository・number・head_ref・head_sha・clone_url がありません")
+            raise TargetError(
+                EXIT_USAGE,
+                "--target に repository・number・head_ref・head_sha・clone_url がありません",
+            )
         validate_repository(repository)
         if not same_repository(canonical_github_repository(clone_url), repository):
-            raise TargetError(EXIT_USAGE, f"clone_url {clone_url} は {repository} の GitHub の URL ではありません")
+            raise TargetError(
+                EXIT_USAGE,
+                f"clone_url {clone_url} は {repository} の GitHub の URL ではありません",
+            )
         return cls(repository, number, head_ref, head_sha, head_repository, clone_url)
 
 
@@ -651,7 +688,8 @@ def fetch_pull_head(checkout: Path, number: int, head_sha: str) -> str:
         )
         if fetched.returncode:
             raise TargetError(
-                EXIT_CLONE, f"PR #{number} の head を fetch できません（{checkout}）: {fetched.stderr.strip()}"
+                EXIT_CLONE,
+                f"PR #{number} の head を fetch できません（{checkout}）: {fetched.stderr.strip()}",
             )
         current = _git(checkout, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
         if current.returncode == 0:
@@ -690,7 +728,10 @@ def clone_repository(target: CloneTarget, dest: Path, *, checkout_branch: bool) 
     options = [f"--branch={target.head_ref}"] if checkout_branch else ["--no-checkout"]
     cloned = _run(["git", "clone", "--quiet", *options, "--", target.clone_url, str(dest)])
     if cloned.returncode:
-        raise TargetError(EXIT_CLONE, f"{target.clone_url} を {dest} に clone できません: {cloned.stderr.strip()}")
+        raise TargetError(
+            EXIT_CLONE,
+            f"{target.clone_url} を {dest} に clone できません: {cloned.stderr.strip()}",
+        )
     if not checkout_branch:
         fetch_pull_head(dest, target.number, target.head_sha)
         return dest
@@ -704,12 +745,65 @@ def clone_repository(target: CloneTarget, dest: Path, *, checkout_branch: bool) 
     return dest
 
 
+def scan_context(value: object, checkout: Path, *, runner: Runner = _run) -> dict[str, str]:
+    """解決済み PR と送信先・履歴を再確認する。場所の許可は scan_before_push の route 検査が担当する。"""
+    snapshot = CloneTarget.from_json(value)
+    data = cast(dict[str, Any], value)
+    base_ref = data.get("base_ref")
+    if not isinstance(base_ref, str) or not base_ref:
+        raise TargetError(EXIT_USAGE, "--target に base_ref がありません")
+    require_planning_owner(snapshot.repository)
+    checkout = checkout.resolve()
+    if _toplevel(checkout) != checkout:
+        raise TargetError(EXIT_CLONE, f"Git の root で検査してください: {checkout}")
+    for branch in (base_ref, snapshot.head_ref):
+        if _git(checkout, "check-ref-format", f"refs/heads/{branch}").returncode:
+            raise TargetError(EXIT_USAGE, f"ブランチ名として使えません: {branch!r}")
+    for key in ("remote.origin.url", "remote.origin.pushurl"):
+        configured = _git(checkout, "config", "--get-all", key)
+        urls = configured.stdout.splitlines()
+        if key == "remote.origin.pushurl" and configured.returncode == 1:
+            continue  # pushurl 未設定なら、push も origin.url を使う。
+        if (
+            configured.returncode != 0
+            or len(urls) != 1
+            or not same_repository(github_repository(urls[0]), snapshot.repository)
+        ):
+            raise TargetError(
+                EXIT_CLONE,
+                f"{key} が PR の repository と一致する単一の URL ではありません",
+            )
+
+    pr = fetch_pull_request(snapshot.repository, snapshot.number, runner=runner)
+    if (
+        not same_repository(pr.repository, snapshot.repository)
+        or not same_repository(snapshot.head_repository, snapshot.repository)
+        or not same_repository(pr.head_repository, pr.repository)
+        or pr.state.lower() != "open"
+        or pr.head_ref != snapshot.head_ref
+        or pr.head_sha != snapshot.head_sha
+        or pr.base_ref != base_ref
+    ):
+        raise TargetError(
+            EXIT_CLONE,
+            "PR が open・同一 repository の head/base ではありません。対象の解決からやり直してください",
+        )
+    if _git(checkout, "merge-base", "--is-ancestor", snapshot.head_sha, "HEAD").returncode:
+        raise TargetError(EXIT_CLONE, "local HEAD が解決済み PR head の修正履歴ではありません")
+    return {
+        "repository": pr.repository,
+        "base_ref": pr.base_ref,
+        "head_ref": pr.head_ref,
+    }
+
+
 # CLI
 
 
 def main(argv: Sequence[str] | None = None, *, runner: Runner = _run) -> int:
     parser = argparse.ArgumentParser(
-        prog="review_target.py", description="Resolve review targets and review directories (Issue #483)."
+        prog="review_target.py",
+        description="Resolve review targets and review directories (Issue #483).",
     )
     commands = parser.add_subparsers(dest="command", required=True)
     resolve_parser = commands.add_parser("resolve", help="resolve a PR for pr-review")
@@ -720,23 +814,40 @@ def main(argv: Sequence[str] | None = None, *, runner: Runner = _run) -> int:
     clone_parser = commands.add_parser("clone", help="clone the PR repository into a new directory")
     clone_parser.add_argument("--target", required=True, help="JSON printed by resolve or review-dir")
     clone_parser.add_argument("--dest", required=True, help="new directory for the clone")
-    clone_parser.add_argument("--checkout-branch", action="store_true", help="check out the head branch to fix it")
+    clone_parser.add_argument(
+        "--checkout-branch",
+        action="store_true",
+        help="check out the head branch to fix it",
+    )
+    scan_parser = commands.add_parser("scan-context", help="check the PR and push destination before secret scanning")
+    scan_parser.add_argument("--target", required=True, help="JSON printed by resolve or review-dir")
+    scan_parser.add_argument("--checkout", required=True, help="Git root containing the fix commits")
     args = parser.parse_args(argv)
     try:
         if args.command == "resolve":
             result: dict[str, Any] = resolve(args.pr, parent_root=default_parent_root(), runner=runner)
         elif args.command == "review-dir":
             result = find_review_directory(
-                args.target, parent_root=default_parent_root(), for_planning=args.for_planning, runner=runner
+                args.target,
+                parent_root=default_parent_root(),
+                for_planning=args.for_planning,
+                runner=runner,
             )
         else:
             try:
                 value: object = json.loads(args.target)
             except json.JSONDecodeError as error:
                 raise TargetError(EXIT_USAGE, f"--target が JSON ではありません: {error.msg}") from error
-            clone = CloneTarget.from_json(value)
-            root = clone_repository(clone, Path(args.dest).absolute(), checkout_branch=args.checkout_branch)
-            result = {"root": str(root), "head_sha": clone.head_sha}
+            if args.command == "scan-context":
+                result = scan_context(value, Path(args.checkout), runner=runner)
+            else:
+                clone = CloneTarget.from_json(value)
+                root = clone_repository(
+                    clone,
+                    Path(args.dest).absolute(),
+                    checkout_branch=args.checkout_branch,
+                )
+                result = {"root": str(root), "head_sha": clone.head_sha}
     except TargetError as error:
         print(f"review_target: {error}", file=sys.stderr)
         return error.code
