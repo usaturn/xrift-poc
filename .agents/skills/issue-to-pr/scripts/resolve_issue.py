@@ -33,7 +33,7 @@ OPTIONS: dict[str, Kind] = {
     "--config": "loop",
     "--implement": "implement",
 }
-# 起動したときの cwd を基準に絶対パスにするオプション（引数はシェルを通らないので ~ も展開する）
+# 起動したときの cwd を基準に絶対パスにするオプション（引数はシェルを通らないので、先頭の ~ も展開する）
 PATH_OPTIONS = frozenset({"--template", "--config"})
 # start にはあるが issue-to-pr では受け付けないオプションと、その理由
 REFUSED_OPTIONS = {"--fresh-review": "PR を作ったばかりで、再利用するレビュー結果が無い"}
@@ -107,7 +107,9 @@ def parse_input(text: str, cwd: Path) -> ParsedInput:
             implement.append(value)
             continue
         if name in PATH_OPTIONS:
-            value = str((cwd / Path(value).expanduser()).resolve())
+            # Path() は先頭の ./ を落とすので、展開するかは書かれた文字列で決める（./~/x は cwd の ~ でホームではない）
+            path = Path(value).expanduser() if value.startswith("~") else Path(value)
+            value = str((cwd / path).resolve())
         loop_args += [name, value]
     if merge > 1:
         raise ValueError("--merge は 1 回だけ指定してください")
