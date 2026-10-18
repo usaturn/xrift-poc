@@ -1488,6 +1488,9 @@ def test_successful_first_review_reports_nothing_retained(loop: Any, env: Any) -
 
     assert (reviewed["retained"], reviewed["outside_changes"]) == ([], [])
     assert "rerun" not in reviewed
+    finished = loop.finish(run_dir, abort="external: テストの終了")
+    assert (finished["retained"], finished["reviewer_retained"]) == ([], [])
+    assert finished["cycles"][0]["outside_changes"] == []
 
 
 def finish_no_fix_needed(loop: Any, env: Any, kit: Any, run_dir: Path, tmp_path: Path) -> dict[str, Any]:
