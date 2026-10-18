@@ -352,3 +352,98 @@ def test_merge_does_not_bypass_route_rejection(env: EnvRepo, gh_stub: None, wher
     result = run("#42 --merge", location(env, where), env)
     assert result.returncode == 2
     assert result.stdout == ""
+
+
+RUNNER_TEMPLATE = """
+schema_version = 1
+
+[agents.claude-opus]
+runtime = "claude-code"
+command = ["fake-claude"]
+model = "claude-model"
+
+[agents.pi-gpt]
+runtime = "pi"
+command = ["fake-pi"]
+model = "pi-model"
+
+[roles.inspect]
+writes = false
+deadline_seconds = 60
+result_shape = "json"
+
+[roles.implement]
+writes = true
+deadline_seconds = 60
+result_shape = "json"
+
+[roles.self-review]
+writes = false
+deadline_seconds = 60
+result_shape = "json"
+
+[roles.fix-check]
+writes = false
+deadline_seconds = 60
+result_shape = "json"
+
+[workflows.review.assignments.inspect]
+agents = ["claude-opus", "pi-gpt"]
+
+[workflows.fix.assignments.implement]
+agents = ["claude-opus"]
+
+[workflows.fix.assignments.self-review]
+agents = ["self"]
+
+[workflows.fix.assignments.fix-check]
+agents = ["self"]
+"""
+
+
+@pytest.mark.parametrize(
+    ("argument", "expected"),
+    [
+        ("#42 --merge", (0, 0)),
+        ("#42 --merge --max-cycles 2 --assign inspect=pi-gpt,claude-opus", (0, 0)),
+        ("#42 --merge --hold-action fix", (0, 0)),
+        ("#42 --max-cycles 2", (2, None)),
+        ("#42 --merge --max-cycles 0", (0, 2)),
+        ("#42 --merge --merge", (2, None)),
+        ("#42 --merge --fresh-review", (2, None)),
+        ("#42 --foo", (2, None)),
+        ("#42 --merge --assign inspect", (0, 2)),
+        ("#42 --merge --assign inspect=nobody", (0, 2)),
+    ],
+)
+def test_resolve_then_check_options(
+    env: EnvRepo,
+    gh_stub: None,
+    tmp_path: Path,
+    argument: str,
+    expected: tuple[int, int | None],
+) -> None:
+    """実際の2段をつなぎ、構文と設定のどちらで止まるかを確認する。"""
+    template = tmp_path / "runner.toml"
+    template.write_text(RUNNER_TEMPLATE, encoding="utf-8")
+    resolved = run(argument, env.root, env)
+    checked_code = None
+    if resolved.returncode == 0:
+        checked = subprocess.run(
+            [
+                sys.executable,
+                str(LOOP),
+                "check-options",
+                "--template",
+                str(template),
+                *json.loads(resolved.stdout)["merge"]["loop_args"],
+            ],
+            cwd=env.root,
+            env={**os.environ, "AGENT_RUNNER_CONFIG": str(tmp_path / "absent-personal.toml")},
+            capture_output=True,
+            text=True,
+        )
+        checked_code = checked.returncode
+        if checked_code == 2 and checked.stdout:
+            assert json.loads(checked.stdout)["status"] == "error"
+    assert (resolved.returncode, checked_code) == expected
