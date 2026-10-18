@@ -4,7 +4,7 @@
 
 **このリポジトリで管理するのは開発環境だけです。** ワールド・アイテムのソースコード、アセット、依存パッケージ、ビルド成果物は管理しません。
 
-開発環境は [usaturn/maatlog-poc](https://github.com/usaturn/maatlog-poc) から移植しました。移植の記録は [PORTING.md](PORTING.md) にあります。
+開発環境は [usaturn/agent-workspace](https://github.com/usaturn/agent-workspace)（移植の時点の名前は maatlog-poc）から移植しました。移植の記録は [PORTING.md](PORTING.md) にあります。
 
 ## 構成
 
@@ -131,7 +131,7 @@ CI（`.github/workflows/ci.yml`）は、pi（`@earendil-works/pi-coding-agent`�
 5. `.agents/skills/xrift-*` に新しいスキルが入り、`git status` に取得物が出ないことを確かめます。Claude Code・pi・Codex で、制作物から `xrift-world` が読み込まれることも確かめます
 6. PR で取り込みます
 
-移植元（maatlog-poc）の修正の取り込み方は [PORTING.md](PORTING.md) の「更新の方法」にあります。
+移植元（usaturn/agent-workspace。移植の時点の名前は maatlog-poc）の修正の取り込み方は [PORTING.md](PORTING.md) の「更新の方法」にあります。
 
 ## 検証
 

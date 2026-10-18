@@ -82,10 +82,125 @@
 
 コードやコメント中の `#番号` は、特記が無い限り移植元の `usaturn/maatlog-poc` の Issue・PR を指す。
 
+## 移植元の改善の取り込み（2026-10）
+
+### 範囲と取り込み方
+
+- 移植元: `usaturn/agent-workspace`（移植の時点の名前は `usaturn/maatlog-poc`。改名の後も Issue・PR の番号は変わらない）
+- 範囲: 移植元の `main` の `eac5195..3bc4769`（2026-10-10〜2026-10-17）の first parent 44 件。`git log --first-parent --format='%h %ad %s' --date=short eac5195..3bc4769` で一覧にした
+- 進め方: Issue #18 のボード（子 #19〜#28）で、利用者が 2026-10-17 に選んだ 9 項目と、その前提になるテストの基盤を取り込んだ。27 件を取り込み、17 件は取り込んでいない（下の「移植元の first parent 44 件」）
+- 取り込み方: 移植元の merge ごとの差分（`git diff <merge>^1 <merge>`）をボードの順に当て、拒否された hunk は xrift-poc の文脈に合わせて手で直した。ファイル全体を移植元の最新版で置き換えていない。移植元が作業先の判定を `projects.toml` に置き換えた部分（`scan_before_push`、issue-to-pr の `resolve_issue.py`・`SKILL.md`）は、`route_target.py` の判定の上に書き直した
+- 日付付きの評価記録（`evals/` の実行記録）と、移植元のリポジトリを入力にした評価の入力は取り込んでいない（「移植しなかったもの」と同じ方針）
+- 記録の出典: 各子の完了のコメントと xrift-poc の PR。merge commit と、完了のコメントの後に足した commit は PR の情報で確かめた
+- 番号: この節の「移植元の PR」の列と、「移植元の」を付けて書いた番号は、`usaturn/agent-workspace` の PR を指す。それ以外の番号（子・PR・Issue）は xrift-poc の Issue・PR を指す。このボードで取り込んだファイルのコードやコメント中の `#番号` は、上の規則と同じく、特記が無い限り移植元の Issue・PR を指す
+
+### 子ごとの取り込み
+
+| 子 | 内容 | xrift-poc の PR | merge commit | 当てた移植元の merge |
+|---|---|---|---|---|
+| #19 `test-support` | テストの基盤（`outside_runner`・pytest の `--rootdir`・負荷に強いテスト） | #33 | `157f23e` | `b3d6001`・`70d4b4e`（一部）・`f9563a0`（一部）・`200b513`・`3bc4769` |
+| #20 `pi-launchers` | agent-runner の `pixg`、`pigema` ランチャー | #31 | `08bae70` | `88f3552`（`[agents.pixg]`）・`41a4cc9` |
+| #21 `monitoring-budget` | `task_watch.py`、Issue の実行予算 | #30 | `7754f6f` | `05080dc` |
+| #22 `scan-before-push` | push 前の秘密検査 `scan_before_push` | #32 | `7392b67` | `c3a0aca`（`scan_before_push` の部分）・`8b1947d`。どちらも書き直した |
+| #23 `dsh-runner` | agent-runner の DSH の標準 headless | #35 | `30463d6` | `c0ae21e`・`346dbb6` |
+| #24 `dsh-review` | PR レビューとレビュー修正ループの DSH のレビュアー | #36 | `5ab2ddc` | `ec13c3e`・`88f3552`（既定の inspect）・`a23639b`・`70d4b4e`（一部）・`f9563a0`（一部） |
+| #25 `review-loop` | pr-review-fix-loop と agent-runner の修正 | #40 | `ba5c4c1` | `316ef51`・`bcfb459`・`538975a`・`d27eb20`・`0220679`・`70d4b4e`（一部）・`f9563a0`（一部） |
+| #26 `write-exceptions` | writes=false の担当への書き込みの例外 | #43 | `6f2cac5` | `3fc280f`・`11cff4c` |
+| #27 `issue-merge` | issue-to-pr の `--merge` | #42 | `7853c72` | `f2d2ad4`・`b2bf42b` |
+| #28 `issue-implement` | issue-to-pr の `--implement` | #47 | `c384d42` | `b8dd941`・`a87369a`・`94a2aa2`・`1c379cf`・`70d4b4e`（一部） |
+
+### 移植元の first parent 44 件
+
+新しい順に並べた。「取り込み」の子が当てた。
+
+| merge | 移植元の PR | 内容 | 扱い |
+|---|---|---|---|
+| `3bc4769` | #709 | pytest の rootdir を repo の root にする | 取り込み: #19 |
+| `1c379cf` | #708 | Task の結果の形が合わないときも fallback を試す（`payload_check`） | 取り込み: #28 |
+| `b2bf42b` | #706 | 統合用の branch に向ける子の PR の向き先と、`--merge` の不適用 | 取り込み: #27 |
+| `200b513` | #707 | 子の起動を含むテストの短い期限を延ばす | 取り込み: #19 |
+| `f9563a0` | #700 | 負荷が高いと落ちる時間依存のテストを直す | 取り込み: #19（`test_runner.py`・`test_review_regressions.py`）、#24（DSH の `test_runner.py`）、#25（ループの再実行のテスト） |
+| `70d4b4e` | #699 | fixture `outside_runner` で agent-runner の depth を外す | 取り込み: #19（fixture と既存のテスト）、#24（DSH の `test_runner.py`）、#25（`test_loop_reviewer_protocol.py`）、#28（`test_implement_task_run.py`） |
+| `94a2aa2` | #698 | Task の依頼ごとに `RUN_DIR` を片付ける | 取り込み: #28 |
+| `a87369a` | #697 | issue-to-pr の `SKILL.md` の 1 行 | 取り込み: #28 |
+| `bb419c6` | #693 | `version-export` の承認待ちと、移植元の登録先の規則 | 取り込まない: `version-export` は Issue #1 で対象外。`.agents/projects/` は移植元のワークスペース固有の登録 |
+| `8b1947d` | #692 | 秘密検査で、マージ commit で入った内容も検査する | 取り込み: #22（書き直し） |
+| `d08c66b` | #691 | bash のテストの検査で SIGPIPE を避ける | 取り込まない: ボードで選ばなかった小さな修正。必要になったら別の Issue にする |
+| `b8dd941` | #690 | issue-to-pr の `--implement` と `implement_task.py` | 取り込み: #28 |
+| `f3e22cb` | #688 | pi-lens を撤去する | 取り込まない: xrift-poc は Issue #16 で撤去済み |
+| `1b796ea` | #686 | 移植元の登録先の検証と秘密検査の差し替え | 取り込まない: 移植元のワークスペース固有の登録（`projects.toml`・`.agents/projects/`） |
+| `f2d2ad4` | #681 | issue-to-pr の `--merge` と `loop.py check-options` | 取り込み: #27 |
+| `41a4cc9` | #682 | `pigema` ランチャー | 取り込み: #20 |
+| `0220679` | #677 | ループの `start` で fix の割り当てを検査する | 取り込み: #25 |
+| `5d72ed8` | #676 | 移植元の登録先の開発手順 | 取り込まない: 移植元のワークスペース固有の登録（`.agents/projects/`） |
+| `a23639b` | #674 | self-review・fix-check への DSH の割り当てを拒否する | 取り込み: #24 |
+| `d27eb20` | #673 | ループの `start` で Herdr のペインの名前を変える | 取り込み: #25 |
+| `a6f339a` | #669 | 移植元への新しいプロジェクトの登録 | 取り込まない: 移植元のワークスペース固有の登録（`projects.toml`・`.agents/projects/`） |
+| `70548d4` | #670 | 移植元の登録先の文書の修正 | 取り込まない: 移植元のワークスペース固有の登録（`.agents/projects/`） |
+| `11cff4c` | #666 | self-review・fix-check に書き込みの例外を渡す | 取り込み: #26 |
+| `a17d9e9` | #668 | 移植元への新しいプロジェクトの登録 | 取り込まない: 移植元のワークスペース固有の登録（`projects.toml`・`.agents/projects/`・`devcontainer.json`） |
+| `2a29ba3` | #660 | pi-lens のログの置き場所 | 取り込まない: pi-lens の回避策。xrift-poc は Issue #16 で pi-lens を撤去済み（移植元も `f3e22cb` で撤去した） |
+| `3fc280f` | #659 | CLI の `run --write-exception` | 取り込み: #26 |
+| `88f3552` | #657 | agent-runner の `pixg` と、既定の inspect | 取り込み: #20（`[agents.pixg]`）、#24（既定の inspect） |
+| `538975a` | #653 | inspect の書き込みの扱い、再実行の前の停止待ち、runner の `write_exceptions` | 取り込み: #25 |
+| `a16a0aa` | #652 | worktree の一括 prune をやめる | 取り込まない: ボードで選ばなかった小さな修正。必要になったら別の Issue にする |
+| `ec13c3e` | #645 | DSH のレビュアー（親が用意する入力・`finalize-parent`・sandbox） | 取り込み: #24 |
+| `346dbb6` | #650 | DSH の TMPDIR に残るリンク・FIFO を片付ける | 取り込み: #23 |
+| `bcfb459` | #648 | worktree の監査と、資源の回収の判定 | 取り込み: #25 |
+| `316ef51` | #646 | Hold の既定を skip にする | 取り込み: #25 |
+| `304dba4` | #640 | 移植元の改名と状態の移行 | 取り込まない: 移植元のリポジトリの改名に伴う移行（`projects.toml`・`tools/devenv_migration`）。ボードの対象外 |
+| `88a4100` | #641 | Plannotator を Dev Container で使う | 取り込まない: xrift-poc は Issue #15 で対応済み |
+| `c3a0aca` | #639 | 新しいプロジェクトの登録と `scan_before_push` | 取り込み: #22（`scan_before_push` の部分だけ。書き直し）。Wabun・MaatLog の登録、`version-export`、`projects.toml`、`test_scratch_placement_contract.py` は取り込まない |
+| `c0ae21e` | #638 | agent-runner の DSH の標準 headless | 取り込み: #23 |
+| `068fb7a` | #636 | Issue の応答の repo を大文字小文字を区別せずに照合する | 取り込まない: 同じ問題を、移植の時点に xrift-poc の判定に合わせて直していた（`5011c60`。「設計の後で決めたこと」） |
+| `ed3fc85` | #635 | submodule から `projects/` の clone へ移す | 取り込まない: `projects/`・`tools/workspace` への移行。ボードの対象外 |
+| `b3d6001` | #634 | `offline_uv_env` が、別の venv の `bin` も PATH から外す | 取り込み: #19 |
+| `50a61f9` | #631 | `projects.toml` と `tools/workspace` の導入 | 取り込まない: ボードの対象外 |
+| `4a6624d` | #626 | `python-extension-docs` の持ち越し | 取り込まない: `python-extension-docs` は Issue #1 で対象外 |
+| `05080dc` | #625 | `task_watch.py` と Issue の実行予算 | 取り込み: #21 |
+| `8a0fd18` | #624 | gitlink・submodule の fixture を共有にする | 取り込まない: MaatLog の `public/` submodule の fixture。xrift-poc は `public/` を移植せず、`tools/test_support` を `create_env_repo`・`create_product` に作り替えた（`99822a7`） |
+
+### xrift-poc に合わせた点と、移植元と違う直し方
+
+- **#19**: `create_parent_repo`（MaatLog の `public/` submodule を持つ親）を使うテストを `create_env_repo` に置き換えた（`b3d6001`）。fixture `outside_runner` と README は xrift-poc の fixture 名で手で当て、文脈の import 行が無いテストには import の直後に足した（`70d4b4e`）。新しいテストの置き場所の `tools/workspace/tests` は `tools/review_triage/tests` にした（`3bc4769`）。`test_checkout_preparation_is_supervised` は、フックの停止を `/proc` から観測するように直した（`2c75b26`）。移植元の `f9563a0` のままでは、フックの SIGTERM のハンドラが、runner が固定 0.3 秒の猶予の後に送る SIGKILL に間に合わず、負荷の高いホストで落ちる。移植元の `main` も同じコードである
+- **#20**: 手直しなしで当たった
+- **#21**: `monitoring-long-tasks/SKILL.md` の手順 3〜5 は、xrift-poc の `verify-devenv.sh` 向けの文面を残した。`AGENTS.md` には「実行予算」の行と controller の停止の例外だけを手で当てた。例の `verify.sh` を `verify-devenv.sh`・`xrift check` にした。空白を含む state dir のテスト（`test_state_dir_with_spaces_round_trip`）を足した
+- **#22**: 差分は当てずに書き直した（移植元の関数は `assert_working_root`・`route_show`・`projects.toml` に依存する）。場所の判定は `route_target.py` の JSON、base は親が `origin/main`・制作物が origin の既定ブランチにした。base に `.gitleaks.toml` が無ければ Gitleaks の既定の規則を使う（ボードの R5）。CI に固定版の Gitleaks を入れた。push の `-u` を外し（送り元が SHA なので上流ブランチを設定しない）、PR は `--head` で作る。空のリモートへの初めての push は履歴全体を検査する。移植元に無い対策として、Gitleaks が読む `git log -p` の出力をオプションで固定し、同じ `git log` を先に実行して失敗を止める（`014709c`）。呼び出し元の IFS を既定に戻す（`d94759d`、PR のレビュー修正）
+- **#23**: テストの fixture を、移植元の `create_workspace` から `create_env_repo` にした。移植元に無い修正として、DSH の `tool_result` のエラーの文に認証らしい文字列があっても、完了した試行を認証待ちにしない（`8cb4093`、PR のレビュー修正）
+- **#24**: `execution.md` の DSH の段落は「### 回数と受け取り」の直前に置き、まだ無かった `fix_check_write_exceptions` に触れない言い回しにした。`test_run_roles.py` の新しいテストから、移植元の write-exceptions が足した fixture `parent` を外した。雛形の inspect のコメントと README の「DSH の標準 headless」を、既定のレビュアーの構成（ボードの R3）に合わせた。移植元に無い変更として、DSH のレビュアーに書き込みの許可を渡せるのは `run_workflow` の `sandbox_write_paths` だけで、CLI の `run` からは失敗することを README と `noninteractive.md` に書いた（`131be78`）。`/tmp` の下の venv でもテストが動くように、DSH の sandbox の中では base のインタープリターを使う（`6120b3d`、PR のレビュー修正）
+- **#25**: 拒否された hunk は、xrift-poc の `TARGET_REPO_ROOT` の文脈、現在の一時ディレクトリの接頭辞、DSH の import に合わせて手で当てた。移植元の旧い接頭辞の回収の許可は足していない。`.devcontainer/README.md` には、worktree の監査の説明だけを足した
+- **#26**: 新しいテストの repository 名を `usaturn/xrift-poc` にした。CLI の不正な `--write-exception` は、Issue の受け入れに合わせて、値を含まない固定の理由を stderr に出す（移植元は stderr が空）。helper の Git の許可の行は DSH 以外の担当に限ると書いた
+- **#27**: Issue の解決は `route_target.py` の判定（URL と `#N`）のまま残し、`parse_input` と出力の `merge` だけを足した（移植元の `<name>#N` の表記は足していない）。CI の確認は、どのリポジトリでも行う。統合用の branch の指定が無ければ、`BASE` を親は `main`、制作物は既定ブランチにする。ループの起動例で、単独で起動するときと issue-to-pr から起動するときの `TOOL_ROOT` を分けた
+- **#28**: `route_target.py` の判定、`--merge` の出力、親の CI の確認を残して手で当てた。`SKILL.md` の 5 章の push の項目は変えていない（#34 の担当）。テストの要否の文面は `AGENTS.md` の「テストの採用基準」を参照する形にした（`a87369a`）。depth=1 の shallow clone で、依頼から片付けまでを通すテストを足した。マージの前に、先に入った #46（#34）との `SKILL.md` の競合を解消した（`eeef4aa`）
+
+### 取り込んだ merge のうち、取り込まなかった差分
+
+- `05080dc`（#21）: `monitoring-long-tasks/evals/2026-10-10-issue-598.md`（日付付きの評価記録）
+- `316ef51`（#25）: `pr-review-fix-loop/evals/2026-10-14-hold-default-skip.md`（日付付きの評価記録）
+- `bcfb459`（#25）: `.devcontainer/README.md` の、移植元のワークスペースの改名と移行の節の 2 hunk
+- `c3a0aca`・`8b1947d`（#22）: `projects.toml`・`.agents/projects/`・`assert_working_root`・`project_clone`・`route_show` など、移植元のワークスペースの登録を前提にした部分と、`test_scratch_placement_contract.py` の変更
+- `f2d2ad4`・`b2bf42b`（#27）: `projects.toml` による Issue の解決（`<name>#N`・`project_clone`）、登録による CI の免除、`issue-to-pr/evals/`
+- `b8dd941`・`a87369a`・`94a2aa2`・`1c379cf`（#28）: `projects.toml`・`tools.workspace` への移行、`issue-to-pr/evals/`
+- `3fc280f`（#26）: CLI が値を検査せず stderr を空にする挙動（上の #26）
+- `11cff4c`（#26）: Git の許可を DSH の担当にも無条件に広げる文面
+- `88f3552`・`70d4b4e`・`f9563a0`: 担当の子に分けて当て、どの子も自分の範囲の外のファイルを当てていない（上の表）
+
+### 後続の Issue
+
+取り込んだコードの、移植元と同じ挙動に由来する課題を Issue にした。
+
+- #37: 応答の記録が無い DSH の試行で、認証不足の分類が `response_failed` に上書きされる（#24 の PR で見つかった）
+- #38: DSH のレビューが `reviews/` に作る作業領域（`.staging`・`parent-pr-data`）の置き場所と後片付け
+
 ## 更新の方法
 
 - エージェント、XRift CLI、XRift 公式スキルの更新は、README の「更新」の節に書いてある（手順を二重に書かない）。更新したら、この文書の「検証の記録」に確かめた版を追記する
-- 移植元の修正の取り込み: 移植元の `git log <前回の SHA>..origin/main -- <パス>` で対象の変更を確かめ、同じパスに手で適用する。適用した移植元の SHA をこの文書に追記する
+- 移植元の修正の取り込み:
+  - 移植元は `usaturn/agent-workspace`（移植の時点の名前は `usaturn/maatlog-poc`。private）。セッションのスクラッチ（`tmp/agents/`）に読み取り専用で clone し、xrift-poc の worktree に移植元の remote を足さない
+  - 対象は `git log --first-parent --format='%h %ad %s' --date=short <前回の終点>..origin/main` で一覧にする。前回の終点は、直近の取り込みの節の範囲の終点である（「移植元の改善の取り込み（2026-10）」では `3bc4769`）
+  - 当てるのは merge ごとの差分（`git diff <merge>^1 <merge> -- <paths>`）で、ファイル全体を移植元の最新版で置き換えない。拒否された hunk は xrift-poc の文脈に合わせて手で直す
+  - 記録は、この文書に「移植元の改善の取り込み（YYYY-MM）」の節を足して書く。first parent の全件について、取り込んだ PR か取り込まなかった理由を書き、xrift-poc に合わせた点と、取り込んだ merge のうち取り込まなかった差分も書く
+  - 複数の担当で並行して取り込むときは、この文書を編集する担当を 1 人に決める。ほかの担当は、当てた merge・拒否された hunk と直し方・合わせた点・取り込まなかった差分を完了のコメントに書く
 
 ## CI をマージの条件にする（未実施）
 
