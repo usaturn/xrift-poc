@@ -109,7 +109,7 @@ xrift check item --build
 
 ### エージェント
 
-zsh の `update` を実行します。XRift CLI は固定した版なので、`update` では更新しません。
+zsh の `update` を実行します。XRift CLI と Context7 CLI（`ctx7`）は固定した版なので、`update` では更新しません。`ctx7` の更新の手順は [.devcontainer/README.md](.devcontainer/README.md) の「Context7 CLI（ctx7）」にあります。
 
 CI（`.github/workflows/ci.yml`）は、pi（`@earendil-works/pi-coding-agent`）を確かめた版に固定して入れています。`update` で Dev Container の pi が新しくなったら、`pi --version` で版を確かめ、`ci.yml` の pi の版も同じ版に変えて、PR で検証を通します。
 

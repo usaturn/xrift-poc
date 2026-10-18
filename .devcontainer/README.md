@@ -68,6 +68,106 @@ Herdr の復元手順は `.devcontainer/docs/herdr-session-cwd-restore.md` を�
 
 XRift 認証（`xrift login`）は利用者が手動で行う。ポートは前節を参照する。
 
+## Context7 CLI（ctx7）
+
+Context7 のドキュメントの取得は、`ctx7` CLI と `find-docs` スキル（`.agents/skills/find-docs`）で行う。Pi・Claude Code・Codex は同じ `find-docs` を読む。Context7 の MCP Server と Pi の Context7 拡張（`npm:@upstash/context7-pi`）は、xrift-poc では使わない（#49）。2026-10-18 に、npx で起動する Context7 の MCP Server が `~/.npm/_npx` の壊れた展開物（`safer-buffer` の `MODULE_NOT_FOUND`）で Pi・Claude Code とも接続できなくなったため、npx と MCP Server の起動に依存しない形にした。
+
+### 導入
+
+- `install_beforehand.bash` は、Context7 CLI（`ctx7`）を 0.8.0 に固定して導入し、`ctx7 --version` が一致することを確かめる。導入の失敗・PATH に無い・版の不一致は、セットアップの失敗として止まる
+- 実体は npm のグローバルの `node_modules` の下に入る。`~/.npm/_npx` の一時展開物は使わない
+- `ctx7 setup` は実行しない。ctx7 0.8.0 の `ctx7 setup` は、`~/.claude`・`~/.claude.json`・`~/.codex/config.toml`・`~/.codex/AGENTS.md`・`~/.agents/skills` などに MCP 設定やスキルを書き込む。その多くはホストから bind mount した共有の場所で、ホストや他のコンテナにも影響する。生成されるスキルは `find-docs` とも重複する
+- zsh の `update` では更新しない
+
+### 更新
+
+1. `npm view ctx7 version engines` で新しい版と、必要な Node.js の版を確かめる
+2. `install_beforehand.bash` の `CTX7_CLI_VERSION` を変える
+3. 新しい版に入れ替える。`npm install -g ctx7@<新しい版>` を実行するか、Rebuild Container する。PATH 上の `ctx7` は、入れ替えるまで古い版のままである
+4. `ctx7 --version` が新しい版と一致し、下の「動作確認」が通ることを確かめる
+5. PR で取り込む
+
+`ctx7` は新しい版があると、対話的な端末で `Update available` と表示し、`ctx7 upgrade` や `npm install -g ctx7@latest` を勧める。この案内には従わず、上の手順で版を変える。
+
+### MCP と Pi の拡張からの移行
+
+リポジトリの設定から、次を外した。
+
+- `.mcp.json`（Claude Code）と `.pi/mcp.json`（Pi）の `context7`。`google-dev-knowledge` は残す
+- `.claude/settings.local.json` の `enabledMcpjsonServers`（`context7` だけだった）。`enableAllProjectMcpServers: true` は `google-dev-knowledge` のために残す
+- `install_beforehand.bash` が導入する Pi の拡張の一覧の `npm:@upstash/context7-pi`
+
+リポジトリの外の Context7 の設定は、セットアップでは変えない。外すかどうかは利用者が決める。
+
+| 設定 | 場所 | 外し方 |
+|---|---|---|
+| Codex の MCP | `~/.codex/config.toml` の `mcp_servers.context7` | その表を消す |
+| Claude Code のユーザースコープの MCP | `~/.claude.json` の `mcpServers` | `claude mcp remove context7 -s user` |
+| claude.ai の Context7 コネクタ（`mcp__claude_ai_Context7__*`） | claude.ai のアカウントの設定 | claude.ai のコネクタの設定で外す。アカウント単位の設定で、他のプロジェクトにも効く |
+| Pi の Context7 拡張 | 共有の `~/.pi/agent/settings.json` | 外さない（次の節） |
+
+### Pi の Context7 拡張をプロジェクト単位で止める
+
+`npm:@upstash/context7-pi` は、maatlog-poc・agent-workspace のセットアップが共有の `~/.pi` に入れ続ける。`pi remove` で消すと、それらのリポジトリの Pi からも Context7 が外れ、次のセットアップでまた入る。xrift-poc では共有の `~/.pi` を変えず、`.pi/settings.json` の `packages` に次の項目を置いて、プロジェクト単位で読み込みを止める。
+
+```json
+{
+  "source": "npm:@upstash/context7-pi",
+  "autoload": false,
+  "extensions": ["!**"],
+  "skills": ["!**"],
+  "prompts": ["!**"],
+  "themes": ["!**"]
+}
+```
+
+- `autoload: false` を付けた project の項目は、ユーザー設定の同じパッケージに対する差分として働く（Pi 同梱の `docs/packages.md` の「Understand scope and identity」）。`"!**"` で、拡張（`resolve-library-id`・`query-docs` のツール）、スキル（`context7-docs`）、プロンプト（`/c7-docs`）を読み込まない
+- 空配列（`"extensions": []` など）では止まらない。Pi 1.3.0 は差分の空配列を「変更なし」として扱い、ユーザー設定のとおりにすべて読み込む（2026-10-18 に確認）
+- project の設定なので、`+builtin:mcp` と同じく project trust を前提とする
+- ユーザー設定に `npm:@upstash/context7-pi` が無いと、差分の土台が無いため、Pi は project の `.pi/npm` に context7-pi を導入する（読み込みはしない。`.pi/npm` は Pi が置く `.gitignore` で Git に出ない）。他のリポジトリも移行して共有の `~/.pi` から context7-pi を外すときは、`.pi/settings.json` のこの項目も外す
+- `warn_retired_pi_extensions` の廃止済みの一覧には加えない。他のリポジトリが入れ続けるため、再ビルドのたびに警告が出る
+
+読み込んでいないことは、モデルを呼ばずに RPC モードで確かめられる。親の main checkout（trust 済み）で実行する。trust していない worktree では `--approve` を付ける。
+
+```bash
+printf '{"type":"get_commands"}\n' | pi --mode rpc --no-session --no-mcp | grep -oE 'c7-docs|skill:context7-docs' || echo "context7-pi is not loaded"
+```
+
+### 認証
+
+- 環境変数 `CONTEXT7_API_KEY` を基本とする。`ctx7` はこの変数があれば、`ctx7 login` の認証情報より優先して使う。`devcontainer.json` では渡していないので、利用者がシェルの設定などで export する。キーの値をリポジトリ・Issue・PR・ログに書かない
+- エージェントが実行する `ctx7` に変数が継承されていることは、値を表示せずに確かめる（下の「動作確認」の `node -e`）
+- `cod` は、`CONTEXT7_API_KEY` が無いと入力を求める。Codex から `ctx7` を呼ぶときにも使う
+- `ctx7 login` の認証情報は `~/.config/context7/credentials.json`（`XDG_CONFIG_HOME` が絶対パスならその下）に保存される。`~/.config` は bind mount していないので、再ビルドで消える。更新確認の状態も `~/.local/state/context7/` にあり、同じく消える
+- `ctx7 whoami` は `ctx7 login` の状態だけを表示する。`CONTEXT7_API_KEY` を使っていても `Not logged in.` と出る
+- 認証なしでも使えるが、レート制限が低い。quota を超えると `Monthly quota reached` などで失敗する。`find-docs` の手順で利用者に伝え、`CONTEXT7_API_KEY` の設定か `ctx7 login` を案内する
+
+### 動作確認
+
+```bash
+node --version
+command -v ctx7
+readlink -f "$(command -v ctx7)"   # .../lib/node_modules/ctx7/dist/index.js（~/.npm/_npx ではない）
+ctx7 --version                     # CTX7_CLI_VERSION と一致する
+node -e 'console.log(process.env.CONTEXT7_API_KEY ? "CONTEXT7_API_KEY: set" : "CONTEXT7_API_KEY: not set")'
+ctx7 library react "How to clean up useEffect with async operations"
+ctx7 docs /react/react "useEffect cleanup"
+```
+
+加えて、Pi・Claude Code で `find-docs` を使った取得を試す。Claude Code の `/mcp`・`claude mcp list` と Pi の `pi mcp list` に Context7 が無く、`google-dev-knowledge` が接続できることを確かめる。
+
+### トラブルシュート
+
+| 症状 | 対応 |
+|---|---|
+| `ctx7: command not found` | Rebuild Container するか、`npm install -g "ctx7@<CTX7_CLI_VERSION の値>"` を実行する。`npx ctx7` で代えない |
+| セットアップが `Unexpected ctx7 version` で止まる | `command -v ctx7` で、PATH の前のほうに別の `ctx7` が無いかを確かめる |
+| `⚠ Library has been redirected` と出て終了コード 1 | 表示された新しい ID でやり直す（例: `/facebook/react` → `/react/react`） |
+| `Monthly quota reached`・`quota exceeded` | `CONTEXT7_API_KEY` を設定するか、`ctx7 login` を実行する |
+| `Update available` と表示される | 従わない。「更新」の手順で版を変える |
+| `context7` が `Failed to reconnect`・`CONNECTION_CLOSED` のまま一覧に残る | 古い設定を読んでいる。親の main checkout を `origin/main` に更新し、エージェントを起動し直す。親の中に置いた worktree（`.claude/worktrees/` など）では、Claude Code が祖先の main checkout の `.mcp.json` も読む。ユーザースコープの設定（前の表）も確かめる |
+| xrift-poc の Pi に `resolve-library-id`・`/c7-docs` が出る | project trust を確かめる。`.pi/settings.json` の項目が空配列になっていないかを確かめる |
+
 ## 廃止した pi 拡張の警告
 
 共有の `~/.pi` に、廃止済みの拡張（`npm:pi-subagents`・`npm:pi-mcp-adapter`・`npm:pi-distill`・`npm:pi-extensions-tool-display`・`npm:pi-extensions-i18n`・`npm:pi-lens`）が残っていると、`install_beforehand.bash` は警告を表示する。警告には削除のコマンド（`pi remove npm:<パッケージ名>`）を添える。セットアップはこれらを削除しない。`~/.pi` は他のコンテナと共有のため、削除は利用者が自分で行う。削除すると、`~/.pi` を共有する他のコンテナで動いている Pi からも拡張のファイルが消える。`pi remove` の前に、それらの Pi を止める（警告にも添える）。
