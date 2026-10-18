@@ -53,6 +53,13 @@ def _install_text() -> str:
     return INSTALL_SCRIPT.read_text()
 
 
+def _pinned_version(name: str) -> str:
+    """スクリプトが `readonly <name>="..."` で固定した版（版の値はテストに写さない）。"""
+    match = re.search(rf'(?m)^readonly {name}="([^"]+)"$', _install_text())
+    assert match is not None, f"{name} must be declared"
+    return match.group(1)
+
+
 def _declared_step_labels() -> list[str]:
     """スクリプトの `step "..."` 呼び出しの順に並んだ手順名（手順名と総数はテストに写さない）。"""
     labels = re.findall(r'(?m)^step "([^"]+)"$', _install_text())
@@ -188,6 +195,20 @@ done
 exit 0
 """
 
+CTX7 = """\
+#!/bin/bash
+printf 'ctx7 %s\\n' "$*" >> "${FAKE_CALLS}"
+for arg in "$@"; do
+    case "${arg}" in
+    --version)
+        printf '%s\\n' "${FAKE_CTX7_VERSION}"
+        exit 0
+        ;;
+    esac
+done
+exit 0
+"""
+
 DSH = """\
 #!/bin/bash
 printf 'dsh %s\\n' "$*" >> "${FAKE_CALLS}"
@@ -286,6 +307,8 @@ def _run_installer(
     home: Path | None = None,
     pi_list: str | None = None,
     pi_agent_dir: str | None = None,
+    ctx7_version: str | None = None,
+    hide_ctx7: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     if root is None:
         root = _make_root(tmp_path)
@@ -320,6 +343,14 @@ def _run_installer(
         ("python3", PYTHON3),
     ):
         _write_executable(bin_dir / name, body)
+    base_path = os.environ["PATH"]
+    if hide_ctx7:
+        # 開発環境では実物の ctx7 が PATH の後ろにある。ctx7 のあるディレクトリごと外して「PATH に無い」を再現する。
+        base_path = os.pathsep.join(
+            entry for entry in base_path.split(os.pathsep) if not os.access(Path(entry) / "ctx7", os.X_OK)
+        )
+    else:
+        _write_executable(bin_dir / "ctx7", CTX7)
     for name, tool in (
         ("claude.sh", "claude"),
         ("grok.sh", "grok"),
@@ -331,11 +362,6 @@ def _run_installer(
 
     dump_config = tmp_path / "dump-config.yml"
     dump_config.write_text(DUMP_CONFIG_DISABLED)
-    dsh_version = re.search(r'(?m)^readonly DSH_VERSION="([^"]+)"$', _install_text())
-    assert dsh_version is not None, "DSH_VERSION must be declared"
-
-    xrift_version = re.search(r'(?m)^readonly XRIFT_CLI_VERSION="([^"]+)"$', _install_text())
-    assert xrift_version is not None, "XRIFT_CLI_VERSION must be declared"
 
     env = {
         **os.environ,
@@ -345,11 +371,13 @@ def _run_installer(
         "FAKE_PI_LIST": pi_list if pi_list is not None else "npm:@teelicht/pi-superagents\n",
         # agent-runner の雛形の配置先を一時 HOME に固定する（呼び出し元の XDG_CONFIG_HOME へ書かない）。
         "XDG_CONFIG_HOME": str(home / ".config"),
-        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "PATH": f"{bin_dir}:{base_path}",
         "FAKE_CALLS": str(tmp_path / "calls.log"),
         "FAKE_STUB_DIR": str(stub_dir),
-        "FAKE_DSH_VERSION": dsh_version.group(1),
-        "FAKE_XRIFT_VERSION": xrift_version.group(1),
+        "FAKE_DSH_VERSION": _pinned_version("DSH_VERSION"),
+        "FAKE_XRIFT_VERSION": _pinned_version("XRIFT_CLI_VERSION"),
+        # fake の `ctx7 --version` の出力。既定はスクリプトが固定した版。
+        "FAKE_CTX7_VERSION": ctx7_version if ctx7_version is not None else _pinned_version("CTX7_CLI_VERSION"),
         "FAKE_DSH_DUMP_CONFIG": str(dump_config),
         # workspace cleanup は dry-run に固定し、テストから実ファイルを消させない。
         "XRIFT_POC_CLEANUP_TMP_ROOT": str(tmp_path / "cleanup"),
@@ -434,6 +462,7 @@ FAIL_LOUD_INJECTIONS = (
     "herdrdev/herdr",
     "vercel-labs/skills@find-skills",
     "npm install -g @xrift/cli",
+    "npm install -g ctx7@",
     "https://github.com/WebXR-JP/xrift-skills/tree/",
     "https://astral.sh/",
     "https://starship.rs/",
@@ -456,6 +485,38 @@ def test_run_stops_at_the_step_whose_command_fails(tmp_path: Path, fail_on: str)
     after = "\n".join(lines[injected + 1 :])
     assert _announced_steps(after) == [], result.stdout
     assert "[install_beforehand] ERROR: " in after, result.stdout
+
+
+def test_run_installs_the_pinned_ctx7_without_running_its_setup(tmp_path: Path) -> None:
+    result, _ = _run_installer(tmp_path)
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    calls = (tmp_path / "calls.log").read_text().splitlines()
+    assert f"npm install -g ctx7@{_pinned_version('CTX7_CLI_VERSION')}" in calls
+    # ctx7 setup は共有の ~/.claude・~/.claude.json・~/.codex などへ MCP 設定やスキルを書き込む。
+    # セットアップは導入した版の確認にだけ ctx7 を呼ぶ。
+    assert [line for line in calls if line.startswith("ctx7 ")] == ["ctx7 --version"]
+
+
+@pytest.mark.parametrize(
+    ("hide_ctx7", "ctx7_version"),
+    [(True, None), (False, "0.0.0-unexpected")],
+    ids=["not-on-path", "another-version"],
+)
+def test_run_stops_when_ctx7_is_missing_or_another_version(
+    tmp_path: Path, hide_ctx7: bool, ctx7_version: str | None
+) -> None:
+    # npm install が成功しても、ctx7 が PATH に無い・固定した版でないときは、ERROR 行を残して打ち切る。
+    result, _ = _run_installer(tmp_path, hide_ctx7=hide_ctx7, ctx7_version=ctx7_version, merge_output=True)
+    assert result.returncode != 0, result.stdout
+    lines = result.stdout.splitlines()
+    error = next((index for index, line in enumerate(lines) if line.startswith("[install_beforehand] ERROR: ")), None)
+    assert error is not None, result.stdout
+    assert _announced_steps("\n".join(lines[error + 1 :])) == [], result.stdout
+    step_start = max(index for index, line in enumerate(lines[:error]) if _announced_steps(line))
+    # 打ち切った手順の出力が、原因として ctx7 を挙げている。
+    assert "ctx7" in "\n".join(lines[step_start + 1 : error + 1]), result.stdout
+    calls = (tmp_path / "calls.log").read_text().splitlines()
+    assert f"npm install -g ctx7@{_pinned_version('CTX7_CLI_VERSION')}" in calls
 
 
 @pytest.mark.skipif(
