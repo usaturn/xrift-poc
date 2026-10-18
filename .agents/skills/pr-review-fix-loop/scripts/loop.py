@@ -1533,6 +1533,72 @@ def _reviewer_summary(entry: ReviewerEntry) -> dict[str, Any]:
     }
 
 
+def _review_attempts(review: ReviewPart) -> list[tuple[Literal["first", "rerun"], ReviewerEntry]]:
+    """サイクルの全試行の記録。再実行で置き換えた 1 回目の記録も含め、同じ試行を二重に数えない。
+
+    再実行待ちのあいだは、置き換える予定の記録が reviewers と rerun.replaced の両方にある。
+    """
+    rerun = review.rerun
+    replaced = rerun.replaced if rerun is not None else []
+    rerun_agents = set(rerun.agents) if rerun is not None and rerun.batch is not None else set[str]()
+    attempts: list[tuple[Literal["first", "rerun"], ReviewerEntry]] = [("first", entry) for entry in replaced]
+    for entry in review.reviewers:
+        if entry in replaced:
+            continue
+        attempts.append(("rerun" if entry.actual_agent in rerun_agents else "first", entry))
+    return attempts
+
+
+def _review_retained(review: ReviewPart) -> list[str]:
+    """サイクルの 1 回目と再実行の、回収で残した runner の出力と、レビュアーが報告した残存パス。"""
+    parts = (review, review.rerun) if review.rerun is not None else (review,)
+    paths = [path for part in parts if part.cleanup is not None for path in part.cleanup.retained]
+    paths += [path for _, entry in _review_attempts(review) for path in entry.retained_paths]
+    return list(dict.fromkeys(paths))
+
+
+def _review_outside_changes(review: ReviewPart) -> list[str]:
+    """サイクルの 1 回目と再実行の runner の監査が観測した、作業場所の外の変更。"""
+    parts = (review, review.rerun) if review.rerun is not None else (review,)
+    return list(dict.fromkeys(path for part in parts if part.batch is not None for path in part.batch.outside_changes))
+
+
+def _reviewer_retained(run: RunRecord, cycles: Sequence[CycleRecord]) -> list[dict[str, Any]]:
+    """レビュアーの pr-review が残したと報告したパスごとの、過去の観測（observed）と、いまの状態。
+
+    loop はこれらを所有しないので消さない。中身は読まず、lstat と tool_root の worktree の登録だけを見る。
+    絶対パスでない値（pr_ref の ref 名など）は、どのリポジトリのものか分からないので確かめない（null）。
+    """
+    observed: dict[str, list[dict[str, Any]]] = {}
+    for cycle in cycles:
+        for attempt, entry in _review_attempts(cycle.review):
+            for path in entry.retained_paths:
+                observed.setdefault(path, []).append(
+                    {"cycle": cycle.cycle, "agent": entry.actual_agent, "attempt": attempt}
+                )
+    if not observed:
+        return []
+    try:
+        registered: set[Path] | None = {path.absolute() for path in _registered_worktrees(Path(run.tool_root))}
+    except LoopError:
+        registered = None
+    items: list[dict[str, Any]] = []
+    for path, observations in observed.items():
+        exists: bool | None = None
+        in_tool_root: bool | None = None
+        if Path(path).is_absolute():
+            try:
+                Path(path).lstat()
+                exists = True
+            except FileNotFoundError, NotADirectoryError:
+                exists = False
+            except OSError:
+                exists = None
+            in_tool_root = None if registered is None else Path(path).absolute() in registered
+        items.append({"path": path, "exists": exists, "registered": in_tool_root, "observed": observations})
+    return items
+
+
 def _failed_review_reason(entries: Sequence[ReviewerEntry]) -> str:
     reasons = "; ".join(f"{entry.actual_agent}: {entry.reason}" for entry in entries) or "担当が無い"
     # 書きかけの値（<...>）と取り違えないよう、理由の中の山括弧を全角にする
@@ -1580,11 +1646,11 @@ def _review_batch(
     github: GitHub | None,
     adapter_loader: Callable[[str], Adapter],
     tmp_root: Path | None,
-) -> tuple[BatchResult, list[ReviewerEntry], list[str]]:
+) -> tuple[BatchResult, list[ReviewerEntry]]:
     """runner の 1 回の実行（起動 → 親の確定・後処理 → 検査 → 回収）。part は 1 回目か再実行の記録。
 
-    途中で止まっても part の記録から同じ段を再開し、レビュアーを起動し直さない。戻り値は runner の結果、
-    検査した記録、回収できずに残ったパス。
+    途中で止まっても part の記録から同じ段を再開し、レビュアーを起動し直さない。戻り値は runner の結果と
+    検査した記録。回収できずに残ったパスは part.cleanup に残す。
     """
     rerun = part if isinstance(part, RerunPart) else None
     prefix = "rerun-" if rerun is not None else ""
@@ -1774,7 +1840,7 @@ def _review_batch(
     part.cleanup = CleanupInfo(
         state="removed" if resource is not None and resource.state == "removed" else "retained", retained=retained
     )
-    return batch, entries, retained
+    return batch, entries
 
 
 def review(
@@ -1791,7 +1857,7 @@ def review(
         raise LoopError(3, "state", "レビューの段階のサイクルが無い（reuse のサイクルではレビュアーを起動しない）")
     cycle = existing[-1]
     if cycle.review.batch is None:
-        batch, entries, retained = _review_batch(
+        batch, entries = _review_batch(
             run_dir, run, cycle, cycle.review, github=github, adapter_loader=adapter_loader, tmp_root=tmp_root
         )
         cycle.review.reviewers = entries
@@ -1802,7 +1868,7 @@ def review(
         if again and _stopped(batch):
             cycle.review.rerun = RerunPart(agents=[entry.actual_agent for entry in again], replaced=again)
     elif cycle.review.rerun is not None and cycle.review.rerun.batch is None:
-        batch, entries, retained = _review_batch(
+        _, entries = _review_batch(
             run_dir, run, cycle, cycle.review.rerun, github=github, adapter_loader=adapter_loader, tmp_root=tmp_root
         )
         rerun_entries = {entry.actual_agent: entry for entry in entries}
@@ -1819,15 +1885,15 @@ def review(
     save_run(run_dir, run)
     if not accepted and not pending:
         raise _all_failed(run_dir, entries)
-    reviewer_retained = [path for entry in entries for path in entry.retained_paths]
+    # 再実行の後も、1 回目の回収で残したパス・置き換えたレビュアーの報告・1 回目の監査の観測を落とさない
     output: dict[str, Any] = {
         "status": "ok",
         "cycle": cycle.cycle,
         "head": cycle.head,
         "accepted": [_reviewer_summary(entry) for entry in accepted],
         "rejected": [_reviewer_summary(entry) for entry in entries if entry.verdict == "rejected"],
-        "outside_changes": batch.outside_changes,
-        "retained": retained + reviewer_retained,
+        "outside_changes": _review_outside_changes(cycle.review),
+        "retained": _review_retained(cycle.review),
     }
     if cycle.review.rerun is not None:
         output["rerun"] = {"agents": list(cycle.review.rerun.agents)}
@@ -1881,6 +1947,7 @@ def recover(run_dir: Path, *, operator_confirmed_stopped: str | None = None) -> 
         "result": run.result.model_dump(mode="json") if run.result else None,
         "lock_released": released,
         "retained": sorted({*retained, *(resource.path for resource in run.resources if resource.state != "removed")}),
+        "reviewer_retained": _reviewer_retained(run, load_cycles(run_dir)),
     }
 
 
@@ -1894,6 +1961,7 @@ def _cycle_summary(cycle: CycleRecord) -> dict[str, Any]:
             {"agent": item.actual_agent, "verdict": item.verdict, "reason": item.reason}
             for item in cycle.review.reviewers
         ],
+        "outside_changes": _review_outside_changes(cycle.review),
         "outcome": cycle.planning.outcome if cycle.planning else None,
         "round": cycle.planning.round if cycle.planning else None,
         "commit": cycle.planning.commit if cycle.planning else None,
@@ -1939,6 +2007,8 @@ def finish(run_dir: Path, *, abort: str | None = None) -> dict[str, Any]:
         "cycles": [_cycle_summary(cycle) for cycle in existing],
         "lock_released": released,
         "retained": [resource.path for resource in run.resources if resource.state == "retained"],
+        # 停止を確認できない資源が無いと確かめた後（上の audit_resources）に、報告された残存パスの状態を見る
+        "reviewer_retained": _reviewer_retained(run, existing),
     }
 
 
@@ -1993,6 +2063,7 @@ def status(
         "owns_lock": lock is not None and lock.run_id == run.run_id,
         "result": run.result.model_dump(mode="json") if run.result else None,
         "cycles": [_cycle_summary(cycle) for cycle in existing],
+        "reviewer_retained": _reviewer_retained(run, existing),
         "next": _next_step(run, existing, run_dir),
     }
 

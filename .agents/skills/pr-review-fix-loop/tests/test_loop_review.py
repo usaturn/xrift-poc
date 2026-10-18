@@ -1423,6 +1423,8 @@ def test_cycle_record_without_the_rerun_fields_loads(loop: Any, env: Any) -> Non
 
     assert cycle.review.rerun is None
     assert all(entry.rejected_stage is None for entry in cycle.review.reviewers)
+    finished = loop.finish(run_dir, abort="external: テストの終了")
+    assert finished["reviewer_retained"] == [] and finished["cycles"][0]["outside_changes"] == []
 
 
 def test_request_is_kept_only_from_a_regular_file(loop: Any, env: Any, tmp_path: Path) -> None:
@@ -1448,3 +1450,156 @@ def test_request_is_kept_only_from_a_regular_file(loop: Any, env: Any, tmp_path:
         loop.keep_rejected_request(failed, entry, kept)
         assert (entry.request_file is not None) is expected
     assert sorted(path.name for path in kept.iterdir()) == ["request-1.json"]
+
+
+# --- 再実行の後の報告 ---------------------------------------------------------------------------------------------
+
+
+def session_worktrees(env: Any) -> list[str]:
+    """偽のレビュアーが pr-review の helper のセッションを模して残した worktree（作った順）。"""
+    worktrees = [path / "worktree" for path in env.sessions.glob("pr-review-*")]
+    return [str(path) for path in sorted(worktrees, key=lambda path: path.stat().st_mtime_ns)]
+
+
+def test_rerun_keeps_the_first_attempt_retained_paths_and_outside_changes(loop: Any, env: Any) -> None:
+    # Issue #41 の再現: 1 回目の alpha は後片付けに失敗して worktree を残し、tool_root も書き換える。再実行は成功する
+    run_dir = started_cycle(loop, env)
+    adapter = env.reviewers({"alpha": ["failed+retained+outside", "success"], "beta": "success"})
+
+    first = loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
+
+    [worktree] = session_worktrees(env)
+    assert worktree in first["retained"]
+    assert first["outside_changes"] == [str(env.parent)]
+
+    second = loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
+
+    assert sorted(item["agent"] for item in second["accepted"]) == ["alpha", "beta"]
+    assert set(first["retained"]) <= set(second["retained"])
+    assert second["outside_changes"] == [str(env.parent)]
+
+
+def test_successful_first_review_reports_nothing_retained(loop: Any, env: Any) -> None:
+    # 対照: 1 回目から全員が成功する
+    run_dir = started_cycle(loop, env)
+    adapter = env.reviewers({"alpha": "success", "beta": "success"})
+
+    reviewed = loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
+
+    assert (reviewed["retained"], reviewed["outside_changes"]) == ([], [])
+    assert "rerun" not in reviewed
+    finished = loop.finish(run_dir, abort="external: テストの終了")
+    assert (finished["retained"], finished["reviewer_retained"]) == ([], [])
+    assert finished["cycles"][0]["outside_changes"] == []
+
+
+def finish_no_fix_needed(loop: Any, env: Any, kit: Any, run_dir: Path, tmp_path: Path) -> dict[str, Any]:
+    """計画担当の代わりに no_fix_needed の記録とマージを置き、cycle-end から finish まで進める。"""
+    env.gh.post_record(kit.round_record(1, env.gh.head(), "no_fix_needed", []))
+    final = kit.finalize_result(tmp_path / "final.json", "no_fix_needed", merged=True)
+    env.gh.merge()
+    loop.cycle_end(run_dir, github=env.github, finalize_result=final, round_dir=tmp_path)
+    finished: dict[str, Any] = loop.finish(run_dir)
+    return finished
+
+
+def retained_item(output: dict[str, Any], path: str) -> dict[str, Any]:
+    return next(item for item in output["reviewer_retained"] if item["path"] == path)
+
+
+def test_finish_and_status_report_the_first_attempt_worktree(loop: Any, env: Any, kit: Any, tmp_path: Path) -> None:
+    # Issue #41 の再現を最終化まで進める: 1 回目の worktree が実在し登録も残るので、finish と status に出る
+    run_dir = started_cycle(loop, env)
+    adapter = env.reviewers({"alpha": ["failed+retained+outside", "success"], "beta": "success"})
+    loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
+    loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
+
+    finished = finish_no_fix_needed(loop, env, kit, run_dir, tmp_path)
+
+    [worktree] = session_worktrees(env)
+    assert retained_item(finished, worktree) == {
+        "path": worktree,
+        "exists": True,
+        "registered": True,
+        "observed": [{"cycle": 1, "agent": "alpha", "attempt": "first"}],
+    }
+    ref = retained_item(finished, f"refs/pr-review/{kit.number}")
+    assert (ref["exists"], ref["registered"]) == (None, None)
+    assert finished["retained"] == [] and finished["lock_released"] is True
+    assert finished["cycles"][0]["outside_changes"] == [str(env.parent)]
+    status = loop.status(run_dir=run_dir)
+    assert (status["state"], status["next"]) == ("ended", None)
+    assert status["reviewer_retained"] == finished["reviewer_retained"]
+    # 報告のために消さない。パスに改行を含むので、-z で読む loop の一覧で照合する
+    assert Path(worktree).is_dir() and Path(worktree) in loop._registered_worktrees(env.parent)
+
+
+def test_rerun_that_fails_again_reports_both_attempts(loop: Any, env: Any, kit: Any) -> None:
+    # beta は再実行でも失敗し、alpha の成果で計画へ進む。どちらの試行の残存パスも報告する
+    run_dir = started_cycle(loop, env)
+    adapter = env.reviewers({"alpha": "success", "beta": "failed+retained"})
+    loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
+    reviewed = loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
+    first, rerun = session_worktrees(env)
+    assert {first, rerun} <= set(reviewed["retained"])
+
+    finished = loop.finish(run_dir, abort="external: テストの終了")
+
+    observed = {item["path"]: item["observed"] for item in finished["reviewer_retained"]}
+    assert observed[first] == [{"cycle": 1, "agent": "beta", "attempt": "first"}]
+    assert observed[rerun] == [{"cycle": 1, "agent": "beta", "attempt": "rerun"}]
+    assert [item["attempt"] for item in observed[f"refs/pr-review/{kit.number}"]] == ["first", "rerun"]
+
+
+def test_reviewer_retained_reports_the_state_after_removal(loop: Any, env: Any, kit: Any) -> None:
+    # 報告された worktree を finish の前に外すと、過去の観測は残り、現在の状態は無い・未登録になる
+    run_dir = started_cycle(loop, env)
+    adapter = env.reviewers({"alpha": ["failed+retained", "success"], "beta": "success"})
+    loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
+    loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
+    [worktree] = session_worktrees(env)
+    kit.git(env.parent, "worktree", "remove", "--force", worktree)
+
+    finished = loop.finish(run_dir, abort="external: テストの終了")
+
+    removed = retained_item(finished, worktree)
+    assert (removed["exists"], removed["registered"]) == (False, False)
+    assert removed["observed"] == [{"cycle": 1, "agent": "alpha", "attempt": "first"}]
+    session = retained_item(finished, str(Path(worktree).parent))
+    assert (session["exists"], session["registered"]) == (True, False)
+
+
+@pytest.mark.parametrize("entrypoint", ["finish", "recover"])
+def test_pending_rerun_does_not_count_the_same_attempt_twice(loop: Any, env: Any, entrypoint: str) -> None:
+    # 再実行の前に終えると、置き換える予定の記録が reviewers と rerun.replaced の両方にある
+    run_dir = started_cycle(loop, env)
+    adapter = env.reviewers({"alpha": ["failed+retained", "success"], "beta": "success"})
+    pending = loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
+    assert pending["rerun"] == {"agents": ["alpha"]}
+
+    ended = (
+        loop.finish(run_dir, abort="external: 再実行の前に止めた") if entrypoint == "finish" else loop.recover(run_dir)
+    )
+
+    [worktree] = session_worktrees(env)
+    assert retained_item(ended, worktree)["observed"] == [{"cycle": 1, "agent": "alpha", "attempt": "first"}]
+
+
+def test_reviewer_retained_survives_an_unreadable_worktree_list(
+    loop: Any, env: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir = started_cycle(loop, env)
+    adapter = env.reviewers({"alpha": ["failed+retained", "success"], "beta": "success"})
+    loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
+    loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
+
+    def unreadable(root: Path) -> list[Path]:
+        raise loop.LoopError(5, "git", "git worktree list が失敗した")
+
+    monkeypatch.setattr(loop, "_registered_worktrees", unreadable)
+    finished = loop.finish(run_dir, abort="external: テストの終了")
+
+    [worktree] = session_worktrees(env)
+    item = retained_item(finished, worktree)
+    assert (item["exists"], item["registered"]) == (True, None)
+    assert finished["lock_released"] is True

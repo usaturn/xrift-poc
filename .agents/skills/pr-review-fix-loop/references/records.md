@@ -103,7 +103,30 @@ reviews/<owner>/<repo>/#<PR>-<ブランチ>/
 
 失敗の出力は `{"status": "error", "stage", "reason", "run_dir", "next", "requires_input"}`。`requires_input` は、`next` に足すオプションと、そこに書く事実の説明（`recover` の `--operator-confirmed-stopped` など）。書きかけの値を実行させないよう、`next` にはそのオプションを含めない。失敗しても、それまでに保存した記録と runner の結果は書き換えない。引数の書式の誤り（argparse が拒否するもの）だけは、標準エラー出力の usage と終了コード 2 で、JSON を書かない。
 
-## 6. 読む側の注意
+## 6. 出力の集約
+
+`review` の出力の `retained` と `outside_changes` は、そのサイクルの記録から組み立てる。再実行の後の出力でも、1 回目の値を含む。
+
+| キー | 値 |
+| --- | --- |
+| `retained` | 1 回目と再実行の回収で残したパス（`review.cleanup.retained`・`review.rerun.cleanup.retained`）と、全試行のレビュアーが報告した `retained_paths`（現在の `review.reviewers` と、再実行で置き換えた `review.rerun.replaced`）。順序を保って重複を除く |
+| `outside_changes` | 1 回目と再実行の runner の結果の `outside_changes`。順序を保って重複を除く |
+
+`finish`・`status` の `cycles[]` の各要素にも、同じ集約の `outside_changes` がある。
+
+`finish`・`status`・`recover` の出力の `retained` は、loop が記録した runner の出力（`run.json` の `resources`）のうち残したものである。レビュアーの pr-review が残したと報告したパスは、別のキー `reviewer_retained` に置く。loop はこれを所有せず、回収しない（`recover` も消さない）。
+
+| キー | 値 |
+| --- | --- |
+| `reviewer_retained[].path` | pr-review が `retained_paths` で報告した値（worktree・draft・session・pr_ref）。パスごとに 1 要素で、並びは最初に観測した順 |
+| `reviewer_retained[].observed` | 過去の観測。`[{"cycle", "agent", "attempt"}]`。`attempt` は `first`（1 回目。再実行で置き換えた記録を含む）か `rerun`（再実行）。再実行待ちの記録（`reviewers` と `rerun.replaced` に同じ記録がある）は 1 回だけ数える |
+| `reviewer_retained[].exists` | 出力を作った時点の `lstat` の結果（`true`・`false`）。調べられない、または絶対パスでない値（`pr_ref` の ref 名など）は `null` |
+| `reviewer_retained[].registered` | 出力を作った時点で、tool_root の checkout に worktree として登録されているか（`git worktree list`）。別のリポジトリ（private clone など）の登録は見ない。照合できない、または絶対パスでない値は `null` |
+
+- `retained_paths` は、停止を確認した試行の payload からだけ記録する（停止を確認できない試行の payload は読まない）。`finish` は停止を確認できない runner の資源が無いと確かめた後（終了コード 7 にならなかったとき）に状態を見る
+- 状態を見るときは、パスの中身を読まず、消さない。pr-review は途中で後片付けを済ませたパスも報告しうるので、`exists: false` もありうる
+
+## 7. 読む側の注意
 
 - サイクルの番号は run の中の通し番号で、判断の記録の `round`（PR 全体の通し番号）とは別である。対応は `planning.round` にある。
 - `review.reviewers[].identity` は runner の事後の観測、`reviewer` は pr-review が成果に記録した値で、同じとは限らない。未観測の値を設定から補わない。
