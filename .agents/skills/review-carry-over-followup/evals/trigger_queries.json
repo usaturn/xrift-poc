@@ -1,0 +1,89 @@
+{
+  "skill_name": "review-carry-over-followup",
+  "queries": [
+    {
+      "id": "q1",
+      "query": "持ち越し候補について再調査し、本当に重要なことであれば Issue を作成せよ。採用しない場合は PR に採用しない理由を投稿すること。",
+      "should_trigger": true,
+      "expected_terms": ["持ち越し", "Issue", "PR"],
+      "notes": "このスキルの元になった依頼（Issue #45）"
+    },
+    {
+      "id": "q2",
+      "query": "PR #61 の持ち越し候補を再調査して、重要なら Issue にして",
+      "should_trigger": true,
+      "expected_terms": ["持ち越し", "Issue"],
+      "notes": "PR 番号付き。review-fix-planning の「PR 番号を指定して」にも当たりうるので、両方の description で境界を書く"
+    },
+    {
+      "id": "q3",
+      "query": "マージした PR で Skip にした指摘を見直して、残すべきものだけ Issue を立てて。見送るものは PR に理由を書いておいて",
+      "should_trigger": true,
+      "expected_terms": ["Skip", "Issue", "理由"],
+      "notes": "マージ済みの PR の事後整理。持ち越しという語を使わない言い方"
+    },
+    {
+      "id": "q4",
+      "query": "見送った指摘には、PR に採用しない理由を残しておいて",
+      "should_trigger": true,
+      "expected_terms": ["見送", "理由"],
+      "notes": "見送りの理由の投稿だけを言う依頼"
+    },
+    {
+      "id": "q5",
+      "query": "https://github.com/usaturn/xrift-poc/pull/35 の carry-over を確認して、追跡が必要なものは issue 化して",
+      "should_trigger": true,
+      "expected_terms": ["carry-over", "issue"],
+      "notes": "英語の混じった言い方と PR の URL"
+    },
+    {
+      "id": "q6",
+      "query": "PR #36 の持ち越し候補、前に一度調べたけど、もう一回見て",
+      "should_trigger": true,
+      "expected_terms": ["持ち越し", "もう一回"],
+      "notes": "2 回目の事後調査（前回のコメントを補足・訂正する）"
+    },
+    {
+      "id": "q7",
+      "query": "PR #42 をレビューして指摘をまとめて",
+      "should_trigger": false,
+      "expected_terms": [],
+      "notes": "新規のレビュー（pr-review）"
+    },
+    {
+      "id": "q8",
+      "query": "reviews/usaturn/xrift-poc/#61-feat-x のレビューを読んで、採否を決めて修正計画をたてて",
+      "should_trigger": false,
+      "expected_terms": [],
+      "notes": "PR での採否・修正（review-fix-planning）"
+    },
+    {
+      "id": "q9",
+      "query": "この PR のレビュー指摘を直して push して",
+      "should_trigger": false,
+      "expected_terms": [],
+      "notes": "当該 PR への修正の実装（review-fix-planning）"
+    },
+    {
+      "id": "q10",
+      "query": "/pr-review-fix-loop 63",
+      "should_trigger": false,
+      "expected_terms": [],
+      "notes": "レビュー修正ループ。持ち越しの事後調査を自動で組み込まない"
+    },
+    {
+      "id": "q11",
+      "query": "Issue #45 に着手して PR まで作って",
+      "should_trigger": false,
+      "expected_terms": [],
+      "notes": "Issue の実装（issue-to-pr）"
+    },
+    {
+      "id": "q12",
+      "query": "レビュー結果が本当か確かめて、確認済みの一覧を作って",
+      "should_trigger": false,
+      "expected_terms": [],
+      "notes": "指摘の再現と確認済みの一覧（review-verify）"
+    }
+  ]
+}
