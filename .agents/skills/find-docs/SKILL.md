@@ -5,19 +5,22 @@ description: 開発者向けのあらゆる技術について、最新のドキ�
 
 # ドキュメントの検索
 
-Context7 CLI を使って、任意のライブラリの最新のドキュメントとコード例を取得する。
+Context7 CLI（`ctx7`）を使って、任意のライブラリの最新のドキュメントとコード例を取得する。
 
-コマンドを実行する前に、CLI が最新であることを確かめる。
+## 前提: インストール済みの `ctx7` だけを使う
 
-```bash
-npm install -g ctx7@latest
-```
-
-または、インストールせずに直接実行する。
+`ctx7` は、Dev Container のセットアップ（`.devcontainer/install_beforehand.bash`）が `CTX7_CLI_VERSION` の固定した版で入れる。最初に、PATH にあることを確かめる。
 
 ```bash
-npx ctx7@latest <command>
+command -v ctx7
 ```
+
+- 何も表示されない（終了コード 1）ときは、そこで止める。`ctx7` が無いことと、Rebuild Container（`install_beforehand.bash` の再実行）または `.devcontainer/README.md` の「Context7 CLI（ctx7）」節の手順で入れることを利用者に伝える。自分で `npm install` しない
+- `npx ctx7`、Context7 の MCP Server、claude.ai の Context7 コネクタ、Pi の Context7 拡張（`resolve-library-id`・`query-docs`・`/c7-docs`）に切り替えない。xrift-poc では Context7 をこのスキルの `ctx7` だけで使う
+- `ctx7` が `Update available` と表示し、`ctx7 upgrade` や `npm install -g ctx7@latest` を勧めても従わない。版の更新は、`CTX7_CLI_VERSION` を変える PR で行う
+- `ctx7 setup`・`ctx7 remove` を実行しない。共有の `~/.claude`・`~/.codex` などに MCP 設定やスキルを書き込む
+
+Bash などのシェルを使えないサブエージェントは `ctx7` を実行できない。親のエージェントか、シェルを使える worker に、ライブラリ名と質問を渡して取得を頼む。頼めないときは、取得できなかったことを結果に書く。学習データの知識で黙って代えない。
 
 ## 進め方
 
@@ -91,10 +94,22 @@ ctx7 docs /vercel/next.js/v14.3.0-canary.87 "How to set up app router"
 解決したライブラリの、最新のドキュメントとコード例を取得する。
 
 ```bash
-ctx7 docs /facebook/react "How to clean up useEffect with async operations"
+ctx7 docs /react/react "How to clean up useEffect with async operations"
 ctx7 docs /vercel/next.js "How to add authentication middleware to app router"
-ctx7 docs /prisma/prisma "How to define one-to-many relations with cascade delete"
+ctx7 docs /prisma/orm "How to define one-to-many relations with cascade delete"
 ```
+
+### ライブラリ ID のリダイレクト
+
+ライブラリ ID が移動していると、`ctx7 docs` は次のように新しい ID を表示し、終了コード 1 で終わる。
+
+```text
+⚠ Library has been redirected
+New ID: /react/react
+Run: ctx7 docs "/react/react" "useEffect cleanup"
+```
+
+表示された新しい ID で 1 回だけやり直す。このやり直しも、1 つの質問につき 3 回までの回数に含める。
 
 ### 良いクエリの書き方
 
@@ -113,22 +128,29 @@ ctx7 docs /prisma/prisma "How to define one-to-many relations with cascade delet
 
 ## 認証
 
-認証なしでも使える。レート制限の上限を上げるには、次のようにする。
+認証なしでも使える。レート制限の上限は、環境変数 `CONTEXT7_API_KEY` で上がる。`ctx7` は、この変数があれば `ctx7 login` の認証情報より優先して使う。キーの値は表示しない。設定されているかだけを確かめる。
 
 ```bash
-# Option A: environment variable
-export CONTEXT7_API_KEY=your_key
-
-# Option B: OAuth login
-ctx7 login
+node -e 'console.log(process.env.CONTEXT7_API_KEY ? "CONTEXT7_API_KEY: set" : "CONTEXT7_API_KEY: not set")'
 ```
+
+`ctx7 whoami` は `ctx7 login` のログイン状態だけを表示する。`CONTEXT7_API_KEY` を使っていても `Not logged in.` と出る。
+
+`ctx7 login` は利用者が自分で実行する。認証情報は `~/.config/context7/credentials.json`（`XDG_CONFIG_HOME` が絶対パスならその下）に保存される。この Dev Container では `~/.config` を bind mount していないので、再ビルドで消える。
 
 ## エラーの扱い
 
-コマンドが quota のエラー（"Monthly quota reached" または "quota exceeded"）で失敗した場合は、次のようにする。
+| 状況 | 対応 |
+|---|---|
+| `command -v ctx7` が何も表示しない | 前提の節のとおり止まり、セットアップを案内する |
+| `⚠ Library has been redirected` | 表示された新しい ID で 1 回だけやり直す |
+| `✖ Library "..." not found` | `ctx7 library` で ID を解決し直す |
+| quota のエラー（"Monthly quota reached" または "quota exceeded"） | 下の手順 |
+
+quota のエラーで失敗した場合は、次のようにする。
 
 1. Context7 の quota を使い切ったことをユーザに伝える
-2. 上限を上げるための認証として `ctx7 login` を勧める
+2. 上限を上げるための認証として、`CONTEXT7_API_KEY` の設定か `ctx7 login` を勧める
 3. ユーザが認証できない、または認証しないことを選んだ場合は、学習した知識から回答し、古い可能性があることをはっきり書き添える
 
 黙って学習データに切り替えない。Context7 を使わなかった理由を必ずユーザに伝える。
@@ -139,3 +161,4 @@ ctx7 login
 - 必ず先に `ctx7 library` を実行する。有効な ID が無いと、`ctx7 docs react "hooks"` は失敗する
 - 1 語ではなく、内容がわかるクエリを使う。`"hooks"` ではなく `"React useEffect cleanup function"` と書く
 - クエリに機密情報（API キー、パスワード、認証情報）を含めない
+- `ctx7` が無いときに `npx ctx7@latest` や `npm install -g ctx7@latest` で補わない。止まってセットアップを案内する

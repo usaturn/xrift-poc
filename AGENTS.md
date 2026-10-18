@@ -221,9 +221,8 @@ Windows 11 の WSL2（Gentoo Linux）上で Docker を動かし、Ubuntu 26.04 L
 
 ## 最新ドキュメントの取得
 
-- ライブラリ、フレームワーク、SDK、API、CLI、クラウドサービスの仕様は Context7 で確認する。リファクタリング、ビジネスロジック、コードレビューには使わない
-- ユーザが `/org/project` 形式の ID を示していない場合は、`npx ctx7@latest library <name> "<query>"` で ID を解決してから、`npx ctx7@latest docs <id> "<query>"` を実行する
-- ユーザの質問を具体的な query にし、機密情報を含めない。1件につき3回までとし、指定バージョンがある場合は返された version ID を使う
-- quota error の場合はその旨を伝え、`npx ctx7@latest login` または `CONTEXT7_API_KEY` を案内する。黙って別情報へ切り替えない
+- ライブラリ、フレームワーク、SDK、API、CLI、クラウドサービスの仕様は、`find-docs` スキルの手順で Context7 CLI（`ctx7`）を使って確認する。リファクタリング、ビジネスロジック、コードレビューには使わない
+- `ctx7` は、セットアップが固定した版（`.devcontainer/install_beforehand.bash` の `CTX7_CLI_VERSION`）を直接実行する。`npx ctx7`・Context7 の MCP Server・Pi の Context7 拡張に切り替えない。`ctx7` が無いときは、その旨を伝えて止まる
+- quota error の場合はその旨を伝え、`CONTEXT7_API_KEY` の設定または `ctx7 login` を案内する。黙って別情報へ切り替えない
 
 - XRift の仕様は <https://docs.xrift.net> を基準にする
