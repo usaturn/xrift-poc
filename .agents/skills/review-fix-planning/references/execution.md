@@ -129,6 +129,20 @@ uv run --no-project python "$TOPLEVEL/.agents/scripts/review_target.py" clone \
   --target "$TARGET_JSON" --dest "$LAND_ROOT/clone" --checkout-branch
 ```
 
-fork拒否（exit12）を別のpush先で回避しない。修正commit→1回レビュー/修正確認→関連/必須検証→ `git -C "$LAND_ROOT/clone" push origin HEAD`、同じPRの状況投稿/読戻し。成功後だけ `rm -rf -- "${LAND_ROOT:?}"`。失敗時はlocal commit/worktree/cloneの完全パスを残す。review-fix用の第2PR、main直push、force push、勝手なbranch削除はしない。
+fork拒否（exit12）を別のpush先で回避しない。修正commit→1回レビュー/修正確認→関連/必須検証の後、通常入口で `TARGET_JSON` を再解決する。`LOCAL_HEAD` は、そのレビュー/修正確認/正式検証を通した同じcommitのSHAとする。repository-ownership「公開前の秘密検査」の `scan before push` ブロックで関数を定義し、`scanned push` ブロックをPR修正用に適用する（関数本文をここに写さない）。一時cloneにも必ずこの検査を通し、`route_target.py` の `stop/unknown` を理由に検査なしでpushしない。
+
+```bash
+# review-fix-planning scanned push
+# 関数の定義とこのブロックは同じシェルで実行する。
+(
+    cd -- "${LAND_ROOT:?}/clone" || exit 1
+    PR_HEAD_REF="$(jq -er .head_ref <<<"$TARGET_JSON")" || exit 1
+    SCANNED_SHA="$(scan_before_push --review-target "$TARGET_JSON")" \
+      && [[ -n "$SCANNED_SHA" && "$SCANNED_SHA" == "$LOCAL_HEAD" ]] \
+      && git push origin "${SCANNED_SHA}:refs/heads/${PR_HEAD_REF}"
+)
+```
+
+検査の失敗・空SHA・HEAD不一致ではpushせず、cloneとlocal commitを残して報告する。push後はremote headが検査したSHAと一致することを確かめ、同じPRの状況投稿を読み戻す。成功後だけ `rm -rf -- "${LAND_ROOT:?}"`。失敗時はlocal commit/worktree/cloneの完全パスを残す。review-fix用の第2PR、main直push、force push、勝手なbranch削除はしない。
 
 全結果でSpec/Plan/planning/コメント/runner artifacts/未削除のscratchの絶対パスと実時間を報告する。第三者の資源を片付けず、消してよいと確認した自分のscratchだけ削除する。

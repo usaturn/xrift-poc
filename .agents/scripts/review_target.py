@@ -6,6 +6,7 @@
 - ``resolve <PR>``: PR を GitHub に照会し、保存先と Git 操作の対象を JSON で出す（pr-review が使う）
 - ``review-dir <PR|パス> [--for-planning]``: 保存済みのレビューディレクトリを探す（review-fix-planning・review-verify）
 - ``clone --target <JSON> --dest <パス> [--checkout-branch]``: 対象の PR のリポジトリを一時 clone する
+- ``scan-context --target <JSON> --checkout <パス>``: push 前に PR と checkout を照合し base/head ref を返す
 
 PR の指定は、番号（``3``・``#3``。親の origin のリポジトリの PR）か PR の URL（そのリポジトリの PR）。
 保存先は親の main worktree（``agent_tmp.py root`` と同じ）の
@@ -704,6 +705,58 @@ def clone_repository(target: CloneTarget, dest: Path, *, checkout_branch: bool) 
     return dest
 
 
+def scan_context(value: object, checkout: Path, *, runner: Runner = _run) -> dict[str, str]:
+    """解決済み PR と送信先・履歴を再確認する。場所の許可は scan_before_push の route 検査が担当する。"""
+    snapshot = CloneTarget.from_json(value)
+    data = cast(dict[str, Any], value)
+    base_ref = data.get("base_ref")
+    if not isinstance(base_ref, str) or not base_ref:
+        raise TargetError(EXIT_USAGE, "--target に base_ref がありません")
+    require_planning_owner(snapshot.repository)
+    checkout = checkout.resolve()
+    if _toplevel(checkout) != checkout:
+        raise TargetError(EXIT_CLONE, f"Git の root で検査してください: {checkout}")
+    for branch in (base_ref, snapshot.head_ref):
+        if _git(checkout, "check-ref-format", f"refs/heads/{branch}").returncode:
+            raise TargetError(EXIT_USAGE, f"ブランチ名として使えません: {branch!r}")
+    for key in ("remote.origin.url", "remote.origin.pushurl"):
+        configured = _git(checkout, "config", "--get-all", key)
+        urls = configured.stdout.splitlines()
+        if key == "remote.origin.pushurl" and configured.returncode == 1:
+            continue  # pushurl 未設定なら、push も origin.url を使う。
+        if (
+            configured.returncode != 0
+            or len(urls) != 1
+            or not same_repository(github_repository(urls[0]), snapshot.repository)
+        ):
+            raise TargetError(
+                EXIT_CLONE,
+                f"{key} が PR の repository と一致する単一の URL ではありません",
+            )
+
+    pr = fetch_pull_request(snapshot.repository, snapshot.number, runner=runner)
+    if (
+        not same_repository(pr.repository, snapshot.repository)
+        or not same_repository(snapshot.head_repository, snapshot.repository)
+        or not same_repository(pr.head_repository, pr.repository)
+        or pr.state.lower() != "open"
+        or pr.head_ref != snapshot.head_ref
+        or pr.head_sha != snapshot.head_sha
+        or pr.base_ref != base_ref
+    ):
+        raise TargetError(
+            EXIT_CLONE,
+            "PR が open・同一 repository の head/base ではありません。対象の解決からやり直してください",
+        )
+    if _git(checkout, "merge-base", "--is-ancestor", snapshot.head_sha, "HEAD").returncode:
+        raise TargetError(EXIT_CLONE, "local HEAD が解決済み PR head の修正履歴ではありません")
+    return {
+        "repository": pr.repository,
+        "base_ref": pr.base_ref,
+        "head_ref": pr.head_ref,
+    }
+
+
 # CLI
 
 
@@ -721,6 +774,9 @@ def main(argv: Sequence[str] | None = None, *, runner: Runner = _run) -> int:
     clone_parser.add_argument("--target", required=True, help="JSON printed by resolve or review-dir")
     clone_parser.add_argument("--dest", required=True, help="new directory for the clone")
     clone_parser.add_argument("--checkout-branch", action="store_true", help="check out the head branch to fix it")
+    scan_parser = commands.add_parser("scan-context", help="check the PR and push destination before secret scanning")
+    scan_parser.add_argument("--target", required=True, help="JSON printed by resolve or review-dir")
+    scan_parser.add_argument("--checkout", required=True, help="Git root containing the fix commits")
     args = parser.parse_args(argv)
     try:
         if args.command == "resolve":
@@ -734,9 +790,12 @@ def main(argv: Sequence[str] | None = None, *, runner: Runner = _run) -> int:
                 value: object = json.loads(args.target)
             except json.JSONDecodeError as error:
                 raise TargetError(EXIT_USAGE, f"--target が JSON ではありません: {error.msg}") from error
-            clone = CloneTarget.from_json(value)
-            root = clone_repository(clone, Path(args.dest).absolute(), checkout_branch=args.checkout_branch)
-            result = {"root": str(root), "head_sha": clone.head_sha}
+            if args.command == "scan-context":
+                result = scan_context(value, Path(args.checkout), runner=runner)
+            else:
+                clone = CloneTarget.from_json(value)
+                root = clone_repository(clone, Path(args.dest).absolute(), checkout_branch=args.checkout_branch)
+                result = {"root": str(root), "head_sha": clone.head_sha}
     except TargetError as error:
         print(f"review_target: {error}", file=sys.stderr)
         return error.code

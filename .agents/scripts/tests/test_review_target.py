@@ -757,3 +757,168 @@ def test_cli_resolve_prints_json(
     assert code == 0
     printed = json.loads(capsys.readouterr().out)
     assert printed["review_dir"].endswith("/reviews/usaturn/xrift-poc/#4-fix-x")
+
+
+# push 前の PR・checkout の照合。照合の削除や base/head の取り違えを検出する。
+
+
+def scan_checkout(tmp_path: Path) -> tuple[Path, dict[str, Any], dict[str, Any]]:
+    repo = "usaturn/xrift-sample-world"
+    root = make_parent(tmp_path / "空白 と 日本語", origin=f"https://github.com/{repo}.git")
+    pr = pull(repo, 7, "fix/world", head_sha=git(root, "rev-parse", "HEAD"))
+    pr["base"]["ref"] = "integration/world"
+    value = {
+        "repository": repo,
+        "number": 7,
+        "head_ref": "fix/world",
+        "head_sha": pr["head"]["sha"],
+        "head_repository": repo,
+        "clone_url": f"https://github.com/{repo}.git",
+        "base_ref": "integration/world",
+    }
+    return root, value, pr
+
+
+@pytest.mark.parametrize("detached", [False, True])
+def test_scan_context_accepts_descendant_and_uses_pr_base(tmp_path: Path, detached: bool) -> None:
+    root, value, pr = scan_checkout(tmp_path)
+    if detached:
+        git(root, "checkout", "--detach")
+    git(root, "commit", "--allow-empty", "-m", "fix")
+    git(
+        root,
+        "config",
+        "remote.origin.pushurl",
+        "git@github.com:Usaturn/Xrift-Sample-World.git",
+    )
+
+    result = target.scan_context(value, root, runner=gh_for(pr))
+
+    assert result == {
+        "repository": "usaturn/xrift-sample-world",
+        "base_ref": "integration/world",
+        "head_ref": "fix/world",
+    }
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["closed", "fork", "deleted-head", "head-sha", "head-ref", "base-ref", "renamed"],
+)
+def test_scan_context_rejects_changed_or_unpushable_pr(tmp_path: Path, case: str) -> None:
+    root, value, pr = scan_checkout(tmp_path)
+    if case == "closed":
+        pr["state"] = "closed"
+    elif case == "fork":
+        pr["head"]["repo"]["full_name"] = "someone/fork"
+    elif case == "deleted-head":
+        pr["head"]["repo"] = None
+    elif case == "head-sha":
+        pr["head"]["sha"] = "b" * 40
+    elif case == "head-ref":
+        pr["head"]["ref"] = "other"
+    elif case == "base-ref":
+        pr["base"]["ref"] = "other"
+    else:
+        pr["base"]["repo"]["full_name"] = "usaturn/renamed"
+    gh = FakeGh({"repos/usaturn/xrift-sample-world/pulls/7": (http(200, pr), "")})
+
+    with pytest.raises(target.TargetError) as excinfo:
+        target.scan_context(value, root, runner=gh)
+    assert error_code(excinfo) == target.EXIT_CLONE
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "origin",
+        "no-origin",
+        "many-origins",
+        "pushurl",
+        "many-pushurls",
+        "subdir",
+        "history",
+    ],
+)
+def test_scan_context_rejects_wrong_checkout_or_destination(tmp_path: Path, case: str) -> None:
+    root, value, pr = scan_checkout(tmp_path)
+    checkout = root
+    if case == "origin":
+        git(root, "remote", "set-url", "origin", "https://github.com/usaturn/other.git")
+    elif case == "no-origin":
+        git(root, "remote", "remove", "origin")
+    elif case == "many-origins":
+        git(
+            root,
+            "config",
+            "--add",
+            "remote.origin.url",
+            "https://github.com/usaturn/other.git",
+        )
+    elif case == "pushurl":
+        git(
+            root,
+            "config",
+            "remote.origin.pushurl",
+            "https://github.com/usaturn/other.git",
+        )
+    elif case == "many-pushurls":
+        for _ in range(2):
+            git(root, "config", "--add", "remote.origin.pushurl", value["clone_url"])
+    elif case == "subdir":
+        checkout = root / "nested"
+        checkout.mkdir()
+    else:
+        git(root, "checkout", "--orphan", "other")
+        git(root, "commit", "-m", "unrelated")
+
+    with pytest.raises(target.TargetError) as excinfo:
+        target.scan_context(value, checkout, runner=gh_for(pr))
+    assert error_code(excinfo) == target.EXIT_CLONE
+
+
+@pytest.mark.parametrize(
+    ("key", "replacement"),
+    [
+        ("base_ref", None),
+        ("base_ref", "bad..ref"),
+        ("head_ref", "bad ref"),
+        ("number", 0),
+        ("repository", "../x"),
+        ("clone_url", "https://github.com/usaturn/other.git"),
+    ],
+)
+def test_scan_context_rejects_malformed_target(tmp_path: Path, key: str, replacement: Any) -> None:
+    root, value, pr = scan_checkout(tmp_path)
+    value[key] = replacement
+    with pytest.raises(target.TargetError) as excinfo:
+        target.scan_context(value, root, runner=gh_for(pr))
+    assert error_code(excinfo) == target.EXIT_USAGE
+
+
+def test_scan_context_owner_and_api_failures_are_not_approval(tmp_path: Path) -> None:
+    root, value, _pr = scan_checkout(tmp_path)
+    gh = FakeGh({"repos/usaturn/xrift-sample-world/pulls/7": (http(403, {}), "")})
+    with pytest.raises(target.TargetError) as excinfo:
+        target.scan_context(value, root, runner=gh)
+    assert error_code(excinfo) == target.EXIT_AUTH
+    value.update(
+        repository="someone/world",
+        head_repository="someone/world",
+        clone_url="https://github.com/someone/world.git",
+    )
+    with pytest.raises(target.TargetError) as excinfo:
+        target.scan_context(value, root, runner=FakeGh({}))
+    assert error_code(excinfo) == target.EXIT_OWNER
+
+
+def test_cli_scan_context_prints_checked_refs(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root, value, pr = scan_checkout(tmp_path)
+    assert (
+        target.main(
+            ["scan-context", "--target", json.dumps(value), "--checkout", str(root)],
+            runner=gh_for(pr),
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["base_ref"] == "integration/world"
