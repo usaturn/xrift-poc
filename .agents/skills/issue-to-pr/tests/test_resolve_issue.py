@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import pwd
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -301,6 +303,49 @@ def test_template_and_config_become_absolute_from_the_starting_directory(
     ]
 
 
+# HOME を書き換えずに実在する ~user を表す（どの Linux にも root の pwd の項目がある）
+ROOT_HOME = Path(pwd.getpwnam("root").pw_dir)
+
+
+@pytest.mark.parametrize(
+    ("written", "expected"),
+    [
+        # Issue #44: ./ で始めた ~ は cwd の ~ という名前のディレクトリで、ホームではない
+        ("./~/a.toml", "{cwd}/~/a.toml"),
+        (".//~/a.toml", "{cwd}/~/a.toml"),
+        ("./~root/a.toml", "{cwd}/~root/a.toml"),
+        ("./~nosuchuser-issue44/a.toml", "{cwd}/~nosuchuser-issue44/a.toml"),
+        ("資料/a b.toml", "{cwd}/資料/a b.toml"),
+        ("{tmp}/絶対 パス/a.toml", "{tmp}/絶対 パス/a.toml"),
+        ("~/c d.toml", "{home}/c d.toml"),
+        ("~root/c.toml", "{root}/c.toml"),
+    ],
+)
+@pytest.mark.parametrize("option", ["--template", "--config"])
+@pytest.mark.parametrize("equals", [False, True])
+def test_path_options_expand_home_only_when_the_written_value_starts_with_tilde(
+    env: EnvRepo,
+    gh_stub: None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    written: str,
+    expected: str,
+    option: str,
+    equals: bool,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    places = {"cwd": env.root, "home": home, "root": ROOT_HOME, "tmp": tmp_path}
+    value = written.format(**places)
+    argument = shlex.quote(f"{option}={value}") if equals else f"{option} {shlex.quote(value)}"
+
+    result = run(f"#42 --merge {argument}", env.root, env)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["merge"]["loop_args"] == [option, str(Path(expected.format(**places)).resolve())]
+
+
 @pytest.mark.parametrize(
     "argument",
     [
@@ -436,24 +481,77 @@ def test_resolve_then_check_options(
     resolved = run(argument, env.root, env)
     checked_code = None
     if resolved.returncode == 0:
-        checked = subprocess.run(
-            [
-                sys.executable,
-                str(LOOP),
-                "check-options",
-                "--template",
-                str(template),
-                *json.loads(resolved.stdout)["merge"]["loop_args"],
-            ],
-            cwd=env.root,
-            env={**os.environ, "AGENT_RUNNER_CONFIG": str(tmp_path / "absent-personal.toml")},
-            capture_output=True,
-            text=True,
+        checked = check_options(
+            ["--template", str(template), *json.loads(resolved.stdout)["merge"]["loop_args"]],
+            env.root,
+            {"AGENT_RUNNER_CONFIG": str(tmp_path / "absent-personal.toml")},
         )
         checked_code = checked.returncode
         if checked_code == 2 and checked.stdout:
             assert json.loads(checked.stdout)["status"] == "error"
     assert (resolved.returncode, checked_code) == expected
+
+
+def check_options(arguments: list[str], cwd: Path, environ: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(LOOP), "check-options", *arguments],
+        cwd=cwd,
+        env={**os.environ, **environ},
+        capture_output=True,
+        text=True,
+    )
+
+
+def inspect_template(agent: str) -> str:
+    """RUNNER_TEMPLATE のレビュアーを 1 人にした雛形。"""
+    reviewers = 'agents = ["claude-opus", "pi-gpt"]'
+    assert RUNNER_TEMPLATE.count(reviewers) == 1
+    return RUNNER_TEMPLATE.replace(reviewers, f'agents = ["{agent}"]')
+
+
+@pytest.mark.parametrize("written", ["./~/runner.toml", "./~nosuchuser-issue44/runner.toml"])
+@pytest.mark.parametrize("option", ["--template", "--config"])
+@pytest.mark.parametrize("equals", [False, True])
+def test_explicit_relative_tilde_selects_the_local_file_in_check_options(
+    env: EnvRepo,
+    gh_stub: None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    written: str,
+    option: str,
+    equals: bool,
+) -> None:
+    """Issue #44: cwd とホームの両方に有効な設定があっても、書いた相対パスの側を読む。"""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    local = env.root / written
+    local.parent.mkdir(parents=True)
+    leading: list[str] = []
+    if option == "--template":
+        local.write_text(inspect_template("claude-opus"), encoding="utf-8")
+        (home / "runner.toml").write_text(inspect_template("pi-gpt"), encoding="utf-8")
+    else:
+        template = tmp_path / "runner.toml"
+        template.write_text(RUNNER_TEMPLATE, encoding="utf-8")
+        leading = ["--template", str(template)]
+        overlay = '[workflows.review.assignments.inspect]\nagents = ["{}"]\n'
+        local.write_text(overlay.format("claude-opus"), encoding="utf-8")
+        (home / "runner.toml").write_text(overlay.format("pi-gpt"), encoding="utf-8")
+    argument = f"{option}={written}" if equals else f"{option} {written}"
+    no_personal = {"AGENT_RUNNER_CONFIG": str(tmp_path / "absent-personal.toml")}
+
+    resolved = run(f"#42 --merge {argument}", env.root, env)
+    assert resolved.returncode == 0, resolved.stderr
+    relative = check_options([*leading, *json.loads(resolved.stdout)["merge"]["loop_args"]], env.root, no_personal)
+    # 対照: 同じローカルのファイルを絶対パスで渡す
+    absolute = check_options([*leading, option, str(local.resolve())], env.root, no_personal)
+
+    assert (relative.returncode, absolute.returncode) == (0, 0), relative.stdout + relative.stderr
+    relative_out, absolute_out = json.loads(relative.stdout), json.loads(absolute.stdout)
+    assert relative_out["assignments"]["review"]["inspect"]["agents"] == ["claude-opus"]
+    assert relative_out["options"] == absolute_out["options"]
+    assert relative_out["assignments"] == absolute_out["assignments"]
 
 
 # --- --implement --------------------------------------------------------------------------------------------------
