@@ -1,4 +1,4 @@
-"""Resolve an open GitHub Issue without modifying Git or GitHub state."""
+"""Resolve an open GitHub Issue and issue-to-pr arguments without modifying Git or GitHub state."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import argparse
 import importlib.util
 import json
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -16,6 +17,23 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 ISSUE_URL = re.compile(r"https://github\.com/([A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+)/issues/([1-9][0-9]*)/?")
 NUMBER = re.compile(r"#([1-9][0-9]*)")
+
+
+# 利用者の引数で受け付けるオプション（名前 → 値を取るか）。--merge 以外はループ用オプションで、名前・値・意味は
+# pr-review-fix-loop の start と同じ。値は loop.py check-options が start と同じ関数で検査するので、ここでは
+# 語の並び（どの語がどのオプションの値か）だけを決める。新しい引数はこの表に足す
+OPTIONS = {
+    "--merge": False,
+    "--max-cycles": True,
+    "--hold-action": True,
+    "--assign": True,
+    "--template": True,
+    "--config": True,
+}
+# 起動したときの cwd を基準に絶対パスにするオプション（引数はシェルを通らないので ~ も展開する）
+PATH_OPTIONS = frozenset({"--template", "--config"})
+# start にはあるが issue-to-pr では受け付けないオプションと、その理由
+REFUSED_OPTIONS = {"--fresh-review": "PR を作ったばかりで、再利用するレビュー結果が無い"}
 
 
 class Issue(BaseModel):
@@ -33,6 +51,55 @@ def run_readonly(*args: str) -> str:
     if result.returncode:
         raise ValueError(f"{args[0]} の読み取りに失敗: {result.stderr.strip()}")
     return result.stdout.strip()
+
+
+def parse_input(text: str, cwd: Path) -> tuple[str, list[str] | None]:
+    """利用者が書いた引数の文字列を、Issue の参照と、--merge があるときのループ用オプションの列に分ける。
+
+    ループ用オプションは書いた順のまま返す（--opt=value は 2 語に分け、パスは絶対パスにする）。
+    --merge が無ければ None。
+    """
+    try:
+        words = shlex.split(text)
+    except ValueError as exc:
+        raise ValueError(f"引数を語に分けられません（{exc}）") from exc
+    references: list[str] = []
+    merge = 0
+    loop_args: list[str] = []
+    index = 0
+    while index < len(words):
+        word = words[index]
+        index += 1
+        if not word.startswith("-"):
+            references.append(word)
+            continue
+        name, separator, value = word.partition("=")
+        if name in REFUSED_OPTIONS:
+            raise ValueError(f"{name} は使えません（{REFUSED_OPTIONS[name]}）")
+        if name not in OPTIONS:
+            raise ValueError(f"未知のオプションです: {word}")
+        if not OPTIONS[name]:
+            if separator:
+                raise ValueError(f"{name} は値を取りません: {word}")
+            merge += 1
+            continue
+        if not separator:
+            if index == len(words) or words[index].startswith("--"):
+                raise ValueError(f"{name} の値がありません")
+            value = words[index]
+            index += 1
+        if not value:
+            raise ValueError(f"{name} の値が空です")
+        if name in PATH_OPTIONS:
+            value = str((cwd / Path(value).expanduser()).resolve())
+        loop_args += [name, value]
+    if merge > 1:
+        raise ValueError("--merge は 1 回だけ指定してください")
+    if loop_args and not merge:
+        raise ValueError(f"{loop_args[0]} などのループ用オプションは、--merge と一緒のときだけ指定できます")
+    if len(references) != 1:
+        raise ValueError(f"Issue を 1 つだけ指定してください（指定された語: {references or 'なし'}）")
+    return references[0], loop_args if merge else None
 
 
 def _load_route_target() -> ModuleType:
@@ -91,10 +158,18 @@ def resolve_issue(argument: str) -> dict[str, str | int]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("issue", help="Issue URL または現在の場所の #番号")
+    parser.add_argument(
+        "input",
+        help="Issue（URL または #N）と、あれば --merge とループ用オプション。"
+        "引数の文字列を1つ渡す。- で始まりうるので前に -- を置く",
+    )
     args = parser.parse_args()
     try:
-        payload = resolve_issue(args.issue)
+        reference, loop_args = parse_input(args.input, Path.cwd())
+        payload: dict[str, object] = {
+            **resolve_issue(reference),
+            "merge": None if loop_args is None else {"loop_args": loop_args},
+        }
     except ValidationError:
         print("issue-to-pr: GitHub 応答の形式が不正です", file=sys.stderr)
         return 2

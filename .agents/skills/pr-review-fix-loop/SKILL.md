@@ -1,6 +1,6 @@
 ---
 name: pr-review-fix-loop
-description: 利用者が `/pr-review-fix-loop <PR>`（Pi は `/skill:pr-review-fix-loop <PR>`）で明示的に起動したときだけ使う。runner で並行に起動したレビュアーのレビューと、review-fix-planning による修正・push・最終化を、マージか停止かサイクルの上限まで繰り返す。通常の PR レビューや修正計画の依頼からは起動しない。
+description: 利用者が `/pr-review-fix-loop <PR>`（Pi は `/skill:pr-review-fix-loop <PR>`）で明示的に起動したとき、または issue-to-pr が利用者の明示した `--merge` で PR を作った後に呼ぶときだけ使う。runner で並行に起動したレビュアーのレビューと、review-fix-planning による修正・push・最終化を、マージか停止かサイクルの上限まで繰り返す。通常の PR レビューや修正計画の依頼からは起動しない。
 disable-model-invocation: true
 argument-hint: "<PR番号またはURL> [--max-cycles N] [--hold-action skip|fix] [--assign ROLE=AGENT[,AGENT]] [--template PATH] [--config PATH] [--fresh-review]"
 ---
@@ -17,7 +17,7 @@ argument-hint: "<PR番号またはURL> [--max-cycles N] [--hold-action skip|fix]
 
 ## 守ること
 
-- 利用者が明示的に起動したときだけ使う。PR の URL や、通常のレビュー・修正の依頼から自動で始めない。
+- 利用者が明示的に起動したとき、または issue-to-pr が利用者の明示した `--merge` で作った PR に対して呼ぶとき（`.agents/skills/issue-to-pr/SKILL.md`）だけ使う。PR の URL や、通常のレビュー・修正の依頼から自動で始めない。
 - helper は、成功・失敗とも標準出力に JSON を 1 つ書く（引数の書式の誤りだけは、終了コード 2 と標準エラー出力の usage）。`next` は次に実行する完全なコマンドである。コマンドを自分で組み立て直さない。`requires_input` があるときは、そこに書かれたオプションに、自分で確かめた事実を書き足してから実行する（`<...>` のような書きかけの値は拒否される）。`status` が `error` なら、`stage` と `reason` を読んで「止まったとき」に従う。
 - ロックと記録（`<review_dir>/loop/`）を手で作成・編集・削除しない。
 - `rejected` のレビュアーを「指摘なし」として扱わない。
@@ -26,10 +26,11 @@ argument-hint: "<PR番号またはURL> [--max-cycles N] [--hold-action skip|fix]
 
 ## 起動
 
-利用者が渡した PR とオプションを、そのまま `start` に渡す。オプションを足したり、既定値を作ったりしない。
+利用者が渡した PR とオプションを、そのまま `start` に渡す。オプションを足したり、既定値を作ったりしない。issue-to-pr から呼ぶときは、issue-to-pr が検査した `merge.loop_args` を渡し、`TOOL_ROOT` は親の main worktree（`.agents/scripts/agent_tmp.py root` が出力するパス）にする。feature worktree の `loop.py` を使わない（PR で変更中のスキル・helper でレビューさせない）。
+
+単独の明示起動では `TOOL_ROOT="$(git rev-parse --show-toplevel)"` を設定する。issue-to-pr からは代わりに `TOOL_ROOT="$PARENT"` とする（feature worktree の cwd から設定し直さない）。設定後、次を実行する。
 
 ```bash
-TOOL_ROOT="$(git rev-parse --show-toplevel)"  # このスキルを読んだ親リポジトリの checkout
 uv run --project "$TOOL_ROOT/tools/devenv" --locked python \
   "$TOOL_ROOT/.agents/skills/pr-review-fix-loop/scripts/loop.py" start "<PR>" \
   --controller-model "<あなたの正確なモデル ID>" --controller-runtime "<ランタイム>" \
@@ -44,6 +45,7 @@ uv run --project "$TOOL_ROOT/tools/devenv" --locked python \
   - `start` は、`run_roles.py` が設定だけで拒否する fix の割り当て（上の DSH の担当のほか、一次担当が 2 つ以上、`self-review`・`fix-check` の `writes = true` など。個人設定で決まるものを含む）を、run を作る前に終了コード 2（`config`）で止める。`reason` を利用者に伝えて止まる。別の担当や `self` に自分で切り替えない。
 - `--template`・`--config`: agent-runner の雛形と個人設定。既定は雛形 `.devcontainer/agent-runner.toml` と既存の個人設定。
 - `--fresh-review`: 現在の HEAD のレビューの成果があっても、レビュアーを起動する。
+- `check-options`: `start` と同じオプション（`--fresh-review` を除く）と agent-runner の設定だけを、同じ関数で検査する。PR・ロック・run・GitHub・Herdr に触れず記録を書かない。成功の `options`・`assignments` は `start` の `run.json` と同じ（`options` の `fresh_review` を除く）、`next` は null。issue-to-pr が `--merge` のとき worktree 前に呼ぶ。exit 2 なら `reason` を伝えて停止する。
 - 対象は `usaturn` 配下の open な PR だけ（review-fix-planning と同じ）。
 - 終了コード 3（`lock_held`）は、別の run がこの PR を使っていることを示す。`next`（`status`）で持ち主を確かめ、利用者に報告して止まる。古く見えても消さない。
 - `warnings` に未 commit の変更があるときは、レビュアーが作業ツリーのスキルと helper（未 commit の変更を含む）を読むことを利用者に伝える。
@@ -127,6 +129,6 @@ loop の記録の形式・置き場所・終了コードは [references/records.
 ## ランタイムごとの違い
 
 - **起動**: Claude Code は `/pr-review-fix-loop <PR> ...`、Pi は `/skill:pr-review-fix-loop <PR> ...`。そのほかのランタイムは、このスキル（`.agents/skills/pr-review-fix-loop`）を明示して呼ぶ。
-- **`disable-model-invocation: true`**: Claude Code がモデルの判断でこのスキルを起動しないようにする設定。ほかのランタイムでも、本文の「明示的に起動したときだけ使う」を守る。
+- **`disable-model-invocation: true`**: Claude Code がモデルの判断でこのスキルを起動しないようにする設定。ほかのランタイムでも、本文の「明示的に起動したときだけ使う」を守る。issue-to-pr が `--merge` で呼ぶときは、Skill ツールで起動できないので、親の main worktree のこのファイルを読んで従う。
 - **`--controller-model`**: Pi は pi-model-name で `PI_PROVIDER` と `PI_MODEL` を確かめる。ほかのランタイムも、現在提示されている正確なモデル ID を使い、設定や過去の記録から推測しない。
 - **監視の手段**: 上の「監視」と `.agents/monitoring-runtimes.md`。

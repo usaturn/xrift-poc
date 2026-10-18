@@ -1,6 +1,8 @@
 """PR 修正ループ（pr-review-fix-loop）の helper。
 
 司令塔が start → cycle-begin → review → （review-fix-planning）→ cycle-end → … → finish を順に呼ぶ。
+check-options は start と同じオプションと agent-runner の設定だけを検査し、PR・ロック・run・GitHub に触れない
+（issue-to-pr が worktree を作る前に使う）。
 状態は ``<review_dir>/loop/`` に保存し、どのサブコマンドも標準出力に 1 つの JSON を書く。JSON の ``next`` は、
 次に実行する完全なコマンド（argv の配列）である。レビュアーは agent-runner で起動し、判断の記録は
 ``.agents/scripts/review_records.py`` で照合する。形式を足さず、既存の成果をパスと SHA-256 で参照する。
@@ -684,6 +686,33 @@ def load_assignments(
     }
 
 
+def check_options(
+    *,
+    max_cycles: int,
+    hold_action: str | None,
+    assign: Sequence[str],
+    template: Path,
+    config: Path | None,
+    fresh_review: bool = False,
+) -> tuple[Options, dict[str, dict[str, Any]]]:
+    """start と check-options が同じ検査を使い、run に保存する値を返す。PR・ロック・GitHub に触れない。"""
+    if type(max_cycles) is not int or not 1 <= max_cycles <= MAX_CYCLES_LIMIT:
+        raise LoopError(2, "arguments", f"--max-cycles は 1〜{MAX_CYCLES_LIMIT}")
+    if hold_action not in (None, "skip", "fix"):
+        raise LoopError(2, "arguments", "--hold-action は skip か fix")
+    requested = parse_assign(assign)
+    assignments = load_assignments(template, config, requested)
+    options = Options(
+        max_cycles=max_cycles,
+        hold_action="skip" if hold_action is None else hold_action,
+        assign=requested,
+        template=str(template),
+        config=str(config) if config is not None else None,
+        fresh_review=fresh_review,
+    )
+    return options, assignments
+
+
 def planning_guidance(run: RunRecord) -> dict[str, Any]:
     """司令塔が review-fix-planning と run_roles.py に渡す値（組み立て直させない）。"""
     options: list[str] = ["--template", run.options.template]
@@ -1180,14 +1209,16 @@ def start(
         raise LoopError(
             2, "arguments", f"--controller-runtime は {', '.join(RUNTIMES)}、--controller-model は空にしない"
         )
-    if type(max_cycles) is not int or not 1 <= max_cycles <= MAX_CYCLES_LIMIT:
-        raise LoopError(2, "arguments", f"--max-cycles は 1〜{MAX_CYCLES_LIMIT}")
-    if hold_action not in (None, "skip", "fix"):
-        raise LoopError(2, "arguments", "--hold-action は skip か fix")
-    requested = parse_assign(assign)
+    options, assignments = check_options(
+        max_cycles=max_cycles,
+        hold_action=hold_action,
+        assign=assign,
+        template=template,
+        config=config,
+        fresh_review=fresh_review,
+    )
     github = github or GitHub()
     root, repository, number = resolve_pr(argument, parent_root)
-    assignments = load_assignments(template, config, requested)
     pull = github.pull(repository, number)
     if not pull.open:
         raise LoopError(
@@ -1214,14 +1245,7 @@ def start(
             tool_root=str(tool_root),
             tool_commit=tool_commit,
             controller=Controller(model=controller_model, runtime=controller_runtime),
-            options=Options(
-                max_cycles=max_cycles,
-                hold_action="skip" if hold_action is None else hold_action,
-                assign=requested,
-                template=str(template),
-                config=str(config) if config is not None else None,
-                fresh_review=fresh_review,
-            ),
+            options=options,
             assignments=assignments,
             started_at=now(),
             state="running",
@@ -1984,6 +2008,15 @@ def status(
 # --- CLI ----------------------------------------------------------------------------------------------------------
 
 
+def _add_option_arguments(sub: argparse.ArgumentParser) -> None:
+    """start と check-options の共通オプション（--fresh-review は start だけ）。"""
+    sub.add_argument("--max-cycles", type=int, default=3)
+    sub.add_argument("--hold-action", choices=("skip", "fix"), default="skip", help="Hold の方針（既定: skip）")
+    sub.add_argument("--assign", action="append", default=[], metavar="ROLE=AGENT[,AGENT]")
+    sub.add_argument("--template", type=Path, default=DEFAULT_TEMPLATE)
+    sub.add_argument("--config", type=Path)
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="loop.py", description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     commands = root.add_subparsers(dest="command", required=True)
@@ -1991,12 +2024,13 @@ def parser() -> argparse.ArgumentParser:
     begin.add_argument("pr", help="PR の番号（#N・N。親の origin）か URL")
     begin.add_argument("--controller-model", required=True, help="司令塔の正確なモデル ID")
     begin.add_argument("--controller-runtime", required=True, choices=RUNTIMES)
-    begin.add_argument("--max-cycles", type=int, default=3)
-    begin.add_argument("--hold-action", choices=("skip", "fix"), default="skip", help="Hold の方針（既定: skip）")
-    begin.add_argument("--assign", action="append", default=[], metavar="ROLE=AGENT[,AGENT]")
-    begin.add_argument("--template", type=Path, default=DEFAULT_TEMPLATE)
-    begin.add_argument("--config", type=Path)
+    _add_option_arguments(begin)
     begin.add_argument("--fresh-review", action="store_true", help="現在の HEAD の成果があってもレビュアーを起動する")
+    check = commands.add_parser(
+        "check-options",
+        help="start のオプションと agent-runner の設定だけを検査する（PR・ロック・run・GitHub に触れない）",
+    )
+    _add_option_arguments(check)
     for name in ("cycle-begin", "review"):
         sub = commands.add_parser(name)
         sub.add_argument("--run", type=Path, required=True)
@@ -2032,6 +2066,20 @@ def dispatch(args: argparse.Namespace) -> dict[str, Any]:
             config=args.config.resolve() if args.config else None,
             fresh_review=args.fresh_review,
         )
+    if name == "check-options":
+        options, assignments = check_options(
+            max_cycles=args.max_cycles,
+            hold_action=args.hold_action,
+            assign=args.assign,
+            template=args.template.resolve(),
+            config=args.config.resolve() if args.config else None,
+        )
+        return {
+            "status": "ok",
+            "options": options.model_dump(mode="json", exclude={"fresh_review"}),
+            "assignments": assignments,
+            "next": None,
+        }
     if name == "cycle-begin":
         return cycle_begin(args.run.resolve())
     if name == "cycle-end":
