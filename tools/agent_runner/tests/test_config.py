@@ -318,6 +318,28 @@ def test_personal_path_precedence(
     assert resolve_config_path() == expected
 
 
+@pytest.mark.parametrize(("explicit", "agent"), [("./~/personal.toml", "third"), ("~/personal.toml", "second")])
+def test_explicit_path_expands_home_only_when_it_starts_with_tilde(
+    monkeypatch: pytest.MonkeyPatch, template: Path, tmp_path: Path, explicit: str, agent: str
+) -> None:
+    """Issue #44: ./~/ names the ~ directory under the working directory; ~/ is still the home directory."""
+    home = tmp_path / "home"
+    work = tmp_path / "work"
+    (work / "~").mkdir(parents=True)
+    home.mkdir()
+    overlay = '[workflows.audit.assignments.inspect]\nagents = ["{}"]\nfallback = []\n'
+    (work / "~" / "personal.toml").write_text(overlay.format("third"))
+    (home / "personal.toml").write_text(overlay.format("second"))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(work)
+    monkeypatch.setenv("AGENT_RUNNER_CONFIG", explicit)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+
+    config = load_config(template, resolve_config_path())
+
+    assert config.workflows["audit"].assignments["inspect"].agents == [agent]
+
+
 @pytest.mark.parametrize("depth", ["1", "2", "-1", "TOP_SECRET_invalid"])
 def test_nested_or_malformed_depth_is_rejected(monkeypatch: pytest.MonkeyPatch, depth: str) -> None:
     monkeypatch.setenv("AGENT_RUNNER_DEPTH", depth)

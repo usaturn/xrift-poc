@@ -38,7 +38,8 @@ def resolve_config_path() -> Path:
     """Explicit path, absolute XDG_CONFIG_HOME, then the user's .config directory."""
     explicit = os.environ.get("AGENT_RUNNER_CONFIG", "")
     if explicit:
-        return Path(explicit).expanduser()
+        # Path() drops a leading ./, so decide on the written value: ./~/x is the ~ directory, not the home directory
+        return Path(explicit).expanduser() if explicit.startswith("~") else Path(explicit)
     xdg = os.environ.get("XDG_CONFIG_HOME", "")
     if xdg and Path(xdg).is_absolute():
         return Path(xdg) / "agent-runner/config.toml"
