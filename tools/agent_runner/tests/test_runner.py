@@ -356,6 +356,49 @@ def test_only_explicit_fallback_is_tried_in_order(repository: Path) -> None:
     assert [attempt.agent_id for attempt in alone.results[0].attempts] == ["a"]
 
 
+def _ok_flag(payload: object) -> bool:
+    return isinstance(payload, dict) and cast(dict[str, object], payload).get("ok") is True
+
+
+def _raise_with_payload(payload: object) -> bool:
+    if not _ok_flag(payload):
+        raise ValueError(f"payload-check-detail {payload}")
+    return True
+
+
+@pytest.mark.parametrize("check", [_ok_flag, _raise_with_payload], ids=["returns-false", "raises"])
+def test_payload_check_refusal_is_invalid_result_and_tries_fallback(
+    repository: Path, check: Callable[[object], bool]
+) -> None:
+    fake = FakeAdapter(
+        {"a": {"payload": {"ok": False, "note": "check-input"}}, "b": {"payload": {"ok": True}}},
+        identity=Identity(model="observed"),
+    )
+    batch = run_workflow(
+        configuration(fallback=["b"]),
+        "audit",
+        "prompt",
+        repository,
+        adapter_loader=lambda _: fake,
+        payload_check=check,
+    )
+    result = batch.results[0]
+    assert [(attempt.agent_id, attempt.state) for attempt in result.attempts] == [
+        ("a", "invalid_result"),
+        ("b", "success"),
+    ]
+    assert (batch.state, result.actual_agent) == ("success", "b")
+    refused = result.attempts[0]
+    assert refused.payload is None and refused.identity.model == "observed"
+    # Neither the check's exception text nor the refused payload reaches the result.
+    assert "payload-check-detail" not in batch.model_dump_json()
+    assert "check-input" not in batch.model_dump_json()
+    alone = run_workflow(
+        configuration(), "audit", "prompt", repository, adapter_loader=lambda _: fake, payload_check=check
+    )
+    assert (alone.state, alone.results[0].state) == ("failed", "invalid_result")
+
+
 def test_self_has_no_process_or_worktree(repository: Path) -> None:
     batch = run_workflow(configuration(["self"]), "audit", "prompt", repository)
     assert batch.state == "self"

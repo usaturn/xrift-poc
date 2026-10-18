@@ -152,6 +152,8 @@ Receipt の JSON フィールド:
 - payload: JSON object または string または null
 
 成功時は role の result_shape と payload の型・非空を確認する。
+Python API に ``payload_check`` を渡すと、この確認に通った payload をその関数でも検査し、
+``True`` 以外を返すか例外を出したら invalid_result とする（明示 fallback の次の候補に進む。例外の文は出さない）。
 途中 JSON、古い ID、他の agent/role、未知版・キー、不正な payload は invalid_result。
 ファイルは準備時に存在してはいけない。symlink の receipt も拒否する。
 receipt は停止確認後に読む。リンク・特殊ファイル・16 MiB を超えるファイルを
@@ -312,6 +314,14 @@ Cf は前後にあっても受け付けるので、ゼロ幅文字 1 文字だ�
 条件に合わない値と、列の代わりに文字列を 1 つそのまま渡した場合は、出力ディレクトリなど何も作る前に
 RunnerError で拒否する（CLI では ``{"error": "invalid_input"}``、終了コード 2）。
 列が空なら（CLI で ``--write-exception`` を付けなければ）、指示は従来と同じ文字列になる。
+
+``payload_check`` は、成功した試行の payload が呼び出し側の期待する形かを確かめる関数（既定は ``None`` で、検査しない）。
+例えば issue-to-pr の ``implement_task.py`` は、担当の結果が ``TaskResult`` に合うかを渡す。
+合わない結果は invalid_result になり、役割の期限の中で明示 fallback の次の候補を試す。
+停止未確認・timed_out・interrupted の試行では呼ばれず、fallback も始めない（上の扱いのまま）。
+CLI からは指定できない。関数には redact の前の payload が渡るので、関数の中で値をログなどに出さない。
+試行を進める event loop の中で同期に呼ぶので、短いローカル処理に限る。
+
 ``adapter_loader`` はテスト用に差し替えられる。既定は固定モジュールの loader。
 run_workflow は外部 checkout の警告を含む完全な結果を返すが、自動保存は CLI の責務。
 

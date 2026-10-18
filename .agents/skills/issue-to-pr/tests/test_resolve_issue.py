@@ -129,6 +129,7 @@ def test_accepted_targets(
     payload = json.loads(result.stdout)
     assert (payload["repo"], payload["number"]) == (expected, 42)
     assert payload["merge"] is None
+    assert payload["implement"] is None
 
 
 @pytest.mark.parametrize(
@@ -329,6 +330,12 @@ def test_template_and_config_become_absolute_from_the_starting_directory(
         "--merge",
         "",
         "#42 --merge --template 'a",
+        # --implement（#679）
+        "#42 --implement",
+        "#42 --implement --merge",
+        "#42 --implement=",
+        "#42 --implement a --implement b",
+        "#42 --implement=a --merge --implement b",
     ],
 )
 def test_rejects_malformed_arguments_before_looking_up_issue(
@@ -447,3 +454,100 @@ def test_resolve_then_check_options(
         if checked_code == 2 and checked.stdout:
             assert json.loads(checked.stdout)["status"] == "error"
     assert (resolved.returncode, checked_code) == expected
+
+
+# --- --implement --------------------------------------------------------------------------------------------------
+
+IMPLEMENT = SCRIPT.parent / "implement_task.py"
+
+
+@pytest.mark.parametrize(
+    ("argument", "implement", "merge"),
+    [
+        ("#42 --implement pi-gpt", "pi-gpt", None),
+        ("#42 --implement=pi-gpt", "pi-gpt", None),
+        ("#42 --implement self", "self", None),
+        ("--implement pi-gpt #42", "pi-gpt", None),
+        ("#42 --implement claude-opus --merge --max-cycles 2", "claude-opus", {"loop_args": ["--max-cycles", "2"]}),
+        ("#42 --merge --max-cycles 2 --implement pi-gpt", "pi-gpt", {"loop_args": ["--max-cycles", "2"]}),
+        ("#42 --merge --assign implement=self", None, {"loop_args": ["--assign", "implement=self"]}),
+    ],
+)
+def test_implement_is_returned_separately_from_loop_args(
+    env: EnvRepo,
+    gh_stub: None,
+    argument: str,
+    implement: str | None,
+    merge: dict[str, list[str]] | None,
+) -> None:
+    before = git_snapshot(env.root)
+
+    result = run(argument, env.root, env)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["implement"] == implement
+    assert payload["merge"] == merge
+    assert git_snapshot(env.root) == before
+
+
+IMPLEMENT_TEMPLATE = """
+schema_version = 1
+
+[agents.pi-gpt]
+runtime = "pi"
+command = ["fake-pi"]
+model = "pi-model"
+
+[roles.implement]
+writes = true
+deadline_seconds = 60
+result_shape = "json"
+
+[workflows.issue.assignments.implement]
+agents = ["self"]
+"""
+
+
+@pytest.mark.parametrize(
+    ("argument", "expected"),
+    [
+        ("#42", (0, 0)),
+        ("#42 --implement pi-gpt", (0, 0)),
+        ("#42 --implement self --merge", (0, 0)),
+        ("#42 --implement nobody", (0, 2)),
+        ("#42 --implement a --implement b", (2, None)),
+        ("#42 --implement", (2, None)),
+    ],
+)
+def test_resolve_then_implement_check(
+    env: EnvRepo,
+    gh_stub: None,
+    tmp_path: Path,
+    argument: str,
+    expected: tuple[int, int | None],
+) -> None:
+    """worktreeを作る前のresolve→担当checkを実際につなぐ。個人設定は隔離する。"""
+    template = tmp_path / "agent-runner.toml"
+    template.write_text(IMPLEMENT_TEMPLATE, encoding="utf-8")
+    resolved = run(argument, env.root, env)
+    if resolved.returncode != 0:
+        assert (resolved.returncode, None) == expected
+        return
+    implement = json.loads(resolved.stdout)["implement"]
+    checked = subprocess.run(
+        [
+            sys.executable,
+            str(IMPLEMENT),
+            "check",
+            "--template",
+            str(template),
+            *(["--implement", implement] if implement is not None else []),
+        ],
+        cwd=env.root,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "AGENT_RUNNER_CONFIG": str(tmp_path / "no-personal.toml")},
+    )
+    assert (resolved.returncode, checked.returncode) == expected
+    assert json.loads(checked.stdout)["status"] == ("ok" if checked.returncode == 0 else "error")

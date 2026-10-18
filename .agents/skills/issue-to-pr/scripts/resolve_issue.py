@@ -19,16 +19,19 @@ ISSUE_URL = re.compile(r"https://github\.com/([A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-
 NUMBER = re.compile(r"#([1-9][0-9]*)")
 
 
-# 利用者の引数で受け付けるオプション（名前 → 値を取るか）。--merge 以外はループ用オプションで、名前・値・意味は
-# pr-review-fix-loop の start と同じ。値は loop.py check-options が start と同じ関数で検査するので、ここでは
-# 語の並び（どの語がどのオプションの値か）だけを決める。新しい引数はこの表に足す
-OPTIONS = {
-    "--merge": False,
-    "--max-cycles": True,
-    "--hold-action": True,
-    "--assign": True,
-    "--template": True,
-    "--config": True,
+# 利用者の引数で受け付けるオプション（名前 → 種類）。merge は値を取らない。loop はループ用オプションで、名前・値・
+# 意味は pr-review-fix-loop の start と同じ（loop.py check-options が start と同じ関数で検査する）。implement は
+# Plan の Task の実装の担当（implement_task.py check が検査する）。ここでは語の並び（どの語がどのオプションの値か）
+# だけを決める。新しい引数はこの表に足す
+Kind = Literal["merge", "loop", "implement"]
+OPTIONS: dict[str, Kind] = {
+    "--merge": "merge",
+    "--max-cycles": "loop",
+    "--hold-action": "loop",
+    "--assign": "loop",
+    "--template": "loop",
+    "--config": "loop",
+    "--implement": "implement",
 }
 # 起動したときの cwd を基準に絶対パスにするオプション（引数はシェルを通らないので ~ も展開する）
 PATH_OPTIONS = frozenset({"--template", "--config"})
@@ -53,11 +56,19 @@ def run_readonly(*args: str) -> str:
     return result.stdout.strip()
 
 
-def parse_input(text: str, cwd: Path) -> tuple[str, list[str] | None]:
-    """利用者が書いた引数の文字列を、Issue の参照と、--merge があるときのループ用オプションの列に分ける。
+class ParsedInput(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    reference: str
+    loop_args: list[str] | None
+    implement: str | None
+
+
+def parse_input(text: str, cwd: Path) -> ParsedInput:
+    """利用者が書いた引数の文字列を、Issue の参照・ループ用オプションの列・--implement の値に分ける。
 
     ループ用オプションは書いた順のまま返す（--opt=value は 2 語に分け、パスは絶対パスにする）。
-    --merge が無ければ None。
+    --merge が無ければ loop_args は None。--implement は位置に関係なくループ用オプションに入れない。
     """
     try:
         words = shlex.split(text)
@@ -66,6 +77,7 @@ def parse_input(text: str, cwd: Path) -> tuple[str, list[str] | None]:
     references: list[str] = []
     merge = 0
     loop_args: list[str] = []
+    implement: list[str] = []
     index = 0
     while index < len(words):
         word = words[index]
@@ -78,7 +90,8 @@ def parse_input(text: str, cwd: Path) -> tuple[str, list[str] | None]:
             raise ValueError(f"{name} は使えません（{REFUSED_OPTIONS[name]}）")
         if name not in OPTIONS:
             raise ValueError(f"未知のオプションです: {word}")
-        if not OPTIONS[name]:
+        kind = OPTIONS[name]
+        if kind == "merge":
             if separator:
                 raise ValueError(f"{name} は値を取りません: {word}")
             merge += 1
@@ -90,16 +103,25 @@ def parse_input(text: str, cwd: Path) -> tuple[str, list[str] | None]:
             index += 1
         if not value:
             raise ValueError(f"{name} の値が空です")
+        if kind == "implement":
+            implement.append(value)
+            continue
         if name in PATH_OPTIONS:
             value = str((cwd / Path(value).expanduser()).resolve())
         loop_args += [name, value]
     if merge > 1:
         raise ValueError("--merge は 1 回だけ指定してください")
+    if len(implement) > 1:
+        raise ValueError("--implement は 1 回だけ指定してください")
     if loop_args and not merge:
         raise ValueError(f"{loop_args[0]} などのループ用オプションは、--merge と一緒のときだけ指定できます")
     if len(references) != 1:
         raise ValueError(f"Issue を 1 つだけ指定してください（指定された語: {references or 'なし'}）")
-    return references[0], loop_args if merge else None
+    return ParsedInput(
+        reference=references[0],
+        loop_args=loop_args if merge else None,
+        implement=implement[0] if implement else None,
+    )
 
 
 def _load_route_target() -> ModuleType:
@@ -160,15 +182,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "input",
-        help="Issue（URL または #N）と、あれば --merge とループ用オプション。"
-        "引数の文字列を1つ渡す。- で始まりうるので前に -- を置く",
+        help="利用者の引数の先頭から最後のIssue参照・オプションまでを切り出した文字列（後ろの自然文は含めない）。"
+        "IssueはURLまたは#N。オプションは--implement AGENTと、--mergeとループ用オプション。"
+        "文字列を1つ渡し、-で始まりうるので前に--を置く",
     )
     args = parser.parse_args()
     try:
-        reference, loop_args = parse_input(args.input, Path.cwd())
+        parsed = parse_input(args.input, Path.cwd())
         payload: dict[str, object] = {
-            **resolve_issue(reference),
-            "merge": None if loop_args is None else {"loop_args": loop_args},
+            **resolve_issue(parsed.reference),
+            "merge": None if parsed.loop_args is None else {"loop_args": parsed.loop_args},
+            "implement": parsed.implement,
         }
     except ValidationError:
         print("issue-to-pr: GitHub 応答の形式が不正です", file=sys.stderr)
