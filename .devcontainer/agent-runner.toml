@@ -169,3 +169,10 @@ agents = ["self"]
 
 [workflows.fix.assignments.fix-check]
 agents = ["self"]
+
+# issue-to-pr が Plan の Task を 1 つずつ実装させる担当（#679）。レビュー修正の fix.implement とは別に選ぶ。
+# self は issue-to-pr を実行しているセッション（司令塔）が自分で実装する（runner を起動しない）。
+# 別のエージェントに任せるときは、個人設定のこの節の agents を書き換え、代わりの候補を fallback に明示する。
+# agents は 1 つだけ。その回だけ変えるときは /issue-to-pr <Issue> --implement <agent> と書く（fallback は保つ）。
+[workflows.issue.assignments.implement]
+agents = ["self"]

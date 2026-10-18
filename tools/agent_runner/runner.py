@@ -202,7 +202,13 @@ def _prune_scratch(runtime_root: Path) -> None:
             os.close(descriptor)
 
 
-def _collect(adapter: Adapter, context: AdapterContext, stdout: Path, stderr: Path) -> tuple[State, Identity, Payload]:
+def _collect(
+    adapter: Adapter,
+    context: AdapterContext,
+    stdout: Path,
+    stderr: Path,
+    payload_check: Callable[[Payload], bool] | None,
+) -> tuple[State, Identity, Payload]:
     try:
         # Validate regular, bounded file content before a collector can open it.
         receipt = read_receipt(context.receipt_path)
@@ -240,6 +246,15 @@ def _collect(adapter: Adapter, context: AdapterContext, stdout: Path, stderr: Pa
             )
             if not valid:
                 return "invalid_result", identity, None
+            if payload_check is not None:
+                # A caller refusal is not an adapter failure: keep the observed
+                # identity, but never expose the check's exception text.
+                try:
+                    accepted = payload_check(payload) is True
+                except Exception:
+                    accepted = False
+                if not accepted:
+                    return "invalid_result", identity, None
         state = receipt.status if failure is None or failure == "success" else failure
         return state, identity, receipt.payload
     except FileNotFoundError:
@@ -263,6 +278,7 @@ def run_workflow(
     environment: Mapping[str, str] | None = None,
     sandbox_write_paths: tuple[Path, ...] = (),
     write_exceptions: Sequence[str] = (),
+    payload_check: Callable[[Payload], bool] | None = None,
 ) -> BatchResult:
     """Execute a batch synchronously; keep every artifact/worktree, even on failure.
 
@@ -272,6 +288,9 @@ def run_workflow(
     artifacts; environment values never enter request.json or error diagnostics.
     write_exceptions are caller-authorized exceptions listed verbatim under the
     work-scope lines, one per line; the runner neither interprets nor enforces them.
+    payload_check, when given, also checks each well-shaped success payload (before
+    redaction); anything but True, or an exception, is invalid_result and moves on
+    to the next explicit fallback.
     """
     started = time.monotonic()
     check_depth()
@@ -462,7 +481,7 @@ def run_workflow(
                 sensitive_paths.append(export_path)
                 state, identity, payload = "response_failed", Identity(), None
             else:
-                state, identity, payload = _collect(adapter, context, stdout_path, stderr_path)
+                state, identity, payload = _collect(adapter, context, stdout_path, stderr_path, payload_check)
             if not redact_file(context.receipt_path, tuple(secrets)):
                 sensitive_paths.append(context.receipt_path)
         else:
