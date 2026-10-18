@@ -1,3 +1,13 @@
 {
-  "extensions": ["+builtin:mcp"]
+  "extensions": ["+builtin:mcp"],
+  "packages": [
+    {
+      "source": "npm:@upstash/context7-pi",
+      "autoload": false,
+      "extensions": ["!**"],
+      "skills": ["!**"],
+      "prompts": ["!**"],
+      "themes": ["!**"]
+    }
+  ]
 }

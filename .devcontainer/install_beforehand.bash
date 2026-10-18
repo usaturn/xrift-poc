@@ -8,6 +8,8 @@ readonly GITLEAKS_ARCHIVE_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f
 readonly DSH_VERSION="0.2.0-rc.2"
 # 2026-10-10 に npm の latest で確認した版。更新は README の手順で確かめてから変える。
 readonly XRIFT_CLI_VERSION="0.25.0"
+# 2026-10-18 に npm の latest で確認した版。更新は README の手順で確かめてから変える。
+readonly CTX7_CLI_VERSION="0.8.0"
 readonly DSH_PI_TUI_VERSION="0.5.0"
 readonly DSH_COMMANDCODE_PROVIDER_VERSION="0.12.2"
 readonly DSH_NATIVE_SCRIPT_ALLOWLIST="@deepseek-ai/dsh-subprocess-local,koffi,node-pty"
@@ -20,7 +22,7 @@ readonly DSH_MANAGED_BLOCK_END="# END maatlog managed provider config"
 # 打ち切る（2026-09-13 のリビルド中断インシデント）。継続してよい処理
 # （workspace cleanup）だけを明示的に続行させるため、スクリプト全体には set -e を
 # 付けない。
-readonly STEP_TOTAL=31
+readonly STEP_TOTAL=32
 STEP_NUMBER=0
 
 step() {
@@ -436,9 +438,11 @@ if ! install_pi_extensions; then
 fi
 
 step "Installing the pi extensions"
+# Context7 は ctx7 CLI と find-docs スキルで使い、npm:@upstash/context7-pi は導入しない。共有の ~/.pi に
+# 残っていても、.pi/settings.json の autoload: false の項目で xrift-poc では読み込まない（#49）。
+# ~/.pi を共有するほかのリポジトリが導入し続けるため、warn_retired_pi_extensions の一覧には加えない。
 for extension in \
     npm:@jc4649/notify \
-    npm:@upstash/context7-pi \
     npm:@plannotator/pi-extension \
     npm:pi-safe-search \
     npm:pi-diet-ripgrep \
@@ -672,6 +676,30 @@ install_xrift_cli() {
 step "Installing the XRift CLI"
 if ! install_xrift_cli; then
     fail "XRift CLI installation failed."
+fi
+
+# Context7 CLI（find-docs スキルが使う）も版を固定して導入する。zsh の update() では更新しない
+# （README の更新手順を参照）。ctx7 setup は共有の ~/.claude・~/.claude.json・~/.codex などへ
+# MCP 設定やスキルを書き込み、find-docs とも重複するため実行しない（#49）。
+install_ctx7_cli() {
+    local version
+    if ! npm install -g "ctx7@${CTX7_CLI_VERSION}"; then
+        echo "npm install -g ctx7@${CTX7_CLI_VERSION} failed." >&2
+        return 1
+    fi
+    if ! command -v ctx7 >/dev/null 2>&1; then
+        echo "ctx7 is not on PATH after the install." >&2
+        return 1
+    fi
+    version="$(ctx7 --version)" || return 1
+    if [ "${version//[[:space:]]/}" != "${CTX7_CLI_VERSION}" ]; then
+        echo "Unexpected ctx7 version: ${version} (expected ${CTX7_CLI_VERSION})." >&2
+        return 1
+    fi
+}
+step "Installing the Context7 CLI (ctx7)"
+if ! install_ctx7_cli; then
+    fail "Context7 CLI installation failed."
 fi
 
 step "Installing the XRift skills"
