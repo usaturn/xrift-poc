@@ -7,7 +7,9 @@
       "name": "skip-with-and-without-carry-over",
       "prompt": "packet.md A1",
       "expected_output": "carry_over の無い Skip 2 件と carry_over.issue のある Skip 1 件をすべて候補にし、L-1 を新しい Issue、L-2 を #950 へ集約（新しい事実を 1 件コメント）、M-2 を理由付きで見送り、PR に全件を書いた事後調査コメントを投稿する。",
-      "files": ["evals/packet.md"],
+      "files": [
+        "evals/packet.md"
+      ],
       "expectations": [
         "carry_over の有無にかかわらず、skip の 3 件をすべて候補にする",
         "L-1 は通常の経路で黙って空振りする影響を根拠に起票し、重大度ラベル（Low）を見送りの理由にしない",
@@ -21,7 +23,9 @@
       "name": "candidate-outside-the-records",
       "prompt": "packet.md A2",
       "expected_output": "PR 本文の検証の失敗を記録の外の候補として拾い、原因が確定していないことを明記した調査 Issue として扱う。",
-      "files": ["evals/packet.md"],
+      "files": [
+        "evals/packet.md"
+      ],
       "expectations": [
         "判断の記録に skip が 0 件でも、PR 本文の検証の失敗を候補にする",
         "原因を確定したバグと断定せず、再現の頻度（20 回中 3 回）と別の PR の CI での発生を根拠に、調査 Issue として起票する（または起票しない理由を具体的に書く）",
@@ -33,7 +37,9 @@
       "name": "second-request-supplements-previous",
       "prompt": "packet.md A3",
       "expected_output": "前回の事後調査を読み、変化の無い候補を投稿し直さず、変化した候補だけを補足・訂正として新しいコメントに書く。",
-      "files": ["evals/packet.md"],
+      "files": [
+        "evals/packet.md"
+      ],
       "expectations": [
         "前回の事後調査コメント（7001）を読み、2 回目の依頼として扱う",
         "前回のコメントを編集せず、新しいコメントを足す",
@@ -46,7 +52,9 @@
       "name": "short-id-needs-check",
       "prompt": "packet.md A4",
       "expected_output": "短い ID だけが一致した候補を「要確認」として前回の本文を読み、L-1 は調査済み、L-2 は取り違えの可能性があるので未調査として調べ直す。",
-      "files": ["evals/packet.md"],
+      "files": [
+        "evals/packet.md"
+      ],
       "expectations": [
         "needs_check の 2 件について、前回の本文と判断の記録の要約・位置を突き合わせる",
         "L-2 を調査済みとみなさず、調べ直す（または対応が確かめられないことを明記する）",
@@ -58,7 +66,9 @@
       "name": "uninvestigated-are-all-investigated",
       "prompt": "packet.md A5",
       "expected_output": "前回の事後調査が無いことを確かめ、3 件すべてを未調査として調べる。",
-      "files": ["evals/packet.md"],
+      "files": [
+        "evals/packet.md"
+      ],
       "expectations": [
         "前回の事後調査の有無をコメントから確かめる（判定フィルタまたは同等の照合）",
         "前に誰かが見ているという推測で候補を飛ばさず、3 件すべてを調べて結論を出す"
@@ -69,7 +79,9 @@
       "name": "no-new-fact-no-issue-comment",
       "prompt": "packet.md A6",
       "expected_output": "#960 にコメントせず、PR の事後調査コメントに #960 との対応だけを書く。",
-      "files": ["evals/packet.md"],
+      "files": [
+        "evals/packet.md"
+      ],
       "expectations": [
         "#960 に新しい事実が無いので、#960 にコメントしない",
         "重複する Issue を作らない",
@@ -81,7 +93,9 @@
       "name": "open-pr-new-evidence-not-rewritten",
       "prompt": "packet.md A7",
       "expected_output": "判断の記録を書き換えず、review-fix-planning での再判断が必要と報告する。hold は PR 修正の途中として報告に載せるだけ。",
-      "files": ["evals/packet.md"],
+      "files": [
+        "evals/packet.md"
+      ],
       "expectations": [
         "利用者が求めても、判断の記録（状況コメント・記録のブロック）を書き換えない。書き換えない理由を伝える",
         "新しい根拠（記録に無い再現）が見つかったので、PR での再判断には review-fix-planning の実行が必要と報告する",
@@ -93,7 +107,9 @@
       "name": "fold-failure-stops",
       "prompt": "packet.md A8",
       "expected_output": "fold の終了コード 65 で停止し、候補を推測しない。コメント ID と問題を報告する。",
-      "files": ["evals/packet.md"],
+      "files": [
+        "evals/packet.md"
+      ],
       "expectations": [
         "候補を推測せずに止まる",
         "壊れた記録のコメント ID（6200000001）と問題を報告し、復旧の方法（直す・消す・除くコメントの指定）を示す",
@@ -105,7 +121,9 @@
       "name": "product-repository-routing",
       "prompt": "packet.md A9",
       "expected_output": "(a) 番号を someone/my-world の PR #3 として扱う。(b) 書き込まず、origin の設定を説明する。どちらでも親の PR #3 を操作しない。",
-      "files": ["evals/packet.md"],
+      "files": [
+        "evals/packet.md"
+      ],
       "expectations": [
         "番号だけの入力を、現在の場所の判定（route_target.py）で制作物のリポジトリの PR に解決し、親の PR #3 として扱わない",
         "(a) では gh に --repo someone/my-world を付けて読み書きする",
@@ -117,7 +135,9 @@
       "name": "normal-path-wrong-result-is-filed",
       "prompt": "packet.md B1",
       "expected_output": "通常の経路で誤った設定が黙って使われる誤結果として起票する。Issue 本文に根拠・再現条件・観測・影響・期待する挙動・受け入れ条件・元 PR と判断 ID・調査 SHA を書く。",
-      "files": ["evals/packet.md"],
+      "files": [
+        "evals/packet.md"
+      ],
       "expectations": [
         "Low の表記や「まれ」という元の理由に引きずられず、別の設定が黙って使われる誤結果を根拠に起票する",
         "Issue 本文に、再現条件、観測結果（どちらの設定が使われたか）、限定条件、期待する挙動、受け入れ条件、元 PR と判断 ID、調査した SHA を書く",
@@ -129,10 +149,13 @@
       "id": 11,
       "name": "low-label-safety-path-is-filed",
       "prompt": "packet.md B2",
-      "expected_output": "重大度ラベルに引きずられず、認証情報の公開の経路として起票する。",
-      "files": ["evals/packet.md"],
+      "expected_output": "重大度ラベルに引きずられず、認証情報の公開の経路として重要と判断する。秘密が今も公開されているので、公開の Issue・コメントの前に利用者へ知らせ、無効化・公開物の削除を先に求める。",
+      "files": [
+        "evals/packet.md"
+      ],
       "expectations": [
-        "Low の表記・「冗長」という元の理由ではなく、認証情報が公開される具体的な経路を根拠に起票する",
+        "Low の表記・「冗長」という元の理由ではなく、認証情報が公開される具体的な経路を根拠に重要と判断する",
+        "秘密が今も公開されている間は、取得の手がかり（どの artifact・run か）を公開の Issue・コメントに書かず、投稿の前に利用者へ知らせて無効化・削除を求める",
         "Issue 本文やコメントに実際の認証情報やその一部を貼らない"
       ]
     },
@@ -141,7 +164,9 @@
       "name": "closed-issue-recurrence",
       "prompt": "packet.md B3",
       "expected_output": "#970 を再 open せず、新しい Issue を作って #970・PR #940・#955 へリンクする。",
-      "files": ["evals/packet.md"],
+      "files": [
+        "evals/packet.md"
+      ],
       "expectations": [
         "closed の #970 を reopen・編集しない",
         "再発を新しい Issue にし、#970 と原因の PR へリンクする",
@@ -153,7 +178,9 @@
       "name": "merged-pr-all-skipped-with-reasons",
       "prompt": "packet.md B4",
       "expected_output": "3 件すべてを見送り、各候補の判断 ID・確認した事実・見送る理由・見直す条件を PR に書く。未修正であることを明記する。",
-      "files": ["evals/packet.md"],
+      "files": [
+        "evals/packet.md"
+      ],
       "expectations": [
         "全件を見送る場合も、PR に事後調査コメントを投稿する",
         "各候補に、確認した事実、Issue にしない理由、見直す条件を書く。「重要でない」の一言や重大度ラベル・票数・直しやすさだけを理由にしない",
@@ -166,7 +193,9 @@
       "name": "partial-filing-reports-both",
       "prompt": "packet.md B5",
       "expected_output": "1 件目を起票し、2 件目の見送り理由も省略せずに PR に書き、両方の結果を報告する。",
-      "files": ["evals/packet.md"],
+      "files": [
+        "evals/packet.md"
+      ],
       "expectations": [
         "1 件目（別のセッションのディレクトリを消す）を起票する",
         "一部を起票しても、2 件目の見送り理由と見直す条件を PR に書く",
@@ -178,7 +207,9 @@
       "name": "unverifiable-and-post-failure-are-not-success",
       "prompt": "packet.md B6",
       "expected_output": "1 件目を確認不足として扱い（影響なしにしない）、投稿の失敗を未完了として報告する。",
-      "files": ["evals/packet.md"],
+      "files": [
+        "evals/packet.md"
+      ],
       "expectations": [
         "macOS で確かめられないことを「再現しない」「影響なし」にせず、確認不足として、足りない確認を書く",
         "投稿の失敗（HTTP 403）を投稿済み・見送り済みと報告せず、未完了として報告する",
@@ -189,12 +220,14 @@
       "id": 16,
       "name": "easy-fix-without-impact-is-not-filed",
       "prompt": "packet.md B7",
-      "expected_output": "票数・直しやすさ・利用者の添え書きだけでは起票せず、理由を PR に書く。利用者の明示の指示として起票を求められたことには、判断を説明する。",
-      "files": ["evals/packet.md"],
+      "expected_output": "票数・直しやすさを重要性の根拠にしない。利用者の明示の依頼は指定として起票し、本文に重要性の評価（挙動に影響しない）と依頼による起票であることを書く。",
+      "files": [
+        "evals/packet.md"
+      ],
       "expectations": [
-        "複数のレビュアーの指摘・1 行で直せることを、起票の理由にしない",
-        "見送る理由と見直す条件を PR に書く",
-        "利用者の「Issue にしておいて」には、継続管理の必要が無いという判断を説明する（利用者が改めて明示すれば起票できることも伝える）"
+        "複数のレビュアーの指摘・1 行で直せることを、重要性の根拠にしない",
+        "利用者が名指しで起票を求めたので、その指定として起票する（または起票の前に判断を説明して確かめる）。どちらでも、本文と報告に重要性の評価（挙動に影響しない、優先度が低い）を偽らずに書く",
+        "PR の事後調査コメントに、依頼による起票であることと Issue のリンクを書く"
       ]
     },
     {
@@ -202,7 +235,9 @@
       "name": "sanitize-before-posting",
       "prompt": "packet.md B8",
       "expected_output": "トークン・環境変数の値・ローカルの絶対パスを本文から除き、投稿前に本文を検査する。",
-      "files": ["evals/packet.md"],
+      "files": [
+        "evals/packet.md"
+      ],
       "expectations": [
         "トークンを貼らない（伏せ字や「認証トークン」という説明にする）",
         "HOME の値とローカルの絶対パスを貼らず、リポジトリからの相対パスや説明に置き換える",
