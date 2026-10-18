@@ -27,7 +27,7 @@ description: "Issue の URL・#番号を指定して『着手して』『実装�
 - 有効なのは、**利用者のメッセージ（スラッシュコマンドの引数を含む）に `--merge` という語が書かれているときだけ**。自然文の「マージまで」「マージして」は `--merge` として扱わない。モデルが自分で補わない。
 - ループ用オプション（`--max-cycles`・`--hold-action`・`--assign`・`--template`・`--config`）は、ループの `start` と名前・値・意味が同じで、`--merge` と一緒のときだけ受け付ける。**利用者が書いたものだけを、書いた順に渡す。**既定値を足さない（上限 3 サイクル、Hold は `skip`、担当は agent-runner の設定どおり）。
 - 統合用の branch に向けるボードの子では、worktree の作成前に 2 章の 5 で `--merge` の不適用を決め、理由を伝える。以降は `--merge` が無い run として続ける。
-- `--merge` が無ければ PR の作成（親は CI green、制作物は CI があれば green の確認）で終わる。ループもマージもしない。最後に `/pr-review-fix-loop <PR>`（Pi は `/skill:pr-review-fix-loop <PR>`）で続けられると 1 行で伝える。統合用の branch 宛てでは案内しない（ループと `finalize.py` は既定 branch へのマージを前提にする）。
+- `--merge` が無ければ PR の作成（親は CI green、制作物は CI があれば green の確認）で終わる。ループもマージもしない。最後に `/pr-review-fix-loop <PR の URL>`（Pi は `/skill:pr-review-fix-loop <PR の URL>`）で続けられると 1 行で伝える。統合用の branch 宛てでは案内しない（ループと `finalize.py` は既定 branch へのマージを前提にする）。
 
 ### `--implement`
 
@@ -67,11 +67,12 @@ Plan の Task を実装する担当は、agent-runner の `workflows.issue` の 
      exit 0 なら、出力の `assignment`（`agents`・`fallback`）と `self` を Spec の決定記録に写す。exit 2 なら `reason` を利用者に伝えて停止する（設定に無い agent、`agents` が 2 つ以上、`implement` の役割の `writes = false` など）。worktree・Herdr・claim に触れる前に行う。
    - 成功 JSON の `repo` から `repository-ownership` で **TARGET_ROOT（対象 repository の checkout）** を確定する。以降の ref・branch・worktree・fetch 検査は `git -C "$TARGET_ROOT" ...` で行い、起動元の checkout の一覧で別のリポジトリを検査したことにしない。
 3. 本文、全ページのコメント、依存関係を読む。Issue 本文が利用者の承認・判断を求めていれば、推奨案での委任では代用せず停止する。
-4. **worktree 作成より前に**次を検査する。どれかあれば、新規作業を作らず状態を報告する。古い claim も横取りしない。`--merge` があっても既存 PR をループに乗せない（再開は利用者の `/pr-review-fix-loop <PR>`）。
+4. **worktree 作成より前に**次を検査する。どれかあれば、新規作業を作らず状態を報告する。古い claim も横取りしない。`--merge` があっても既存 PR をループに乗せない。
    - 同じ Issue に対応する open PR（linked Issue、本文、branch を確認。最初のページだけで判定しない）
    - 他セッションの `refs/heads/agent-claims/issue-N`、コメントに記録された未解放の担当
    - 対象 repository の既存 worktree、ローカル・remote branch（`issue-N` は番号の境界で照合し、N=58 と N=580 を混同しない）
    - 未完了の先行 Issue・必要な未マージ PR
+   既存の open PR で止まるときは、その PR の URL と base（`gh pr view <PR> --repo "$REPO" --json url,baseRefName`）を報告に書き、再開の案内を base で分ける。案内には PR の URL を使う（番号だけでは、ループも pr-review も親の origin の PR として解決する）。base が対象 repository の既定 branch（親は `main`、制作物は `repository-ownership` で確認した既定 branch）なら、再開は利用者の `/pr-review-fix-loop <PR の URL>`（Pi は `/skill:pr-review-fix-loop <PR の URL>`）。それ以外（統合用の branch など）なら、ループでの再開を案内せず（1 章と同じく、ループと `finalize.py` は既定 branch へのマージを前提にする）、レビューだけなら `/pr-review <PR の URL>`（Pi は `/skill:pr-review <PR の URL>`。マージしない）で行えることを伝える。
    worktree 作成直前と、編集・push・PR 作成前に最新の Issue 状態と競合を再確認する。新規競合や closed 化があれば停止し、自分がこの run で作った worktree/branch と他者の作業を区別する。
 5. `<!-- planning-parallel-issues board:... -->` がある子は **`planning-parallel-issues` 必須**。claim・先行条件・成果公開・所有権の再確認・解放はそちらに従う。このスキルにプロトコルを写さない。親からの子の選択は担当外。`--merge` の claim 解放の時点は 5 章。
    - **PR の向き先（`BASE`）:** 親 Issue（本文・コメント）か子の handoff が統合用の branch を指定していれば、その branch を使う。指定がなければ対象 repository の既定 branch（親は `main`、制作物は `repository-ownership` で確認した既定 branch）にする。ボード外の Issue も同じ既定値を使う。
@@ -183,7 +184,7 @@ herdr-agent-task set "Issue #$NUMBER 実装・PR作成"
    | ループの結果 | 報告 | マージ |
    | --- | --- | --- |
    | `no_fix_needed` | 完了。関連 Issue は finalize の結果にある更新後に観測した state を書く | した |
-   | `fixes_pushed`（`ended_by: cycle_limit`） | 未完了。修正は push 済みだが上限到達。続行は `/pr-review-fix-loop <PR>` | していない |
+   | `fixes_pushed`（`ended_by: cycle_limit`） | 未完了。修正は push 済みだが上限到達。続行は `/pr-review-fix-loop <PR の URL>` | していない |
    | `stopped` | 停止、`stop_reason` を書く。`finalize.py` が `merged: true` ならマージ済みと分けて書く | 結果のとおり |
    | エラー（`lock_held`、全レビュアー失敗、停止未確認など） | 停止。`stage`・`reason`・`next` と残した資源の完全パスを書く | していない |
 
