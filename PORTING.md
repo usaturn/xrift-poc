@@ -149,7 +149,7 @@
 | `bcfb459` | #648 | worktree の監査と、資源の回収の判定 | 取り込み: #25 |
 | `316ef51` | #646 | Hold の既定を skip にする | 取り込み: #25 |
 | `304dba4` | #640 | 移植元の改名と状態の移行 | 取り込まない: 移植元のリポジトリの改名に伴う移行（`projects.toml`・`tools/devenv_migration`）。ボードの対象外 |
-| `88a4100` | #641 | Plannotator を Dev Container で使う | 取り込まない: xrift-poc は Issue #15 で対応済み |
+| `88a4100` | #641 | Plannotator を Dev Container で使う | 取り込まない: xrift-poc は PR #15 で対応済み |
 | `c3a0aca` | #639 | 新しいプロジェクトの登録と `scan_before_push` | 取り込み: #22（`scan_before_push` の部分だけ。書き直し）。Wabun・MaatLog の登録、`version-export`、`projects.toml`、`test_scratch_placement_contract.py` は取り込まない |
 | `c0ae21e` | #638 | agent-runner の DSH の標準 headless | 取り込み: #23 |
 | `068fb7a` | #636 | Issue の応答の repo を大文字小文字を区別せずに照合する | 取り込まない: 同じ問題を、移植の時点に xrift-poc の判定に合わせて直していた（`5011c60`。「設計の後で決めたこと」） |
@@ -162,7 +162,7 @@
 
 ### xrift-poc に合わせた点と、移植元と違う直し方
 
-- **#19**: `create_parent_repo`（MaatLog の `public/` submodule を持つ親）を使うテストを `create_env_repo` に置き換えた（`b3d6001`）。fixture `outside_runner` と README は xrift-poc の fixture 名で手で当て、文脈の import 行が無いテストには import の直後に足した（`70d4b4e`）。新しいテストの置き場所の `tools/workspace/tests` は `tools/review_triage/tests` にした（`3bc4769`）。`test_checkout_preparation_is_supervised` は、フックの停止を `/proc` から観測するように直した（`2c75b26`）。移植元の `f9563a0` のままでは、フックの SIGTERM のハンドラが、runner が固定 0.3 秒の猶予の後に送る SIGKILL に間に合わず、負荷の高いホストで落ちる。移植元の `main` も同じコードである
+- **#19**: `create_parent_repo`（MaatLog の `public/` submodule を持つ親）を使うテストを `create_env_repo` に置き換えた（`b3d6001`）。fixture `outside_runner` と README は xrift-poc の fixture 名で手で当て、文脈の import 行が無いテストには import の直後に足した（`70d4b4e`）。新しいテストの置き場所の `tools/workspace/tests` は `tools/review_triage/tests` にした（`3bc4769`）。`test_checkout_preparation_is_supervised` は、フックの停止を `/proc` から観測するように直した（`2c75b26`）。移植元の `f9563a0` のままでは、フックの SIGTERM のハンドラが、runner が固定 0.3 秒の猶予の後に送る SIGKILL に間に合わず、負荷の高いホストで落ちる。範囲の終点 `3bc4769` の時点では移植元も同じコードだった。移植元は `715d981`（移植元の PR #719）で同じ直しを入れた（`5e8df86` の変更行は `2c75b26` と同じ）
 - **#20**: 手直しなしで当たった
 - **#21**: `monitoring-long-tasks/SKILL.md` の手順 3〜5 は、xrift-poc の `verify-devenv.sh` 向けの文面を残した。`AGENTS.md` には「実行予算」の行と controller の停止の例外だけを手で当てた。例の `verify.sh` を `verify-devenv.sh`・`xrift check` にした。空白を含む state dir のテスト（`test_state_dir_with_spaces_round_trip`）を足した
 - **#22**: 差分は当てずに書き直した（移植元の関数は `assert_working_root`・`route_show`・`projects.toml` に依存する）。場所の判定は `route_target.py` の JSON、base は親が `origin/main`・制作物が origin の既定ブランチにした。base に `.gitleaks.toml` が無ければ Gitleaks の既定の規則を使う（ボードの R5）。CI に固定版の Gitleaks を入れた。push の `-u` を外し（送り元が SHA なので上流ブランチを設定しない）、PR は `--head` で作る。空のリモートへの初めての push は履歴全体を検査する。移植元に無い対策として、Gitleaks が読む `git log -p` の出力をオプションで固定し、同じ `git log` を先に実行して失敗を止める（`014709c`）。呼び出し元の IFS を既定に戻す（`d94759d`、PR のレビュー修正）
@@ -198,6 +198,13 @@
 - #19（PR #33）の `2c75b26` では、同じ PR の `test_runner.py` 側だけを先に取り込んでいた。今回、そのとき漏れた `test_process.py` 側を補い、読み取り時に例外が発生する回帰テストを追加した。上の first parent 44 件の集計は、その当時の範囲の記録として変えていない
 - xrift-poc での追加修正: `test_runner.py` の子の停止確認と、`tests/adapters/dsh/test_runner.py` の `_assert_stopped()` も `alive()` を再利用する。存在確認と読み取りの間の同じ競合を避け、Z/X を停止として扱う。権限エラーなど、消滅以外の読み取り失敗は隠さない
 - 取り込みはこの差分だけで、移植元のファイル全体による置き換えや、実装本体の停止処理の変更はしていない
+
+## 範囲の後の移植元の修正の取り込み（2026-10、Issue #48）
+
+- 移植元: `usaturn/agent-workspace` の PR #712（Issue #710）、commit `98159dd9484f0053a57c8b1fe11058c29c5601ac`（2026-10-17）。ボード #18 の範囲の終点 `3bc4769` の後にマージされたので、上の first parent 44 件には入っていない（表は範囲の記録として変えていない）。PR #47 の持ち越し候補の再調査で見つけた
+- 取り込んだ差分: issue-to-pr の `SKILL.md` の 2 章 4。既存の open PR で止まるときは、PR の URL と base を報告に書き、base が既定 branch のときだけ `/pr-review-fix-loop <PR の URL>` を、それ以外（統合用の branch など）では `/pr-review <PR の URL>`（マージしない）を案内する
+- xrift-poc に合わせた点: 既定 branch を、2 章 5 の `BASE` と同じく「対象 repository の既定 branch（親は `main`、制作物は `repository-ownership` で確認した既定 branch）」にした。移植元が番号のまま残した 1 章と 5 章の表の `/pr-review-fix-loop <PR>` も PR の URL にした。xrift-poc の issue-to-pr は制作物の PR も案内し、番号だけではループが親の origin の PR として解決するため
+- 取り込まなかったもの: ループ・`finalize.py` に base の検査を足すこと（移植元にも無い。Issue #48 の対象外）
 
 ## 更新の方法
 
