@@ -1563,6 +1563,42 @@ def _review_outside_changes(review: ReviewPart) -> list[str]:
     return list(dict.fromkeys(path for part in parts if part.batch is not None for path in part.batch.outside_changes))
 
 
+def _reviewer_retained(run: RunRecord, cycles: Sequence[CycleRecord]) -> list[dict[str, Any]]:
+    """レビュアーの pr-review が残したと報告したパスごとの、過去の観測（observed）と、いまの状態。
+
+    loop はこれらを所有しないので消さない。中身は読まず、lstat と tool_root の worktree の登録だけを見る。
+    絶対パスでない値（pr_ref の ref 名など）は、どのリポジトリのものか分からないので確かめない（null）。
+    """
+    observed: dict[str, list[dict[str, Any]]] = {}
+    for cycle in cycles:
+        for attempt, entry in _review_attempts(cycle.review):
+            for path in entry.retained_paths:
+                observed.setdefault(path, []).append(
+                    {"cycle": cycle.cycle, "agent": entry.actual_agent, "attempt": attempt}
+                )
+    if not observed:
+        return []
+    try:
+        registered: set[Path] | None = {path.absolute() for path in _registered_worktrees(Path(run.tool_root))}
+    except LoopError:
+        registered = None
+    items: list[dict[str, Any]] = []
+    for path, observations in observed.items():
+        exists: bool | None = None
+        in_tool_root: bool | None = None
+        if Path(path).is_absolute():
+            try:
+                Path(path).lstat()
+                exists = True
+            except FileNotFoundError, NotADirectoryError:
+                exists = False
+            except OSError:
+                exists = None
+            in_tool_root = None if registered is None else Path(path).absolute() in registered
+        items.append({"path": path, "exists": exists, "registered": in_tool_root, "observed": observations})
+    return items
+
+
 def _failed_review_reason(entries: Sequence[ReviewerEntry]) -> str:
     reasons = "; ".join(f"{entry.actual_agent}: {entry.reason}" for entry in entries) or "担当が無い"
     # 書きかけの値（<...>）と取り違えないよう、理由の中の山括弧を全角にする
@@ -1911,6 +1947,7 @@ def recover(run_dir: Path, *, operator_confirmed_stopped: str | None = None) -> 
         "result": run.result.model_dump(mode="json") if run.result else None,
         "lock_released": released,
         "retained": sorted({*retained, *(resource.path for resource in run.resources if resource.state != "removed")}),
+        "reviewer_retained": _reviewer_retained(run, load_cycles(run_dir)),
     }
 
 
@@ -1970,6 +2007,8 @@ def finish(run_dir: Path, *, abort: str | None = None) -> dict[str, Any]:
         "cycles": [_cycle_summary(cycle) for cycle in existing],
         "lock_released": released,
         "retained": [resource.path for resource in run.resources if resource.state == "retained"],
+        # 停止を確認できない資源が無いと確かめた後（上の audit_resources）に、報告された残存パスの状態を見る
+        "reviewer_retained": _reviewer_retained(run, existing),
     }
 
 
@@ -2024,6 +2063,7 @@ def status(
         "owns_lock": lock is not None and lock.run_id == run.run_id,
         "result": run.result.model_dump(mode="json") if run.result else None,
         "cycles": [_cycle_summary(cycle) for cycle in existing],
+        "reviewer_retained": _reviewer_retained(run, existing),
         "next": _next_step(run, existing, run_dir),
     }
 
