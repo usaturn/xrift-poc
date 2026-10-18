@@ -6,9 +6,6 @@
     ]
   },
   "enableAllProjectMcpServers": true,
-  "enabledMcpjsonServers": [
-    "context7"
-  ],
   "enabledPlugins": {
     "feature-dev@claude-plugins-official": true
   }
