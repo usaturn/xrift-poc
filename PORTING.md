@@ -328,3 +328,39 @@ fixture の親を `XRIFT_POC_ROOT` にして実行した。最終レビューの
 - Cursor CLI（`agent`）・Grok Build・DSH の読み込み: モデルに送信せずに確かめる方法が見つからなかった。`--help` に該当の確認コマンドが無い。Cursor・Grok は `.claude/skills`・`.agents/skills` を読む見込み、DSH は未確認。手動で確かめるときは、制作物の中で各エージェントを起動し、スキルの一覧（`/skills` など）に `xrift-world` と `repository-ownership` が出るかを見る
 - Devin の指示（`AGENTS.md`）の読み込み
 - pi の指示の読み込みの実行（実装の確認だけ）
+
+## Issue #8 の追加確認（2026-10-18）
+
+上の 2026-10-10 の記録を置き換えるものではない。利用者による確認と、今回この Dev Container で実行した確認を分けて記録する。
+
+### Dev Container の新規作成
+
+利用者から、Issue #8 の条件1（空の checkout から新規作成でき、ログイン待ちで止まらずに `install_beforehand.bash` が完走する）は「OK」と報告された。エージェントがホストで実行したものではなく、詳細な実行ログは受領していない。
+
+### ホストでのプレビューの準備
+
+XRift CLI 0.25.0 で、親の main checkout の `worlds/issue-8-preview` と `items/issue-8-preview` に未改造のテンプレートを新規作成した。どちらも Git 未初期化で、親に commit する対象ではない。既存の制作物は変更していない。
+
+- 両方の `npm run typecheck` は終了コード0。
+- `xrift check --build`（種類を自動判定）は両方でビルドと検査に成功した。続けて `xrift check world --build` / `xrift check item --build` も終了コード0（ワールド22ファイル、アイテム20ファイル、すべて APPROVE）。警告を無視するオプションは使っていない。
+- 新規ワールドへの初回の `xrift check world --build` は、ビルドせず `Dist directory not found` で終了コード1になった。同版の引数解析では `--build` が親の `check` に消費され、子の `world` の options へ渡らないことを実行して確認した。対応は #57 に分けた。
+- `npm run dev -- --host 0.0.0.0 --port 5173 --strictPort`（ワールド）と同じコマンドの `--port 5174`（アイテム）で起動し、コンテナ内から両方の HTTP 200 を確認した。
+- Python Playwright / Chromium で両方の 1280×800 の canvas とスクリーンショットを確認した。ワールドは街並み・茶色の壁・緑の床・操作説明、アイテムは灰色の床・青い八面体・黒い台座を描画し、`pageerror` は両方0件だった。
+- 確認用サーバーは終了し、5173・5174 のポートが解放されたことを確かめた。その後、利用者がホストで確認し、ワールド（5173）は OK、アイテム（5174）は NG と報告した。5174 が Dev Containers で転送されていないためで、描画の成功をホストからの表示の成功とは扱っていない。
+- `devcontainer.json` の `forwardPorts` に5173はあるが、5174〜5179は無い。`portsAttributes` のラベルだけでは転送は保証されない。現在のコンテナでは VS Code の「ポート」→「ポートの転送」で5174を追加できるが、追加後のホスト表示は未確認。恒久対応は #59 に分けた。
+
+### Cursor CLI・Grok Build・DSH の読み込み
+
+| 対象 | 版と確認方法 | 結果と限界 |
+|---|---|---|
+| Cursor CLI | `2026.10.16-e3cb207`、利用者の信頼承認後に `agent --print --trust --mode ask --output-format stream-json`。fixtureの未初期化・リンク済み独立Git・worktree・リンクなし対照と、実際の親・未初期化アイテムで確認 | 親の指示は、プロンプトに書いていないfixtureの親AGENTS.mdのマーカーを、ファイルを読まず正しく返したことで確認。親・リンク済み独立Git・そのworktreeでは両スキルのread成功イベントを観測した。未初期化の制作物とリンクなし対照では、モデルがネイティブの一覧に両スキルが無いと報告し、readも無かった。対応は #60 に分けた |
+| Grok Build | `1.0.62 (1474f9cbdd91)`、`grok inspect --json`。利用者の信頼承認後、一時HOMEの `trusted_folders.toml` で親・fixture・独立Git・worktreeを個別に信頼（共有ホームは不変更） | 全ケース終了コード0、`projectTrusted: true`。親と未初期化の制作物では親の指示・対象スキルを検出した。リンク済み独立Gitとそのworktreeはスキルあり・親指示なし。リンクなし対照では両方なし。独立Gitで親指示を渡す扱いは #56 の追加確認として記録した。inspectによる検出結果で、モデルが指示に従うことの確認ではない |
+| DSH | `0.2.0-rc.2` の導入済み `discoverBaselineInstructionFiles` / `loadBaselineInstructions` と `FileSystemSkillProvider.list/get` を実行。指示は既定の `.git` 境界・65536バイト上限。グローバル指示・スキルは一時ディレクトリへ隔離 | 親と Git 未初期化の制作物では親の指示・対象スキルを実際に読めた（指示の省略・切り詰めなし）。リンク済み独立Gitとそのworktreeでは対象スキルの本文は読めたが、親の指示は探索対象外。リンクなしの独立Git（対照）では両方読めない。対応は #56 に分けた |
+
+DSH の対象スキルは `repository-ownership` と `xrift-world`。指示は `AGENTS.md` / `CLAUDE.md` を確認した（同じ内容のファイルをローダーがまとめる場合を含む）。この確認は導入済みローダーの実行であり、ソースを読んだだけの確認ではない。一方、DSH のセッション全体やモデルへの注入・指示に従うことを検証したものでもない。
+
+Cursor の初回は信頼未承認で終了コード1だったが、利用者の許可後に上記の範囲で再実行した。Cursor のread成功イベントには全行範囲と `contentBlobId` がある一方、本文は含まれず、生バイトやハッシュは照合していない。ネイティブの一覧自体のdumpも取得していないので、missingの原因は断定していない。未初期化fixtureの親に実際と同じ `.claude/skills` のリンクを置いた後もmissingで、実際の未初期化アイテムでも同じ結果だった。
+
+信頼後の最初のCursor終了時に残ったworker/LSPは、元のプロセスグループ・cwd・コマンドを照合し、事前宣言したSIGINTで停止を確認した。以後の試行も子プロセスの終了まで確認した。信頼未承認の状態を成功にはしていない。
+
+今回確かめたのは受け入れ条件の結果と残る制約であり、すべての条件が成功したという記録ではない。ホストの追加ポートは #59、独立Gitでの親指示は #56、Cursorの未初期化制作物でのスキルは #60、CLIのビルド引数は #57 で扱う。これらの修正や修正後の受け入れ確認は今回行っていない。
