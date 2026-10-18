@@ -98,6 +98,13 @@
       "should_trigger": false,
       "expected_terms": [],
       "notes": "Issueボードの子選択はplanning-parallel-issues。レビュー後の採否・反映ではない"
+    },
+    {
+      "id": "q15",
+      "query": "PR #61 の持ち越し候補を再調査して、重要なものだけ Issue にして。",
+      "should_trigger": false,
+      "expected_terms": [],
+      "notes": "持ち越し候補の事後の再調査・Issue化はreview-carry-over-followup。PR番号を含むがPRでの採否・修正ではない"
     }
   ]
 }
