@@ -69,9 +69,11 @@ uv run --no-project python "$XRIFT_POC_ROOT/.agents/scripts/route_target.py" "${
 
 親は public で、制作物のリポジトリも公開しうる。新しい commit を push するときは、commit の後・push の前に `scan_before_push` で未 push の commit を Gitleaks で検査し、検査した commit の SHA だけを push する。マージ commit で入った内容（競合の解消や、マージのときに足した変更）も検査する。
 
-- **実行する場所:** Git の root で、引数なしに実行する。受け付けるのは、`route_target.py` が `env` と判定する親の feature worktree の root と、`product` と判定し `repository` が null でない制作物の Git の root（main checkout か、制作物の中の worktree）である
-- **止まる場所:** 親の main checkout、Git の root ではない場所（subdirectory）、`stop`、`repository` が null の制作物。`repository` が null なら、origin を GitHub の URL にしてから実行する
-- **base:** 親は `origin/main`、制作物は origin の既定ブランチ。どちらも fetch してから決める。origin にブランチが 1 つも無い制作物（GitHub で作ったばかりの空のリポジトリへの初めての push）では、HEAD から辿れる commit がすべて未 push なので、すべてを検査する。ブランチがあるのに既定ブランチを読めないときは止まる
+- **実行する場所:** Git の root で実行する。引数なしでは、`route_target.py` が `env` と判定する親の feature worktree と、`product` と判定し `repository` が null でない制作物（main checkout か、制作物の中の worktree）を受け付ける
+- **PR 修正の入口:** 最新の `review_target.py review-dir --for-planning` で得た JSON を、`scan_before_push --review-target "$TARGET_JSON"` の1引数として渡す。この形では、上の場所に加え、route が exit 3・`stop/unknown` と判定した一時 clone の Git root を受け付ける。`route_target.py` の判定自体は変えない。この例外は PR 修正の検査だけであり、制作物の通常の作業場所を広げない
+- **PR の照合:** `review_target.py scan-context` が、JSON の repository と origin（pushurl があればそれも）が同じ単一の送信先であること、PR が open・fork でないこと、解決時の head/base が不変であること、local HEAD が PR head の修正履歴であることを確かめる。base は PR の base branch。成功時は repository/base_ref/head_ref の JSON、入力不正は exit 2、照合不一致は exit 12、API/owner の失敗は既存の終了コードで止まる。Git の URL 設定値を照合し、`insteadOf` の転送は従来どおり許す
+- **止まる場所:** 親の main checkout、subdirectory、`repository` が null の制作物、上の明示入口以外の `stop`。`product_in_env_worktree`・未初期化の制作物・親 root の前提の破損を PR 引数で迂回しない
+- **base:** 引数なしでは親は `origin/main`、制作物は origin の既定ブランチ。PR 修正の入口では PR の base branch。fetch して SHA を固定する。引数なしで origin にブランチが1つも無い制作物（空のリポジトリへの初めての push）は履歴全体を検査する。ブランチがあるのに既定ブランチを読めないときは止まる
 - **設定:** base の commit の `.gitleaks.toml`、無ければ Gitleaks の既定の規則（`[extend]` の `useDefault = true`）を使う。作業ツリーの `.gitleaks.toml`、環境変数 `GITLEAKS_CONFIG`・`GITLEAKS_CONFIG_TOML`、inline の `gitleaks:allow` で検査を緩めない。`.gitleaksignore` があれば（壊れたシンボリックリンクを含む）止まる
 - **git の設定と属性:** Gitleaks が読む `git log -p` の出力をオプションで固定し、利用者の git 設定（`color.ui`・`log.diffMerges`・`log.showRoot`・`core.bigFileThreshold` など）や属性（`-diff`・`binary`・textconv）で中身が消えないようにする。バイナリ扱いのファイルもテキストとして検査するので、大きなアセットを含む commit では時間がかかる
 - **出力:** 成功したときだけ、検査した commit の SHA を stdout に 1 行出す。ログは stderr に出る。検出・設定の取得・scanner の失敗を成功扱いしない。Gitleaks は内部の `git log` が失敗しても成功を返すため、同じ `git log` を先に実行し、失敗したら止まる
@@ -81,7 +83,8 @@ uv run --no-project python "$XRIFT_POC_ROOT/.agents/scripts/route_target.py" "${
 
 ```bash
 # repository-ownership scan before push
-# Git の root で引数なしに実行する。成功したときだけ、検査した commit の SHA を stdout に出す
+# Git の root で実行する。PR 修正は --review-target "$TARGET_JSON" を渡す。
+# 成功したときだけ、検査した commit の SHA を stdout に出す
 # zsh では "$VAR:r" などが修飾子になるため、: の前の変数は ${VAR} で区切る。path・status を変数名に使わない
 scan_before_push() (
     set -euo pipefail
@@ -89,9 +92,17 @@ scan_before_push() (
     # 本体はサブシェルなので、既定の値に戻しても呼び出し元へ漏れない
     IFS=$' \t\n'
     : "${XRIFT_POC_ROOT:?XRIFT_POC_ROOT を xrift-poc の main checkout のパスに設定する}"
+    if [[ $# -ne 0 && ( $# -ne 2 || "$1" != --review-target ) ]]; then
+        printf 'scan_before_push: 引数は無し、または --review-target <JSON>\n' >&2
+        return 1
+    fi
     here="$(pwd -P)" || return 1
-    # stop と、判定の前提が壊れているときは、route_target.py が 0 以外で終わる
-    route="$(uv run --no-project python "$XRIFT_POC_ROOT/.agents/scripts/route_target.py" "$here")" || return 1
+    route_exit=0
+    route="$(uv run --no-project python "$XRIFT_POC_ROOT/.agents/scripts/route_target.py" "$here")" || route_exit=$?
+    if [[ "$route_exit" -ne 0 ]]; then
+        [[ "$route_exit" -eq 3 && $# -eq 2 ]] || return 1
+        jq -e '.kind == "stop" and .code == "unknown"' <<<"$route" >/dev/null || return 1
+    fi
     kind="$(jq -er .kind <<<"$route")" || return 1
     git_root="$(jq -er .git_root <<<"$route")" || return 1
     if [[ "$git_root" != "$here" ]]; then
@@ -112,8 +123,11 @@ scan_before_push() (
                 printf 'scan_before_push: 制作物の origin を GitHub のリポジトリとして読めない。origin を GitHub の URL にする\n' >&2
                 return 1
             fi
-            # origin にブランチが無ければ base は無い（HEAD から辿れる commit をすべて検査する）
-            heads="$(git ls-remote --heads origin)" || return 1
+            # PR mode は後で照合した base_ref を使う。通常 mode だけ既定 branch を調べる。
+            heads=""
+            if [[ $# -eq 0 ]]; then
+                heads="$(git ls-remote --heads origin)" || return 1
+            fi
             if [[ -n "$heads" ]]; then
                 base_branch="$(git ls-remote --symref origin HEAD | awk '$1 == "ref:" && $3 == "HEAD" { sub("^refs/heads/", "", $2); print $2 }')" || return 1
                 if [[ -z "$base_branch" ]]; then
@@ -122,10 +136,18 @@ scan_before_push() (
                 fi
             fi
             ;;
+        stop)
+            [[ "$route_exit" -eq 3 && $# -eq 2 ]] || return 1
+            ;;
         *)
             return 1
             ;;
     esac
+    if [[ $# -eq 2 ]]; then
+        context="$(uv run --no-project python "$XRIFT_POC_ROOT/.agents/scripts/review_target.py" \
+            scan-context --target "$2" --checkout "$here")" || return 1
+        base_branch="$(jq -er .base_ref <<<"$context")" || return 1
+    fi
     if [[ -e .gitleaksignore || -L .gitleaksignore ]]; then
         printf 'scan_before_push: .gitleaksignore があると検査を緩められる。push の前に止める\n' >&2
         return 1
@@ -156,7 +178,7 @@ scan_before_push() (
 )
 ```
 
-検査した SHA をそのまま push する。`<branch>` は自分が作った feature branch にする。
+検査した SHA をそのまま push する。`<branch>` は自分の feature branch、PR 修正なら最新の `TARGET_JSON` の `head_ref` にする。PR 修正では下の `scan_before_push` を `scan_before_push --review-target "$TARGET_JSON"` に替える。関数の定義・検査・push は同じシェルで実行し、失敗したら push しない。
 
 ```bash
 # repository-ownership scanned push
