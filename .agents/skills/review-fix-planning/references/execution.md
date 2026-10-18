@@ -98,7 +98,7 @@ fix-check自身の指摘（sources空）は `fix-check#V-<n>@<to HEAD12>` とし
 
 ## 3. 修正不要の最終化
 
-Fix/Hold/Unverified無しを全コメントに照合し、repository規則の正式検証を同じheadで実行する。実証ファイルの形:
+Fix/Hold/Unverified無しを全コメントに照合し、repository規則の正式検証を同じheadで実行する。issue-to-pr の `--merge` の run では、同じ run がPRの作成前に実行した正式検証の記録を使ってよい。条件は、PRのHEADが記録のheadと同じ、検証のときに作業ツリーに未commitの変更が無い、終了コード0、ログを親の `tmp/agents/` に残してある、のすべて。どれかを確かめられなければ、ここで実行し直す。実証ファイルの形:
 
 ```json
 {"head":"1111111111111111111111111111111111111111","commands":[{"argv":["./scripts/ci/verify-devenv.sh"],"exit_code":0}]}

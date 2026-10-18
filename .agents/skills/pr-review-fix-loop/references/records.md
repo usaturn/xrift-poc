@@ -99,6 +99,8 @@ reviews/<owner>/<repo>/#<PR>-<ブランチ>/
 | 6 | 全レビュアーの結果を受け付けられなかった | `review` |
 | 7 | 資源の停止を確認できない（ロックを保持） | `resources` |
 
+`check-options` は記録を書かない。成功の出力は `{"status": "ok", "options", "assignments", "next": null}`。`options` は `run.json` の `options` から `fresh_review` を除いた形、`assignments` は同じ形である。失敗は exit 2（`arguments`・`config`）で `run_dir` と `next` は null。
+
 失敗の出力は `{"status": "error", "stage", "reason", "run_dir", "next", "requires_input"}`。`requires_input` は、`next` に足すオプションと、そこに書く事実の説明（`recover` の `--operator-confirmed-stopped` など）。書きかけの値を実行させないよう、`next` にはそのオプションを含めない。失敗しても、それまでに保存した記録と runner の結果は書き換えない。引数の書式の誤り（argparse が拒否するもの）だけは、標準エラー出力の usage と終了コード 2 で、JSON を書かない。
 
 ## 6. 読む側の注意
