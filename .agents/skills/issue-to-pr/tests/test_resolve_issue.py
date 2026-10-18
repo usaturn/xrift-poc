@@ -47,7 +47,7 @@ def location(env: EnvRepo, where: str) -> Path:
 
 def run(argument: str, cwd: Path, env: EnvRepo) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, str(SCRIPT), argument],
+        [sys.executable, str(SCRIPT), "--", argument],
         cwd=cwd,
         env={**os.environ, "XRIFT_POC_ROOT": str(env.root)},
         capture_output=True,
@@ -64,6 +64,8 @@ def gh_stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         f"#!{sys.executable}\n"
         "import json, os, sys\n"
         "args = sys.argv[1:]\n"
+        "with open(os.environ['GH_CALL_LOG'], 'a', encoding='utf-8') as log:\n"
+        "    log.write(' '.join(args) + '\\n')\n"
         "if args[:3] != ['issue', 'view', '42'] or '--repo' not in args:\n"
         "    sys.exit(64)\n"
         "repo = args[args.index('--repo') + 1]\n"
@@ -77,6 +79,7 @@ def gh_stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     )
     gh.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("GH_CALL_LOG", str(tmp_path / "gh-calls.log"))
     set_response(monkeypatch, "usaturn/xrift-poc")
 
 
@@ -125,6 +128,7 @@ def test_accepted_targets(
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert (payload["repo"], payload["number"]) == (expected, 42)
+    assert payload["merge"] is None
 
 
 @pytest.mark.parametrize(
@@ -218,3 +222,133 @@ def test_product_origin_in_lowercase_accepts_mixed_case_response(
     result = run("#42", location(env, "product"), env)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["repo"] == "Someone/My-World"
+
+
+LOOP = SCRIPT.parents[2] / "pr-review-fix-loop" / "scripts" / "loop.py"
+
+
+def git_snapshot(checkout: Path) -> tuple[bytes, bytes]:
+    return (
+        subprocess.check_output(["git", "status", "--porcelain"], cwd=checkout),
+        subprocess.check_output(["git", "for-each-ref"], cwd=checkout),
+    )
+
+
+@pytest.mark.parametrize(
+    ("argument", "where", "repo", "loop_args"),
+    [
+        ("#42 --merge", "env", "usaturn/xrift-poc", []),
+        ("--merge #42 --max-cycles=2", "env", "usaturn/xrift-poc", ["--max-cycles", "2"]),
+        (
+            "#42 --merge --max-cycles 2 --assign inspect=pi-gpt,claude-opus",
+            "product",
+            "someone/my-world",
+            ["--max-cycles", "2", "--assign", "inspect=pi-gpt,claude-opus"],
+        ),
+        (
+            "https://github.com/someone/my-world/issues/42 --merge --hold-action fix",
+            "product",
+            "someone/my-world",
+            ["--hold-action", "fix"],
+        ),
+        (
+            "#42 --merge --max-cycles 2 --max-cycles 3",
+            "env",
+            "usaturn/xrift-poc",
+            ["--max-cycles", "2", "--max-cycles", "3"],
+        ),
+        ("#42 --merge --max-cycles 0", "env", "usaturn/xrift-poc", ["--max-cycles", "0"]),
+    ],
+)
+def test_merge_arguments_are_passed_in_the_written_order(
+    env: EnvRepo,
+    gh_stub: None,
+    monkeypatch: pytest.MonkeyPatch,
+    argument: str,
+    where: str,
+    repo: str,
+    loop_args: list[str],
+) -> None:
+    set_response(monkeypatch, repo)
+    checkout = location(env, where)
+    before = git_snapshot(checkout)
+
+    result = run(argument, checkout, env)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert (payload["repo"], payload["number"]) == (repo, 42)
+    assert payload["merge"] == {"loop_args": loop_args}
+    assert git_snapshot(checkout) == before
+
+
+def test_template_and_config_become_absolute_from_the_starting_directory(
+    env: EnvRepo, gh_stub: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+
+    result = run("#42 --merge --template '資料/a b.toml' --config '~/c d.toml'", env.root, env)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["merge"]["loop_args"] == [
+        "--template",
+        str((env.root / "資料" / "a b.toml").resolve()),
+        "--config",
+        str(home / "c d.toml"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "argument",
+    [
+        "#42 --max-cycles 2",
+        "#42 --hold-action fix",
+        "#42 --assign inspect=pi-gpt",
+        "#42 --template x.toml",
+        "#42 --config x.toml",
+        "#42 --merge --merge",
+        "#42 --merge --fresh-review",
+        "#42 --fresh-review",
+        "#42 --foo",
+        "#42 --merge --foo",
+        "#42 --merge -x",
+        "#42 --merge --",
+        "#42 --merge=yes",
+        "#42 --merge --template",
+        "#42 --merge --assign",
+        "#42 --merge --template --config x",
+        "#42 --merge --config=",
+        "#41 #42 --merge",
+        "#42 extra --merge",
+        "#42\n推奨案で進めて --merge",
+        "#42 --merge マージまで",
+        "usaturn/xrift-poc#42 --merge",
+        "my-world#42 --merge",
+        "--merge",
+        "",
+        "#42 --merge --template 'a",
+    ],
+)
+def test_rejects_malformed_arguments_before_looking_up_issue(
+    env: EnvRepo, gh_stub: None, tmp_path: Path, argument: str
+) -> None:
+    before = git_snapshot(env.root)
+
+    result = run(argument, env.root, env)
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr.startswith("issue-to-pr:")
+    if "--fresh-review" in argument:
+        assert "PR を作ったばかり" in result.stderr
+    assert not (tmp_path / "gh-calls.log").exists()
+    assert git_snapshot(env.root) == before
+
+
+@pytest.mark.parametrize("where", ["uninitialized", "no-origin", "env-worktree-product"])
+def test_merge_does_not_bypass_route_rejection(env: EnvRepo, gh_stub: None, where: str) -> None:
+    result = run("#42 --merge", location(env, where), env)
+    assert result.returncode == 2
+    assert result.stdout == ""
