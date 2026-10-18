@@ -109,7 +109,7 @@ xrift-poc は、XRift のワールドとアイテムを作るための開発環�
 - 制作物の変更は、その制作物のリポジトリの既定ブランチから branch を作る。制作物は親の main checkout の下で扱う（親の feature worktree の中では扱わない）。worktree は制作物のディレクトリの中（例: `worlds/<name>/.worktrees/<branch>`）に作り、`.worktrees/` を制作物の `.git/info/exclude` に加える。制作物の外（親の外）に作った worktree は、共有の指示とスキルを読めない
 - ユーザの指示なしに commit しない。ただし `.claude/worktrees/`・`.worktrees/`・`/tmp/` 配下の worktree branch では commit と PR 作成を許可する
 - `superpowers:executing-plans` または `superpowers:subagent-driven-development` で更新するときは、worktree で commit し、PR まで作成する。ただし Git 未初期化の制作物には当てはめない（下記「編集前の確認」を参照）
-- 新しい commit を push するとき（親の feature worktree、`repository` が null でない制作物の Git の root と制作物の中の worktree）は、repository-ownership の「公開前の秘密検査」に従い、`scan_before_push` で検査した commit の SHA を push する。検査が失敗したり止まったりしたら push しない。ref の削除（claim の解放、マージ後の branch の削除）は対象外である
+- 新しい commit を push するときは、場所を理由に検査の対象から外さず、repository-ownership の「公開前の秘密検査」に従い、`scan_before_push` で検査した commit の SHA だけを push する。親の feature worktree、`repository` が null でない制作物の Git root と中の worktree に加え、review-fix-planning が制作物などの PR を直す一時 clone も対象とする。PR 修正では同節の `--review-target` の入口で PR の repository・origin・base を照合する。検査不能・失敗・停止では push しない。これは一時 clone からの検査付き push の例外であり、制作物の通常の編集場所は変えない。ref の削除（claim の解放、マージ後の branch の削除）は対象外である
 - 親の PR は CI（`.github/workflows/ci.yml`）の green を確認してからマージする。review-fix-planning の finalize はどのリポジトリでも CI の結果を確認する。CI の無い制作物のリポジトリでは停止して報告する
 - デプロイとプロビジョニングは人間が行う。XRift への公開（`xrift upload world`・`xrift upload item`）は、利用者が明示的に指示したときだけ実行する。セキュリティチェックを省略するオプションを標準の手順にしない
 

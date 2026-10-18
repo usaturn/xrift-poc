@@ -569,3 +569,209 @@ def test_scanned_push_does_not_push_without_a_scanned_commit(
     result = run(layout, cwd, invocation, env, shell=shell)
     assert result.returncode != 0
     assert pushed(layout.env_bare) == before
+
+
+# PR 修正は親の外の clone でも動かす。origin は設定値で照合し、転送はローカル bare に隔離する。
+REVIEW_BRANCH = "fix/review"
+REVIEW_BASE = "integration/world"
+
+
+def prepare_review(
+    layout: Layout, tmp_path: Path, where: str, *, real_scanner: bool = False
+) -> tuple[Path, dict[str, str], Path, Path]:
+    product = where in {"product-worktree", "clone-product"}
+    source = layout.product_worktree if product else layout.feature
+    bare = layout.product_bare if product else layout.env_bare
+    repository = "usaturn/my-world" if product else "usaturn/xrift-poc"
+    url = f"https://github.com/{repository}.git"
+    git(source, "remote", "set-url", "origin", url)
+    git(source, "config", f"url.{bare}.insteadOf", url)
+    commit_file(source, ".gitleaks.toml", TRUSTED_RULES, "PR base rules")
+    git(source, "push", "-q", "origin", f"HEAD:refs/heads/{REVIEW_BASE}")
+    head = commit_file(source, "app.txt", "published\n", "PR head")
+    git(source, "push", "-q", "origin", f"HEAD:refs/heads/{REVIEW_BRANCH}")
+    cwd = source
+    if where.startswith("clone-"):
+        cwd = tmp_path / "一時 clone 空白"
+        git(tmp_path, "clone", "-q", "--branch", REVIEW_BRANCH, str(bare), str(cwd))
+        git(cwd, "remote", "set-url", "origin", url)
+        git(cwd, "config", f"url.{bare}.insteadOf", url)
+    commit_file(cwd, "app.txt", "local fix\n", "unpublished fix")
+    snapshot = {
+        "repository": repository,
+        "number": 7,
+        "head_ref": REVIEW_BRANCH,
+        "head_sha": head,
+        "head_repository": repository,
+        "base_ref": REVIEW_BASE,
+        "clone_url": url,
+    }
+    response = {
+        "number": 7,
+        "html_url": f"https://github.com/{repository}/pull/7",
+        "state": "open",
+        "head": {"ref": REVIEW_BRANCH, "sha": head, "repo": {"full_name": repository}},
+        "base": {"ref": REVIEW_BASE, "repo": {"full_name": repository, "clone_url": url}},
+    }
+    log = tmp_path / "scan.json"
+    if real_scanner:
+        env = real_gitleaks_env()
+        (tmp_path / "bin").mkdir()
+    else:
+        env, log = install_scanner(tmp_path)
+    bin_dir = tmp_path / "bin"
+    gh = bin_dir / "gh"
+    gh.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "value = json.loads(os.environ['REVIEW_TARGET'])\n"
+        "assert sys.argv[1:] == ['api', '-i', f'repos/{value[\"repository\"]}/pulls/{value[\"number\"]}']\n"
+        "status = os.environ.get('GH_STATUS', '200')\n"
+        "print(f'HTTP/2.0 {status} Status\\nContent-Type: application/json\\n')\n"
+        "print(os.environ['REVIEW_RESPONSE'])\n"
+        "sys.exit(0 if status == '200' else 1)\n",
+        encoding="utf-8",
+    )
+    gh.chmod(0o755)
+    env.update(
+        PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        REVIEW_TARGET=json.dumps(snapshot),
+        REVIEW_RESPONSE=json.dumps(response),
+    )
+    return cwd, env, log, bare
+
+
+def review_push() -> str:
+    return scanned_push(REVIEW_BRANCH).replace(
+        "$(scan_before_push)", '$(scan_before_push --review-target "$REVIEW_TARGET")'
+    )
+
+
+@pytest.mark.parametrize("shell", ["bash", "zsh"])
+@pytest.mark.parametrize("where", ["feature", "product-worktree", "clone-env", "clone-product"])
+def test_review_scan_uses_pr_base_and_pushes_only_scanned_sha(tmp_path: Path, shell: str, where: str) -> None:
+    layout = make_layout(tmp_path / SPACED)
+    cwd, env, log, bare = prepare_review(layout, tmp_path, where)
+    sha = git(cwd, "rev-parse", "HEAD")
+    base = git(bare, "rev-parse", f"refs/heads/{REVIEW_BASE}")
+    env["SCAN_THEN_COMMIT"] = "1"
+    result = run(layout, cwd, review_push(), env, shell=shell)
+    assert result.returncode == 0, result.stderr
+    assert pushed(bare, REVIEW_BRANCH) == sha
+    assert git(cwd, "rev-parse", "HEAD") != sha
+    record = json.loads(log.read_text(encoding="utf-8"))
+    assert record["config"] == TRUSTED_RULES
+    assert scanned_range(record) == f"{base}..{sha}"
+
+
+@pytest.mark.parametrize("shell", ["bash", "zsh"])
+@pytest.mark.parametrize("case", ["scan-failure", "api-failure", "repo-mismatch", "base-moved", "no-context"])
+def test_review_scan_failure_never_pushes(tmp_path: Path, shell: str, case: str) -> None:
+    layout = make_layout(tmp_path / SPACED)
+    cwd, env, log, bare = prepare_review(layout, tmp_path, "clone-product")
+    before = pushed(bare, REVIEW_BRANCH)
+    invocation = review_push()
+    if case == "scan-failure":
+        env["SCAN_EXIT"] = "1"
+    elif case == "api-failure":
+        env["GH_STATUS"] = "403"
+    elif case == "repo-mismatch":
+        git(cwd, "remote", "set-url", "origin", "https://github.com/usaturn/other.git")
+    elif case == "base-moved":
+        response = json.loads(env["REVIEW_RESPONSE"])
+        response["base"]["ref"] = "main"
+        env["REVIEW_RESPONSE"] = json.dumps(response)
+    else:
+        invocation = scanned_push(REVIEW_BRANCH)
+    result = run(layout, cwd, invocation, env, shell=shell)
+    assert result.returncode != 0
+    assert pushed(bare, REVIEW_BRANCH) == before
+    if case != "scan-failure":
+        assert not log.exists()
+
+
+@pytest.mark.parametrize("case", ["env-main", "subdir", "product-in-env-worktree"])
+def test_review_context_does_not_bypass_location_guards(tmp_path: Path, case: str) -> None:
+    layout = make_layout(tmp_path / SPACED)
+    cwd, env, log, _ = prepare_review(layout, tmp_path, "clone-product")
+    if case == "env-main":
+        cwd = layout.env.root
+    elif case == "subdir":
+        cwd = cwd / "nested"
+        cwd.mkdir()
+    else:
+        misplaced = layout.feature / "worlds" / "bad"
+        misplaced.parent.mkdir()
+        git(tmp_path, "clone", "-q", str(cwd), str(misplaced))
+        git(misplaced, "remote", "set-url", "origin", "https://github.com/usaturn/my-world.git")
+        cwd = misplaced
+    result = run(layout, cwd, 'scan_before_push --review-target "$REVIEW_TARGET"', env)
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert not log.exists()
+
+
+@pytest.mark.parametrize("arguments", ["--bogus", "--review-target", "one two three"])
+def test_scan_rejects_unrecognized_arguments(tmp_path: Path, arguments: str) -> None:
+    layout = make_layout(tmp_path / SPACED)
+    env, log = install_scanner(tmp_path)
+    result = run(layout, layout.feature, f"scan_before_push {arguments}", env)
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert not log.exists()
+
+
+@pytest.mark.parametrize("shell", ["bash", "zsh"])
+@pytest.mark.parametrize("merge", [False, True])
+def test_review_clone_with_secret_is_not_pushed(tmp_path: Path, shell: str, merge: bool) -> None:
+    layout = make_layout(tmp_path / SPACED)
+    cwd, env, _, bare = prepare_review(layout, tmp_path, "clone-product", real_scanner=True)
+    before = pushed(bare, REVIEW_BRANCH)
+    token = secret_like_token()
+    if merge:
+        git(cwd, "checkout", "-qb", "side")
+        commit_file(cwd, "side.txt", "clean\n", "side")
+        git(cwd, "checkout", "-q", "-")
+        git(cwd, "merge", "--no-ff", "--no-commit", "side")
+        (cwd / "secret.txt").write_text(f'token = "{token}"\n', encoding="utf-8")
+        git(cwd, "add", "secret.txt")
+        git(cwd, "commit", "-qm", "merge with leak")
+    else:
+        commit_file(cwd, "secret.txt", f'token = "{token}"\n', "leak")
+    result = run(layout, cwd, review_push(), env, shell=shell)
+    assert result.returncode != 0
+    assert pushed(bare, REVIEW_BRANCH) == before
+    assert leaks_found(result.stderr) >= 1
+    assert token not in result.stderr
+
+
+def execution_push() -> str:
+    path = REPO_ROOT / ".agents/skills/review-fix-planning/references/execution.md"
+    match = re.search(r"```bash\n(# review-fix-planning scanned push\n.*?)\n```", path.read_text(), re.DOTALL)
+    assert match is not None
+    return match.group(1)
+
+
+@pytest.mark.parametrize("shell", ["bash", "zsh"])
+@pytest.mark.parametrize("case", ["clean", "head-mismatch", "scanner-failure"])
+def test_review_fix_execution_block_pushes_only_verified_scanned_commit(tmp_path: Path, shell: str, case: str) -> None:
+    layout = make_layout(tmp_path / SPACED)
+    cwd, env, _, bare = prepare_review(layout, tmp_path, "clone-product")
+    landing = tmp_path / "反映 空白"
+    landing.mkdir()
+    cwd.rename(landing / "clone")
+    cwd = landing / "clone"
+    before = pushed(bare, REVIEW_BRANCH)
+    sha = git(cwd, "rev-parse", "HEAD")
+    env.update(LAND_ROOT=str(landing), TARGET_JSON=env["REVIEW_TARGET"], LOCAL_HEAD=sha)
+    if case == "head-mismatch":
+        env["LOCAL_HEAD"] = "a" * 40
+    elif case == "scanner-failure":
+        env["SCAN_EXIT"] = "1"
+    result = run(layout, cwd, execution_push(), env, shell=shell)
+    if case == "clean":
+        assert result.returncode == 0, result.stderr
+        assert pushed(bare, REVIEW_BRANCH) == sha
+    else:
+        assert result.returncode != 0
+        assert pushed(bare, REVIEW_BRANCH) == before

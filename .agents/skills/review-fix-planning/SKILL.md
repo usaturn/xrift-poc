@@ -115,7 +115,7 @@ Spec: `YYYY-MM-DD-<topic>-review-fixes-design.md`。全指摘と出典→判断�
 5. 起動前に司令塔がv2 planningの仮の版を `REVIEW_DIR/verified/<source HEAD12>.planning.json` に作る。必須キーを全部入れ、`outcome` は仮に `stopped`、`comment_id` はnull、`activities` は実施済みの工程だけ（`pre_push_review` は入れない）。`stage=pre_push_review` の呼出枠1件は `run_roles.py` が起動前に予約する。手で書き足さない（予約済みとして拒否され、その枠は消せない）。この件数を回数として記録する。失敗/中断でも消さず、別モデル・別HEAD・別phase名で2回目を起動しない。サイクルの最後に同じファイルを更新し、予約を消さない。fix-checkの `review_dir` は `references/execution.md` の独立staging（REVIEW_DIRではない）。
 6. receiptを読み、実測identity/role/from/to、stop_confirmed、outside_changes、保存先監査、JSON/pair、全残件を確認する。runnerのsuccessは修正合格ではない。fix-checkの既存acceptを通し、selfの結果も正式validatorで確認する。未停止を成功とせず、他担当の変更を削除しない。
 7. 指摘を同じ採否規則で判定。H/D1必須Fixは必ず対処し、名指しN/明示Holdも維持する。Skipまで直すループにしない。問題は司令塔が自力で診断・関連検証まで進める。修正でレビューの根拠が失われて最終HEADを確認できなくなる場合は、2回目で埋めず `permission: 1回枠を消費済みで追加レビューの認可が無い` と未完了にする。
-8. 全条件が同じ最終HEADで揃ったら、通常pushで既存PRへ反映しremote HEADを読み戻す。拒否は原因を調べる。rebase/mergeがレビューHEADを変えるなら無条件再pushしない。open PRが無ければPRを増やさず、状況投稿もせず障害を報告する。
+8. 全条件が同じ最終HEADで揃ったら、通常入口の `TARGET_JSON` を再解決する。親feature worktree・制作物・一時cloneの**実作業Git root**で、repository-ownership「公開前の秘密検査」の `scan before push` と `scanned push` の2ブロックを同じシェルで使う（関数本文は複製しない）。検査呼出しは `scan_before_push --review-target "$TARGET_JSON"`、送信先はJSONの `head_ref` とし、検査したSHAがレビュー/修正確認/正式検証の最終HEADと同じことを確認して、そのSHAだけを明示refspecで既存PRへpushする。検査の失敗・空SHA・HEAD不一致ではpushしない。一時cloneは `references/execution.md` 4章に従う。remote HEADが送信したSHAであることを読み戻す。push拒否は原因を調べ、rebase/mergeがレビューHEADを変えるなら無条件再pushしない。open PRが無ければPRを増やさず、状況投稿もせず障害を報告する。
 
 `fixes_pushed` はレビュー/修正確認を完了してpushし、状況記録も残した結果。これをマージ完了と呼ばない。自己レビュー無し・2回目・未確認のままpushは禁止。finishing-a-development-branchのメニューや2度目のcommit/push確認は不要。
 

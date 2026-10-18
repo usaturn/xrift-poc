@@ -55,20 +55,8 @@ def make_remote(tmp_path: Path, *, number: int = 3, branch: str = "hogehoge") ->
     git(work, "commit", "-m", "change")
     head = git(work, "rev-parse", "HEAD")
     remote = tmp_path / "remote.git"
-    subprocess.run(
-        ["git", "init", "--bare", "-b", "main", str(remote)],
-        check=True,
-        capture_output=True,
-    )
-    git(
-        work,
-        "push",
-        "-q",
-        str(remote),
-        "main",
-        branch,
-        f"{branch}:refs/pull/{number}/head",
-    )
+    subprocess.run(["git", "init", "--bare", "-b", "main", str(remote)], check=True, capture_output=True)
+    git(work, "push", "-q", str(remote), "main", branch, f"{branch}:refs/pull/{number}/head")
     return remote.resolve(), head
 
 
@@ -102,10 +90,7 @@ def pull(
         },
         "base": {
             "ref": "main",
-            "repo": {
-                "full_name": repository,
-                "clone_url": f"https://github.com/{repository}.git",
-            },
+            "repo": {"full_name": repository, "clone_url": f"https://github.com/{repository}.git"},
         },
     }
 
@@ -221,14 +206,7 @@ def test_naming_rules_keep_the_helper_messages() -> None:
 
 
 def test_fetch_pull_request_success() -> None:
-    gh = gh_for(
-        pull(
-            "usaturn/xrift-sample-world",
-            12,
-            "feat/x",
-            head_repository="someone/xrift-sample-world",
-        )
-    )
+    gh = gh_for(pull("usaturn/xrift-sample-world", 12, "feat/x", head_repository="someone/xrift-sample-world"))
 
     pr = target.fetch_pull_request("usaturn/xrift-sample-world", 12, runner=gh)
 
@@ -259,14 +237,7 @@ def test_fetch_pull_request_repository_missing() -> None:
 
 @pytest.mark.parametrize("status", [401, 403])
 def test_fetch_pull_request_auth(status: int) -> None:
-    gh = FakeGh(
-        {
-            "repos/usaturn/xrift-sample-world/pulls/1": (
-                http(status, {"message": "Bad credentials"}),
-                "",
-            )
-        }
-    )
+    gh = FakeGh({"repos/usaturn/xrift-sample-world/pulls/1": (http(status, {"message": "Bad credentials"}), "")})
 
     with pytest.raises(target.TargetError) as excinfo:
         target.fetch_pull_request("usaturn/xrift-sample-world", 1, runner=gh)
@@ -275,14 +246,7 @@ def test_fetch_pull_request_auth(status: int) -> None:
 
 
 def test_fetch_pull_request_without_status_is_api_failure() -> None:
-    gh = FakeGh(
-        {
-            "repos/usaturn/xrift-sample-world/pulls/1": (
-                "",
-                "dial tcp: connection refused",
-            )
-        }
-    )
+    gh = FakeGh({"repos/usaturn/xrift-sample-world/pulls/1": ("", "dial tcp: connection refused")})
 
     with pytest.raises(target.TargetError) as excinfo:
         target.fetch_pull_request("usaturn/xrift-sample-world", 1, runner=gh)
@@ -330,11 +294,7 @@ def test_resolve_url_does_not_require_parent_relation(tmp_path: Path) -> None:
     parent = make_parent(tmp_path / "parent")
     gh = gh_for(pull("usaturn/wabun-rst-ulint", 3, "hogehoge"))
 
-    result = target.resolve(
-        "https://github.com/usaturn/wabun-rst-ulint/pull/3",
-        parent_root=parent,
-        runner=gh,
-    )
+    result = target.resolve("https://github.com/usaturn/wabun-rst-ulint/pull/3", parent_root=parent, runner=gh)
 
     assert result["review_dir"] == str(parent / "reviews" / "usaturn" / "wabun-rst-ulint" / "#3-hogehoge")
     assert result["target_root"] is None
@@ -344,19 +304,10 @@ def test_resolve_url_does_not_require_parent_relation(tmp_path: Path) -> None:
 def test_resolve_uses_canonical_repository_name(tmp_path: Path) -> None:
     parent = make_parent(tmp_path / "parent")
     gh = FakeGh(
-        {
-            "repos/Usaturn/Xrift-Sample-World/pulls/3": (
-                http(200, pull("usaturn/xrift-sample-world", 3, "feat/x")),
-                "",
-            )
-        }
+        {"repos/Usaturn/Xrift-Sample-World/pulls/3": (http(200, pull("usaturn/xrift-sample-world", 3, "feat/x")), "")}
     )
 
-    result = target.resolve(
-        "https://github.com/Usaturn/Xrift-Sample-World/pull/3",
-        parent_root=parent,
-        runner=gh,
-    )
+    result = target.resolve("https://github.com/Usaturn/Xrift-Sample-World/pull/3", parent_root=parent, runner=gh)
 
     assert result["repository"] == "usaturn/xrift-sample-world"
     assert result["review_dir"] == str(parent / "reviews" / "usaturn" / "xrift-sample-world" / "#3-feat-x")
@@ -364,20 +315,9 @@ def test_resolve_uses_canonical_repository_name(tmp_path: Path) -> None:
 
 def test_resolve_fork_uses_base_repository(tmp_path: Path) -> None:
     parent = make_parent(tmp_path / "parent")
-    gh = gh_for(
-        pull(
-            "usaturn/xrift-sample-world",
-            5,
-            "patch",
-            head_repository="someone/xrift-sample-world",
-        )
-    )
+    gh = gh_for(pull("usaturn/xrift-sample-world", 5, "patch", head_repository="someone/xrift-sample-world"))
 
-    result = target.resolve(
-        "https://github.com/usaturn/xrift-sample-world/pull/5",
-        parent_root=parent,
-        runner=gh,
-    )
+    result = target.resolve("https://github.com/usaturn/xrift-sample-world/pull/5", parent_root=parent, runner=gh)
 
     assert result["repository"] == "usaturn/xrift-sample-world"
     assert result["head_repository"] == "someone/xrift-sample-world"
@@ -462,10 +402,7 @@ def test_target_checkout_uses_parent_and_registered_submodule(tmp_path: Path) ->
 def test_target_checkout_stops_for_broken_submodule(tmp_path: Path) -> None:
     parent = make_parent(tmp_path / "parent")
     add_submodule(
-        parent,
-        tmp_path,
-        "https://github.com/usaturn/xrift-sample-world.git",
-        origin="https://github.com/x/y.git",
+        parent, tmp_path, "https://github.com/usaturn/xrift-sample-world.git", origin="https://github.com/x/y.git"
     )
 
     with pytest.raises(target.TargetError) as excinfo:
@@ -489,28 +426,20 @@ def test_find_review_directory_by_number(tmp_path: Path) -> None:
     directory = review_dir(parent, "usaturn", "xrift-poc", "#4-feat-x")
 
     result = target.find_review_directory(
-        "#4",
-        parent_root=parent,
-        for_planning=True,
-        runner=gh_for(pull("usaturn/xrift-poc", 4, "feat/x")),
+        "#4", parent_root=parent, for_planning=True, runner=gh_for(pull("usaturn/xrift-poc", 4, "feat/x"))
     )
 
     assert result["review_dir"] == str(directory)
     assert result["target_root"] == str(parent)
 
 
-def test_find_review_directory_reports_missing_review_and_legacy_dir(
-    tmp_path: Path,
-) -> None:
+def test_find_review_directory_reports_missing_review_and_legacy_dir(tmp_path: Path) -> None:
     parent = make_parent(tmp_path / "parent")
     legacy = review_dir(parent, "#4-feat-x")
 
     with pytest.raises(target.TargetError) as excinfo:
         target.find_review_directory(
-            "4",
-            parent_root=parent,
-            for_planning=True,
-            runner=gh_for(pull("usaturn/xrift-poc", 4, "feat/x")),
+            "4", parent_root=parent, for_planning=True, runner=gh_for(pull("usaturn/xrift-poc", 4, "feat/x"))
         )
 
     assert error_code(excinfo) == target.EXIT_NO_REVIEW
@@ -524,10 +453,7 @@ def test_find_review_directory_does_not_cross_repositories(tmp_path: Path) -> No
 
     with pytest.raises(target.TargetError) as excinfo:
         target.find_review_directory(
-            "#4",
-            parent_root=parent,
-            for_planning=True,
-            runner=gh_for(pull("usaturn/xrift-poc", 4, "feat/x")),
+            "#4", parent_root=parent, for_planning=True, runner=gh_for(pull("usaturn/xrift-poc", 4, "feat/x"))
         )
 
     assert error_code(excinfo) == target.EXIT_NO_REVIEW
@@ -540,10 +466,7 @@ def test_find_review_directory_lists_multiple_candidates(tmp_path: Path) -> None
 
     with pytest.raises(target.TargetError) as excinfo:
         target.find_review_directory(
-            "#4",
-            parent_root=parent,
-            for_planning=False,
-            runner=gh_for(pull("usaturn/xrift-poc", 4, "b")),
+            "#4", parent_root=parent, for_planning=False, runner=gh_for(pull("usaturn/xrift-poc", 4, "b"))
         )
 
     assert error_code(excinfo) == target.EXIT_AMBIGUOUS
@@ -556,10 +479,7 @@ def test_find_review_directory_rejects_other_owner_before_api(tmp_path: Path) ->
 
     with pytest.raises(target.TargetError) as excinfo:
         target.find_review_directory(
-            "https://github.com/someone/x/pull/1",
-            parent_root=parent,
-            for_planning=True,
-            runner=gh,
+            "https://github.com/someone/x/pull/1", parent_root=parent, for_planning=True, runner=gh
         )
 
     assert error_code(excinfo) == target.EXIT_OWNER
@@ -567,9 +487,7 @@ def test_find_review_directory_rejects_other_owner_before_api(tmp_path: Path) ->
     assert gh.calls == []
 
 
-def test_find_review_directory_without_planning_accepts_other_owner(
-    tmp_path: Path,
-) -> None:
+def test_find_review_directory_without_planning_accepts_other_owner(tmp_path: Path) -> None:
     parent = make_parent(tmp_path / "parent")
     directory = review_dir(parent, "someone", "x", "#1-y")
 
@@ -668,9 +586,7 @@ def test_find_review_directory_rejects_unidentifiable_path(tmp_path: Path) -> No
     assert error_code(excinfo) == target.EXIT_PATH
 
 
-def test_find_review_directory_rejects_other_owner_path_before_api(
-    tmp_path: Path,
-) -> None:
+def test_find_review_directory_rejects_other_owner_path_before_api(tmp_path: Path) -> None:
     parent = make_parent(tmp_path / "parent")
     directory = review_dir(parent, "someone", "x", "#1-y")
     gh = FakeGh({})
@@ -715,36 +631,17 @@ def test_fetch_pull_head_preserves_tracking_refs_tags_and_fetch_head(tmp_path: P
     remote, head = make_remote(tmp_path)
     checkout = tmp_path / "source"
     subprocess.run(
-        [
-            "git",
-            "clone",
-            "--quiet",
-            "--no-checkout",
-            "--no-tags",
-            str(remote),
-            str(checkout),
-        ],
+        ["git", "clone", "--quiet", "--no-checkout", "--no-tags", str(remote), str(checkout)],
         check=True,
         capture_output=True,
     )
-    git(
-        checkout,
-        "config",
-        "--add",
-        "remote.origin.fetch",
-        "+refs/pull/*/head:refs/remotes/origin/pr-*",
-    )
+    git(checkout, "config", "--add", "remote.origin.fetch", "+refs/pull/*/head:refs/remotes/origin/pr-*")
     git(checkout, "config", "remote.origin.tagOpt", "--tags")
     git(remote, "update-ref", "refs/tags/published-after-clone", head)
     fetch_head = checkout / ".git" / "FETCH_HEAD"
     fetch_head.write_text("preserve caller fetch result\n", encoding="utf-8")
     before = git(
-        checkout,
-        "for-each-ref",
-        "--format=%(refname) %(objectname)",
-        "refs/heads",
-        "refs/remotes",
-        "refs/tags",
+        checkout, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", "refs/remotes", "refs/tags"
     )
     if head_moved:
         with pytest.raises(target.TargetError):
@@ -753,14 +650,7 @@ def test_fetch_pull_head_preserves_tracking_refs_tags_and_fetch_head(tmp_path: P
         ref = target.fetch_pull_head(checkout, 3, head)
         assert git(checkout, "rev-parse", ref) == head
     assert (
-        git(
-            checkout,
-            "for-each-ref",
-            "--format=%(refname) %(objectname)",
-            "refs/heads",
-            "refs/remotes",
-            "refs/tags",
-        )
+        git(checkout, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", "refs/remotes", "refs/tags")
         == before
     )
     assert fetch_head.read_text(encoding="utf-8") == "preserve caller fetch result\n"
@@ -790,9 +680,7 @@ def test_clone_for_fix_checks_out_head_branch(tmp_path: Path, monkeypatch: pytes
 def test_clone_for_fix_rejects_fork(tmp_path: Path) -> None:
     with pytest.raises(target.TargetError) as excinfo:
         target.clone_repository(
-            clone_target("a" * 40, head_repository="someone/wabun-rst-ulint"),
-            tmp_path / "clone",
-            checkout_branch=True,
+            clone_target("a" * 40, head_repository="someone/wabun-rst-ulint"), tmp_path / "clone", checkout_branch=True
         )
 
     assert error_code(excinfo) == target.EXIT_CLONE
@@ -835,10 +723,7 @@ def clone_target_with_url(clone_url: str) -> Any:
 
 def test_clone_target_accepts_only_canonical_urls() -> None:
     # clone_url はそのまま git clone に渡すので、平文の http や認証情報付きの URL は受け付けない
-    for url in (
-        "https://github.com/someone/my-world.git",
-        "git@github.com:someone/my-world.git",
-    ):
+    for url in ("https://github.com/someone/my-world.git", "git@github.com:someone/my-world.git"):
         assert clone_target_with_url(url).clone_url == url
     for url in LENIENT_GITHUB_URLS:
         with pytest.raises(target.TargetError) as excinfo:
@@ -855,10 +740,7 @@ def test_cli_reports_error_code_and_message(
     parent = make_parent(tmp_path / "parent")
     monkeypatch.setattr(target, "default_parent_root", lambda: parent)
 
-    code = target.main(
-        ["review-dir", "https://github.com/someone/x/pull/1", "--for-planning"],
-        runner=FakeGh({}),
-    )
+    code = target.main(["review-dir", "https://github.com/someone/x/pull/1", "--for-planning"], runner=FakeGh({}))
 
     assert code == target.EXIT_OWNER
     assert "対象外" in capsys.readouterr().err
