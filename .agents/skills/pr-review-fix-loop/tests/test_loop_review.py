@@ -1448,3 +1448,41 @@ def test_request_is_kept_only_from_a_regular_file(loop: Any, env: Any, tmp_path:
         loop.keep_rejected_request(failed, entry, kept)
         assert (entry.request_file is not None) is expected
     assert sorted(path.name for path in kept.iterdir()) == ["request-1.json"]
+
+
+# --- 再実行の後の報告 ---------------------------------------------------------------------------------------------
+
+
+def session_worktrees(env: Any) -> list[str]:
+    """偽のレビュアーが pr-review の helper のセッションを模して残した worktree（作った順）。"""
+    worktrees = [path / "worktree" for path in env.sessions.glob("pr-review-*")]
+    return [str(path) for path in sorted(worktrees, key=lambda path: path.stat().st_mtime_ns)]
+
+
+def test_rerun_keeps_the_first_attempt_retained_paths_and_outside_changes(loop: Any, env: Any) -> None:
+    # Issue #41 の再現: 1 回目の alpha は後片付けに失敗して worktree を残し、tool_root も書き換える。再実行は成功する
+    run_dir = started_cycle(loop, env)
+    adapter = env.reviewers({"alpha": ["failed+retained+outside", "success"], "beta": "success"})
+
+    first = loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
+
+    [worktree] = session_worktrees(env)
+    assert worktree in first["retained"]
+    assert first["outside_changes"] == [str(env.parent)]
+
+    second = loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
+
+    assert sorted(item["agent"] for item in second["accepted"]) == ["alpha", "beta"]
+    assert set(first["retained"]) <= set(second["retained"])
+    assert second["outside_changes"] == [str(env.parent)]
+
+
+def test_successful_first_review_reports_nothing_retained(loop: Any, env: Any) -> None:
+    # 対照: 1 回目から全員が成功する
+    run_dir = started_cycle(loop, env)
+    adapter = env.reviewers({"alpha": "success", "beta": "success"})
+
+    reviewed = loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
+
+    assert (reviewed["retained"], reviewed["outside_changes"]) == ([], [])
+    assert "rerun" not in reviewed

@@ -251,12 +251,24 @@ class LoopEnv:
         scenario = self.root / f"scenario-{head[:12]}.json"
         scenario.write_text(
             json.dumps(
-                {"repository": REPOSITORY, "number": NUMBER, "copies": str(self.root / "copies"), "agents": agents},
+                {
+                    "repository": REPOSITORY,
+                    "number": NUMBER,
+                    "copies": str(self.root / "copies"),
+                    "tool_root": str(self.parent),
+                    "sessions": str(self.sessions),
+                    "agents": agents,
+                },
                 ensure_ascii=False,
             ),
             encoding="utf-8",
         )
         return ReviewerAdapter(scenario)
+
+    @property
+    def sessions(self) -> Path:
+        """偽のレビュアーが pr-review の helper のセッションを模して作る場所（runner の出力領域の外）。"""
+        return self.root / "sessions\n日本語"
 
     def start(self, argument: str = f"#{NUMBER}", **options: Any) -> dict[str, Any]:
         result: dict[str, Any] = LOOP.start(
@@ -345,8 +357,11 @@ def finalize_result(path: Path, outcome: str, *, merged: bool, stop_reason: str 
 
 # 偽のレビュアー。runner が起動する実行ファイルで、scenario の指示どおりに pr-review の complete と同じ形の
 # payload と成果 2 件（または失敗の payload）を書く。依頼文の JSON ブロックから records_comments を読み、写しを残す。
+# 振る舞いは success・failed・crash に「+retained」「+outside」を足せる。retained は pr-review の helper が後片付けに
+# 失敗したときと同じく、tool_root に登録した実際の worktree を残して cleanup=failed と retained_paths を返す。
+# outside は tool_root の README.md を書き換える（runner の監査の outside_changes に出る）
 REVIEWER_PROGRAM = r"""
-import json, pathlib, re, shutil, sys
+import json, pathlib, re, shutil, subprocess, sys, tempfile
 request = json.load(sys.stdin)
 receipt_path, scenario_path = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
 scenario = json.loads(scenario_path.read_text(encoding="utf-8"))
@@ -364,6 +379,25 @@ if isinstance(behavior, list):
     launches = int(counter.read_text()) if counter.exists() else 0
     counter.write_text(str(launches + 1))
     behavior = behavior[min(launches, len(behavior) - 1)]
+behavior, *extras = behavior.split("+")
+tool_root = pathlib.Path(scenario["tool_root"])
+if "outside" in extras:
+    with (tool_root / "README.md").open("a", encoding="utf-8") as stream:
+        stream.write(f"{agent} が書き換えた\n")
+retained_paths, cleanup = None, "not_attempted"
+if "retained" in extras:
+    sessions = pathlib.Path(scenario["sessions"])
+    sessions.mkdir(exist_ok=True)
+    session = pathlib.Path(tempfile.mkdtemp(prefix=f"pr-review-{scenario['number']}-", dir=sessions))
+    worktree = session / "worktree"
+    subprocess.run(["git", "-C", str(tool_root), "worktree", "add", "-q", "--detach", str(worktree), "HEAD"],
+                   check=True, capture_output=True)
+    draft = session / "review-backup" / "draft.md"
+    draft.parent.mkdir()
+    draft.write_text("下書き\n", encoding="utf-8")
+    retained_paths = {"worktree": str(worktree), "draft": str(draft), "session_dir": str(session),
+                      "pr_ref": f"refs/pr-review/{scenario['number']}"}
+    cleanup = "failed"
 if behavior == "crash":
     sys.exit(3)  # receipt を書かずに異常終了する（runner の失敗）
 payload = {key: request[key] for key in ("run_id", "request_id", "agent_id", "role")}
@@ -381,7 +415,7 @@ if behavior == "success":
                    timing=spec["document"]["timing"], save_seconds=0.1, cleanup_seconds=0.1, total_seconds=60.2)
 else:
     payload.update(status="failed", review_file=None, findings_file=None, active_findings=None,
-                   cleanup="not_attempted", cleanup_details={}, retained_paths=None,
+                   cleanup=cleanup, cleanup_details={}, retained_paths=retained_paths,
                    reason="テスト: 依頼の途中で止まった", reviewer=None, timing=None,
                    save_seconds=None, cleanup_seconds=None, total_seconds=None)
 receipt = {key: request[key] for key in ("schema_version", "run_id", "request_id", "agent_id", "role")}
