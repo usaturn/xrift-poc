@@ -17,6 +17,7 @@ from tools.agent_runner.adapters import (
 )
 from tools.agent_runner.models import (
     Agent,
+    Identity,
     Payload,
     ReceiptStatus,
     Request,
@@ -233,6 +234,63 @@ def test_collector_binds_stdout_session_to_observed_model(context: AdapterContex
         "live-model",
         "high",
     )
+
+
+def _unreadable_log(context: AdapterContext, case: str) -> None:
+    state = context.receipt_path.parent / "dsh" / "state"
+    path = write_session(state, context.work_dir, session_id="observed-session", answered=case != "unanswered")
+    if case == "malformed":
+        with path.open("a") as stream:
+            stream.write("broken {\n")
+    elif case == "symlink":
+        target = context.receipt_path.parent / "foreign.jsonl"
+        path.rename(target)
+        path.symlink_to(target)
+
+
+def _approval_stream() -> list[dict[str, Any]]:
+    events = _stream()
+    events.insert(2, {"type": "tool_result", "callId": "call", "status": "error", "result": "APPROVAL_REQUIRED"})
+    return events
+
+
+@pytest.mark.parametrize("case", ["unanswered", "malformed", "symlink"])
+@pytest.mark.parametrize(
+    "events,stderr,expected",
+    [
+        (_stream("", {"kind": "error", "error": {"code": "MISSING_CREDENTIAL"}}), "", "awaiting_authentication"),
+        (_approval_stream(), "", "awaiting_approval"),
+        (_stream("", {"kind": "aborted"}), "", "interrupted"),
+        (_stream()[:-1], "dsh: MISSING_CREDENTIAL: missing", "awaiting_authentication"),
+        (_stream(reason={"kind": "error", "error": {"code": "NETWORK_ERROR"}}), "", "response_failed"),
+    ],
+)
+def test_unverified_identity_keeps_failure_state(
+    context: AdapterContext, case: str, events: list[object], stderr: str, expected: ReceiptStatus
+) -> None:
+    # A key-less DSH logs the attempt without an assistant message; that must not hide why it failed.
+    _unreadable_log(context, case)
+    outcome = _collect(context, events, stderr)
+    assert outcome.receipt is not None
+    assert outcome.receipt.status == expected
+    assert outcome.receipt.payload is None
+    assert outcome.identity == Identity(session_id="observed-session")
+
+
+def test_failed_attempt_still_records_a_readable_route(context: AdapterContext) -> None:
+    write_session(context.receipt_path.parent / "dsh" / "state", context.work_dir, session_id="observed-session")
+    outcome = _collect(context, _stream(reason={"kind": "error", "error": {"code": "INVALID_CREDENTIAL"}}))
+    assert outcome.receipt is not None and outcome.receipt.status == "awaiting_authentication"
+    assert (outcome.identity.provider, outcome.identity.model) == ("observed-provider", "observed-model")
+
+
+@pytest.mark.parametrize("case", ["unanswered", "malformed", "symlink"])
+def test_success_without_verified_identity_is_not_success(context: AdapterContext, case: str) -> None:
+    _unreadable_log(context, case)
+    outcome = _collect(context, _stream())
+    assert outcome.receipt is not None
+    assert outcome.receipt.status == "response_failed"
+    assert outcome.receipt.payload is None
 
 
 def _status(context: AdapterContext, events: Iterable[object]) -> ReceiptStatus:

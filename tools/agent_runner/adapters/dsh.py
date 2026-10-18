@@ -303,7 +303,10 @@ class Dsh:
             except FileNotFoundError:
                 pass  # Generic uses may have no durable model observation; review callers reject unknown.
             except OSError, ValueError, KeyError, TypeError:
-                status, payload = "response_failed", None
+                # An unproven route voids a success; a failure (a key-less attempt logs no
+                # assistant message) keeps its classification and the session-only identity.
+                if status == "success":
+                    status, payload = "response_failed", None
         return AdapterOutcome(
             receipt=Receipt(
                 run_id=context.request.run_id,

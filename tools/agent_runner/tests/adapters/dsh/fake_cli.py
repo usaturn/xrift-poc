@@ -1,5 +1,6 @@
 """Headless-shaped fake CLI; validates managed flags, writes private artifacts."""
 
+import importlib.util
 import json
 import os
 import signal
@@ -76,6 +77,18 @@ def _run_pytest(fixtures: bool) -> dict[str, object]:
         check=False,
     )
     return {"exit": completed.returncode, "summary": completed.stdout.strip().splitlines()[-1:]}
+
+
+def _write_unanswered_session(state: Path) -> None:
+    # Like a missing credential: a bound v4 log with the attempt but no assistant message.
+    # The attempt runs in a disposable checkout, so the shared fixture is loaded by path.
+    spec = importlib.util.spec_from_file_location(
+        "dsh_session", Path(__file__).resolve().parents[4] / "test_support" / "dsh.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.write_session(state, Path.cwd(), session_id="fake-observed", answered=False)
 
 
 def main() -> int:
@@ -160,6 +173,7 @@ def main() -> int:
     if mode == "auth":
         reason = {"kind": "error", "error": {"code": "MISSING_CREDENTIAL", "message": "missing"}}
         text = ""
+        _write_unanswered_session(state)
     events: list[dict[str, object]] = [
         {"type": "session", "sessionId": "fake-observed", "cwd": str(Path.cwd())},
         {"type": "status", "phase": "turn_start", "turn": 1},

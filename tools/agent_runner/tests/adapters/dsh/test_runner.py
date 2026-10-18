@@ -95,6 +95,9 @@ def test_real_process_state_and_stdin(
     if mode == "descendant":
         pid = int((attempt.work_dir / "child.pid").read_text())
         _assert_stopped(pid)
+    if mode == "auth":
+        # The unanswered v4 log is read but proves only the session; the state stays authentication.
+        assert (attempt.identity.session_id, attempt.identity.model) == ("fake-observed", None)
 
 
 def test_explicit_provider_key_is_used_without_ambient_credentials(
