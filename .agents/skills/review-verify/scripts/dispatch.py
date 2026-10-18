@@ -37,8 +37,13 @@ from tools.agent_runner import (  # noqa: E402
 )
 from tools.agent_runner.adapters import Adapter, load_adapter  # noqa: E402
 from tools.agent_runner.config import validate_config  # noqa: E402
-from tools.agent_runner.models import BatchResult  # noqa: E402
-from tools.agent_runner.workspace import WorkspaceError, resolve_revision  # noqa: E402
+from tools.agent_runner.models import BatchResult, CheckoutAudit  # noqa: E402
+from tools.agent_runner.workspace import (  # noqa: E402
+    CheckoutAuditError,
+    WorkspaceError,
+    require_auditable_checkouts,
+    resolve_revision,
+)
 
 SKILL = Path(__file__).resolve().parents[1] / "SKILL.md"
 REVIEW_FINDINGS = ROOT / ".agents/scripts/review_findings.py"
@@ -231,6 +236,7 @@ def dispatch(
                 raise ValueError("revision is not a commit")
     except WorkspaceError:
         raise ValueError("repository/from/to cannot be resolved") from None
+    require_auditable_checkouts(repository)
     try:
         raw: object = json.loads(Path(data.verified_file).read_text(encoding="utf-8"))
     except json.JSONDecodeError:
@@ -375,7 +381,16 @@ def check_batch(batch: Mapping[str, Any]) -> None:
     attempts = [attempt for result in batch["results"] for attempt in result["attempts"]]
     if not attempts or not all(attempt.get("stop_confirmed") is True for attempt in attempts):
         raise AcceptError("an attempt did not confirm its stop")
-    if batch.get("outside_changes"):
+    raw_diagnostics = batch.get("checkout_audit", [])
+    if not isinstance(raw_diagnostics, list):
+        raise AcceptError("invalid checkout audit diagnostics")
+    try:
+        diagnostics = [CheckoutAudit.model_validate(item) for item in cast(list[object], raw_diagnostics)]
+    except ValidationError:
+        raise AcceptError("invalid checkout audit diagnostics") from None
+    if any(item.kind in {"unavailable_before", "unavailable_after"} for item in diagnostics):
+        raise AcceptError("a checkout registered before the run cannot be audited; see batch.checkout_audit")
+    if diagnostics or batch.get("outside_changes"):
         raise AcceptError("a checkout registered before the run was changed")
 
 
@@ -505,6 +520,18 @@ def main(argv: list[str] | None = None, *, adapter_loader: Callable[[str], Adapt
         )
         request = json.loads(args.request.read_text(encoding="utf-8"))
         result = dispatch(config, request, args.output_dir, adapter_loader=adapter_loader)
+    except CheckoutAuditError as error:
+        print(
+            json.dumps(
+                {
+                    "state": "failed",
+                    "category": "environment",
+                    "checkout_audit": [finding.model_dump() for finding in error.findings],
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 1
     except (ConfigError, RunnerError, OSError, ValueError) as error:
         print(
             f"fix-check: configuration/input/run failed ({failure_category(error)}); "
@@ -521,6 +548,7 @@ def main(argv: list[str] | None = None, *, adapter_loader: Callable[[str], Adapt
                 "state": batch["state"],
                 "artifact_dir": batch["artifact_dir"],
                 "outside_changes": outside,
+                "checkout_audit": batch["checkout_audit"],
                 "review_changes": changes,
             }
         )

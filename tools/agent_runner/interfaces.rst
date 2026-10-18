@@ -140,7 +140,7 @@ Request の JSON フィールド:
 - schema_version: 1
 - run_id / request_id / agent_id / role: 識別子
 - work_dir: 専用 worktree の絶対パス
-- prompt: 作業範囲の指示を加えた依頼
+- prompt: 作業範囲の指示（呼び出し側が許可した例外の列挙を含む）を加えた依頼
 - deadline_seconds: 残り時間
 - result_shape: json または text
 
@@ -282,6 +282,12 @@ run は同期で全依頼の終了・停止確認まで待つ。
                          revision="HEAD", concurrency=2, output_dir=None, cancel=None)
 
 API は既存 asyncio event loop 内からは呼ばない。
+``write_exceptions`` は、呼び出し側が作業範囲の指示（``Work in this worktree only`` と ``writes=...``）への
+例外として許可するものの列。runner は空でなければ、その 2 行の直後に見出しと ``- <値>`` の行を順に置くだけで、
+内容を解釈・強制しない（sandbox ではない。DSH の ``sandbox_write_paths`` とは別）。
+例えば PR レビューの loop は、pr-review の helper が書く実行記録・保存先・保存ロックなどを渡す。
+各値は 1 行の印字可能な文字列で、空・前後の空白・改行・タブを含む値は何も作る前に RunnerError で拒否する。
+空なら指示は従来と同じ文字列になる。
 ``adapter_loader`` はテスト用に差し替えられる。既定は固定モジュールの loader。
 run_workflow は外部 checkout の警告を含む完全な結果を返すが、自動保存は CLI の責務。
 

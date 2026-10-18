@@ -157,6 +157,38 @@ def test_audit_reports_disappeared_checkout(repository: Path, tmp_path: Path) ->
     assert changed_checkouts(before) == [str(external)]
 
 
+def test_repair_of_moved_main_and_linked_worktree_preserves_all_resources(repository: Path, tmp_path: Path) -> None:
+    old_parent = tmp_path / "旧 root"
+    external = create_worktree(repository, "HEAD", old_parent / "checkout\n日本語")
+    (external / "tracked.txt").write_text("dirty tracked")
+    (external / "tracked.txt").chmod(0o751)
+    (external / "untracked.txt").write_text("untracked content")
+    (external / "ignored").mkdir()
+    (external / "ignored" / "resource").write_text("ignored content")
+    (external / "link").symlink_to("untracked.txt")
+    head = git(repository, "rev-parse", "HEAD")
+    moved_repository = tmp_path / "new-repository"
+    repository.rename(moved_repository)
+    moved_parent = tmp_path / "new-root"
+    old_parent.rename(moved_parent)
+    moved = moved_parent / external.name
+    before = snapshot_checkouts(moved_repository)
+    assert workspace.audit_checkouts(before)[0].kind == "unavailable_before"
+    assert before[str(external)] is None
+    git(moved_repository, "worktree", "repair", str(moved))
+    assert git(moved, "rev-parse", "HEAD") == head
+    assert git(moved, "rev-parse", "--git-common-dir") == str(moved_repository / ".git")
+    assert (moved / "tracked.txt").read_text() == "dirty tracked"
+    assert (moved / "tracked.txt").stat().st_mode & 0o777 == 0o751
+    assert (moved / "untracked.txt").read_text() == "untracked content"
+    assert (moved / "ignored" / "resource").read_text() == "ignored content"
+    assert os.readlink(moved / "link") == "untracked.txt"
+    fresh = workspace.require_auditable_checkouts(moved_repository)
+    assert set(fresh) == {str(moved_repository), str(moved)}
+    assert workspace.audit_checkouts(fresh) == []
+    assert changed_checkouts(before) == [str(external)]
+
+
 def test_audit_does_not_follow_untracked_symlink(repository: Path, tmp_path: Path) -> None:
     outside = tmp_path / "outside"
     outside.write_text("before")
@@ -232,6 +264,115 @@ def test_checkout_recovered_after_snapshot_still_warns(repository: Path, tmp_pat
     finally:
         gitfile.write_bytes(original)
     assert changed_checkouts(before) == [str(external)]
+
+
+@pytest.mark.parametrize(
+    ("kind", "reason", "locked", "prunable"),
+    [
+        ("missing", "checkout_missing", False, True),
+        ("locked", "checkout_missing", True, False),
+        ("broken", "git_unavailable", False, False),
+        ("unreadable", "git_unavailable", False, True),
+        ("file", "not_directory", False, True),
+    ],
+)
+def test_audit_diagnoses_unavailable_baseline(
+    repository: Path,
+    tmp_path: Path,
+    kind: str,
+    reason: str,
+    locked: bool,
+    prunable: bool,
+) -> None:
+    external = create_worktree(repository, "HEAD", tmp_path / "登録 checkout\n新しい場所")
+    if kind == "locked":
+        git(
+            repository,
+            "worktree",
+            "lock",
+            "--reason",
+            "SECRET lock reason",
+            str(external),
+        )
+    if kind in {"missing", "locked", "file"}:
+        shutil.rmtree(external)
+        if kind == "file":
+            external.write_text("SECRET not a directory")
+    elif kind == "broken":
+        (external / ".git").write_text(f"gitdir: {tmp_path / 'SECRET-broken'}\n")
+    else:
+        external.chmod(0)
+    try:
+        before = snapshot_checkouts(repository)
+        diagnostics = workspace.audit_checkouts(before)
+        assert [item.model_dump() for item in diagnostics] == [
+            {
+                "path": str(external),
+                "kind": "unavailable_before",
+                "reason": reason,
+                "locked": locked,
+                "prunable": prunable,
+            }
+        ]
+        with pytest.raises(workspace.CheckoutAuditError) as caught:
+            workspace.require_auditable_checkouts(repository)
+        assert caught.value.findings == diagnostics
+        assert "SECRET" not in str(caught.value)
+        assert changed_checkouts(before) == [str(external)]
+    finally:
+        if kind == "unreadable":
+            external.chmod(0o755)
+
+
+@pytest.mark.parametrize("mutation", ["change", "disappear", "recover"])
+def test_audit_distinguishes_changes_from_unavailability(repository: Path, tmp_path: Path, mutation: str) -> None:
+    external = create_worktree(repository, "HEAD", tmp_path / "external")
+    gitfile = external / ".git"
+    original = gitfile.read_bytes()
+    if mutation == "recover":
+        gitfile.write_text(f"gitdir: {tmp_path / 'absent'}\n")
+    before = snapshot_checkouts(repository)
+    if mutation == "recover":
+        gitfile.write_bytes(original)
+    elif mutation == "disappear":
+        shutil.rmtree(external)
+    else:
+        (external / "tracked.txt").write_text("modified")
+    diagnostics = workspace.audit_checkouts(before)
+    assert [item.path for item in diagnostics] == [str(external)]
+    assert (
+        diagnostics[0].kind
+        == {
+            "change": "content_changed",
+            "disappear": "unavailable_after",
+            "recover": "unavailable_before",
+        }[mutation]
+    )
+    assert (
+        diagnostics[0].reason
+        == {
+            "change": "content_changed",
+            "disappear": "checkout_missing",
+            "recover": "git_unavailable",
+        }[mutation]
+    )
+    assert changed_checkouts(before) == [str(external)]
+    if mutation == "recover":
+        assert workspace.require_auditable_checkouts(repository)[str(external)] is not None
+        assert workspace.audit_checkouts(snapshot_checkouts(repository)) == []
+
+
+def test_preflight_registration_failure_is_environment_diagnostic(
+    repository: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unavailable(*_: object) -> bytes:
+        raise WorkspaceError()
+
+    monkeypatch.setattr(workspace, "_git", unavailable)
+    with pytest.raises(workspace.CheckoutAuditError) as caught:
+        workspace.require_auditable_checkouts(repository)
+    assert caught.value.findings[0].path == str(repository)
+    assert caught.value.findings[0].kind == "unavailable_before"
 
 
 def test_unavailable_fingerprint_is_attempted_once(repository: Path, monkeypatch: pytest.MonkeyPatch) -> None:

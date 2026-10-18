@@ -233,6 +233,26 @@ class Result(StrictModel):
     fallback_exhausted: bool = False
 
 
+AuditReason = Literal[
+    "checkout_missing",
+    "not_directory",
+    "git_unavailable",
+    "filesystem_unavailable",
+    "audit_unavailable",
+    "content_changed",
+]
+
+
+class CheckoutAudit(StrictModel):
+    """Observations only: fixed reasons, no Git stderr or attribution to a worker."""
+
+    path: str
+    kind: Literal["unavailable_before", "unavailable_after", "content_changed"]
+    reason: AuditReason
+    locked: bool = False
+    prunable: bool = False
+
+
 class BatchResult(StrictModel):
     schema_version: Literal[1] = 1
     run_id: Identifier
@@ -240,5 +260,6 @@ class BatchResult(StrictModel):
     assignments: dict[Identifier, list[Identifier]]
     results: list[Result]
     outside_changes: list[str]
+    checkout_audit: list[CheckoutAudit] = Field(default_factory=list[CheckoutAudit])
     elapsed_seconds: ElapsedSeconds
     artifact_dir: Path

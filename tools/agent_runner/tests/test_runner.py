@@ -219,6 +219,15 @@ def test_unavailable_registered_checkout_does_not_prevent_cli_run(repository: Pa
         assert attempt.exit_code == 0 and attempt.stop_confirmed
         assert "literal prompt" in str(attempt.payload)
         assert batch.outside_changes == [str(external)]
+        assert [item.model_dump() for item in batch.checkout_audit] == [
+            {
+                "path": str(external),
+                "kind": "unavailable_before",
+                "reason": "git_unavailable",
+                "locked": False,
+                "prunable": False,
+            }
+        ]
     finally:
         gitfile.write_bytes(original)
 
@@ -630,6 +639,68 @@ def test_nested_invocation_and_invalid_inputs_fail_closed(repository: Path, monk
         run_workflow(configuration(), "audit", "prompt", repository, concurrency=0)
     with pytest.raises(RunnerError):
         run_workflow(configuration(), "audit", "prompt", repository, revision="--dangerous")
+
+
+def _scope_lines(batch_prompt: object, body: str) -> list[str]:
+    """Request.prompt から caller の本文を除いた、runner の作業範囲の指示の空でない行。"""
+    assert isinstance(batch_prompt, str) and batch_prompt.endswith(body)
+    return [line for line in batch_prompt.removesuffix(body).splitlines() if line]
+
+
+def test_write_exceptions_follow_the_work_scope_lines(repository: Path) -> None:
+    body = "review the change"
+    exceptions = ("/x/reviews: run records", "uv cache with spaces")
+    plain = run_workflow(configuration(), "audit", body, repository, adapter_loader=lambda _: FakeAdapter())
+    granted = run_workflow(
+        configuration(), "audit", body, repository, adapter_loader=lambda _: FakeAdapter(), write_exceptions=exceptions
+    )
+    prompts = [cast(dict[str, object], batch.results[0].attempts[-1].payload)["prompt"] for batch in (plain, granted)]
+
+    def kinds(lines: list[str]) -> list[str]:
+        return [line.split(":", 1)[0].split("=", 1)[0] for line in lines]
+
+    scope = _scope_lines(prompts[0], body)
+    # 例外を渡さない呼び出し（fix-check・self-review・CLI）の指示は作業範囲の 2 行のまま
+    assert kinds(scope) == ["Work in this worktree only", "writes"]
+    lines = _scope_lines(prompts[1], body)
+    assert kinds(lines[:2]) == kinds(scope) and lines[1] == scope[1]
+    assert lines[2] == runner.EXCEPTIONS_HEADING
+    assert lines[3:] == [f"- {item}" for item in exceptions]
+
+
+def test_write_exceptions_keep_non_ascii_spaces_inside_a_line(repository: Path) -> None:
+    # 全角空白・NBSP を含むブランチ名は正しいレビューディレクトリ名になる（git check-ref-format を通る）
+    body = "review the change"
+    exceptions = ("/x/#7-feat-日本語\u3000名前: run records", "/y/a\u00a0b: lock")
+    batch = run_workflow(
+        configuration(), "audit", body, repository, adapter_loader=lambda _: FakeAdapter(), write_exceptions=exceptions
+    )
+    prompt = cast(dict[str, object], batch.results[0].attempts[-1].payload)["prompt"]
+    assert _scope_lines(prompt, body)[3:] == [f"- {item}" for item in exceptions]
+
+
+@pytest.mark.parametrize("value", ["a\nb", "a\rb", "a\u2028b", "a\x85b", "a\tb", "a\x00b", " a", "a ", "", 1])
+def test_invalid_write_exceptions_are_rejected_before_any_output(
+    repository: Path, tmp_path: Path, value: object
+) -> None:
+    output = tmp_path / "output"
+    with pytest.raises(RunnerError):
+        run_workflow(
+            configuration(),
+            "audit",
+            "prompt",
+            repository,
+            output_dir=output,
+            write_exceptions=("ok", cast(str, value)),
+        )
+    assert not output.exists()
+
+
+def test_a_bare_string_is_not_split_into_exceptions(repository: Path, tmp_path: Path) -> None:
+    output = tmp_path / "output"
+    with pytest.raises(RunnerError):
+        run_workflow(configuration(), "audit", "prompt", repository, output_dir=output, write_exceptions="abc")
+    assert not output.exists()
 
 
 def test_existing_or_symlink_output_is_never_reused(repository: Path, tmp_path: Path) -> None:

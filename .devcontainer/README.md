@@ -356,6 +356,51 @@ worktree 内で作業する指示と、既存 checkout の内容の前後比較�
 停止未確認の領域を勝手に force で消さない。
 待ち方は [.agents/monitoring-runtimes.md](../.agents/monitoring-runtimes.md) を参照する。
 
+role/fix-check の入口が `category=environment` と `checkout_audit` を返した場合は、
+全登録の接続を確認する。`unavailable_before` は開始前からの監査不能、`unavailable_after` は実行中の
+監査不能、`content_changed` は内容の変化を示す。いずれも worker が変更したという帰属ではない。
+`locked`/`prunable` は観測した登録の情報であり、ロック理由や Git stderr は出力しない。
+
+- 本体が移動済みなら、所有者が対象 run の所有・停止を確認し、移動先の `.git`、管理側の
+  `.git/worktrees/<管理名>/gitdir`、`commondir` の対応を照合して、対象だけを
+  `git worktree repair <移動後のworktreeパス>` で修復する。HEAD と tracked/untracked/ignored の
+  内容・モード・symlink を前後で比較し、dirty な資源も失わないことを確認する。
+- `prunable` は登録パスに接続できないという情報であり、本体の消失や削除許可の証明ではない。
+  移動先に本体が残る場合も表示されるため、repair 前に一括 `git worktree prune` をしない。
+- 親ディレクトリが消失していても Git 登録が残る場合は回収済みとしない。loop は残存登録を
+  `retained` として報告する。保存済み run/result と実プロセスの停止、登録と所有資源の対応を確認し、
+  所有者が対象パスだけの回収を判断する。ディレクトリ不在や `prunable` だけを根拠に削除しない。
+- locked、権限不足、壊れた gitdir、未知の所有、別 run の登録は保護する。監査範囲や sandbox を
+  狭めて進めず、照合できない対象は残存パスと理由を記録する。
+
+復旧後の**新しい snapshot**で、監査対象の repository の全 checkout を読み取れることを確認する。
+診断は親の checkout の root（取り込み前はこの手順を含む feature worktree）で実行する。
+監査対象は、`category=environment` を返した role/fix-check の依頼の `repository` である。
+制作物ならそのリポジトリの絶対パスを `TARGET_REPOSITORY` に設定する。親自身を調べる場合も同様。
+パスは引用して渡すので、空白や改行を含んでいても使える。診断は修復・回収を行わない。
+
+```bash
+uv run --project tools/devenv --locked python - "${TARGET_REPOSITORY:?}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+from tools.agent_runner.workspace import CheckoutAuditError, require_auditable_checkouts
+
+try:
+    snapshot = require_auditable_checkouts(Path(sys.argv[1]))
+except CheckoutAuditError as error:
+    print(json.dumps({"category": "environment", "checkout_audit": [item.model_dump() for item in error.findings]},
+                     ensure_ascii=False))
+    raise SystemExit(1)
+print(json.dumps({"auditable_checkouts": len(snapshot)}))
+PY
+```
+
+成功した場合だけ、新しい run で role/fix-check を再実行する。開始時に監査不能だった古い run の
+警告は、途中で接続が回復しても無変更として追認せず、停止記録や消費済みのレビュー予約を上書きしない。
+汎用 runner の子の成功と監査警告は別であり、厳格な受け取り入口は監査不能も拒否する。
+
 ## エージェント向けツールの導入
 
 `install_beforehand.bash` は Claude Code のプラグインと Playwright chromium を
