@@ -73,6 +73,10 @@ _REMOTE_URLS = (
     re.compile(rf"(?:ssh://)?git@(?i:github\.com)[:/]{_GITHUB_REPOSITORY_PATH}"),
 )
 _STATUS_LINE = re.compile(r"HTTP/[0-9.]+ (?P<status>[0-9]{3})\b")
+# 自分で作って消す一時のリポジトリに、作った時点で書く設定（#64）。git は fetch・commit の後に
+# ``git maintenance run --auto --detach`` を切り離して起動し、その子が objects/ に書き込む。
+# 削除と重なると rmtree が ENOTEMPTY で失敗し、作りかけの残骸も残るので、以後の操作で起動させない
+NO_AUTO_MAINTENANCE = ("maintenance.auto", "false")
 _REVIEW_DIR_NAME = re.compile(rf"#{_NUMBER}-.+")
 
 
@@ -675,6 +679,7 @@ def clone_repository(target: CloneTarget, dest: Path, *, checkout_branch: bool) 
     既定（検証用）は ``--no-checkout`` で clone して PR の head を ``refs/pr-review/<N>`` に固定する。
     ``checkout_branch``（修正用）は head ブランチを checkout し、先端が PR の head であることを確かめる。
     fork の PR は止まる。
+    clone には ``NO_AUTO_MAINTENANCE`` を書き、以後の fetch・commit で自動 maintenance を起動させない。
     失敗したら作りかけの ``dest`` を残し、パスを報告する（片付けは呼び出し側が行う）。
     """
     if dest.exists() or dest.is_symlink():
@@ -689,7 +694,8 @@ def clone_repository(target: CloneTarget, dest: Path, *, checkout_branch: bool) 
             "head ブランチを修正できません",
         )
     options = [f"--branch={target.head_ref}"] if checkout_branch else ["--no-checkout"]
-    cloned = _run(["git", "clone", "--quiet", *options, "--", target.clone_url, str(dest)])
+    config = ["--config", "=".join(NO_AUTO_MAINTENANCE)]
+    cloned = _run(["git", "clone", "--quiet", *config, *options, "--", target.clone_url, str(dest)])
     if cloned.returncode:
         raise TargetError(EXIT_CLONE, f"{target.clone_url} を {dest} に clone できません: {cloned.stderr.strip()}")
     if not checkout_branch:

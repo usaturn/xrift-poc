@@ -677,6 +677,36 @@ def test_clone_for_fix_checks_out_head_branch(tmp_path: Path, monkeypatch: pytes
     assert git(root, "rev-parse", "HEAD") == head
 
 
+def maintenance_launches(trace: Path) -> list[str]:
+    """GIT_TRACE2 の記録から、git が起動した ``git maintenance run`` の行を拾う（#64）。"""
+    return [line for line in trace.read_text(encoding="utf-8").splitlines() if "maintenance run" in line]
+
+
+def test_clone_for_review_does_not_start_auto_maintenance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    remote, head = make_remote(tmp_path)
+    redirect(monkeypatch, remote, "https://github.com/usaturn/wabun-rst-ulint.git")
+    trace = tmp_path / "trace2.txt"
+    monkeypatch.setenv("GIT_TRACE2", str(trace))
+
+    target.clone_repository(clone_target(head), tmp_path / "clone", checkout_branch=False)
+
+    assert "cmd_name fetch" in trace.read_text(encoding="utf-8")
+    assert maintenance_launches(trace) == []
+
+
+def test_commit_in_fix_clone_does_not_start_auto_maintenance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    remote, head = make_remote(tmp_path)
+    redirect(monkeypatch, remote, "https://github.com/usaturn/wabun-rst-ulint.git")
+    root = target.clone_repository(clone_target(head), tmp_path / "clone", checkout_branch=True)
+    trace = tmp_path / "trace2.txt"
+    monkeypatch.setenv("GIT_TRACE2", str(trace))
+
+    git(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "fix")
+
+    assert "cmd_name commit" in trace.read_text(encoding="utf-8")
+    assert maintenance_launches(trace) == []
+
+
 def test_clone_for_fix_rejects_fork(tmp_path: Path) -> None:
     with pytest.raises(target.TargetError) as excinfo:
         target.clone_repository(
