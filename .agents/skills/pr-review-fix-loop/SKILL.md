@@ -96,7 +96,7 @@ uv run --project "$TOOL_ROOT/tools/devenv" --locked python \
 ## 止まったとき（中断・再開・回収）
 
 - **再開**: `status --run <run_dir>`（PR しか分からなければ `status <PR>`）の `next` を実行する。状態は `<review_dir>/loop/` にだけあり、会話の記憶に頼らない。保存済みの `options.hold_action`（旧 run の null を含む）を維持し、新規起動の既定値で上書きしない。
-- **`review` の終了コード 3（`interrupted_review`）**: 前のレビューが結果を残さずに止まった。レビュアーを起動し直さない。runner とレビュアーのプロセスが残っていないことを `ps` などで確かめ、その事実を `recover --run <run_dir> --operator-confirmed-stopped "<確かめた事実>"` に渡す。記録した資源だけを回収し、run は `abandoned` になる。続けるときは `start` からやり直す。出力の `retained` は回収で残したパス、`reviewer_retained` はレビュアーが報告した残存パス（「最終報告」と同じ扱い）である。
+- **`review` の終了コード 3（`interrupted_review`）**: 前のレビューが結果を残さずに止まった。レビュアーを起動し直さない。runner とレビュアーのプロセスが残っていないことを `ps` などで確かめ、その事実を `recover --run <run_dir> --operator-confirmed-stopped "<確かめた事実>"` に渡す。記録した資源だけを回収し、run は `abandoned` になる。続けるときは `start` からやり直す。出力の `retained` は回収で残したパスと、サイクルのディレクトリに残っている `parent-pr-data`・`rerun-parent-pr-data`、`reviewer_retained` はレビュアーが報告した残存パス（「最終報告」と同じ扱い）である。
 - **終了コード 7（`resources`）**: 同じく、停止を確かめてから `recover` に事実を渡す。確かめられないときは、ロックと資源を残したまま、完全パスを利用者に報告して止まる。
 - **`review` の終了コード 4（`head_moved`）**: `cycle-begin` の後に PR の HEAD が動いた。`next` のとおり `finish --abort` で止め、新しい run を始める。
 - **`review` の終了コード 5（`runner`）**: runner がレビュアーを起動できなかった。何も起動していなければ `next` は `review` で、原因（agent-runner の設定、入れ子の起動など）を直してからやり直す。出力が残っているときは `status` で状態を確かめる。
@@ -119,7 +119,7 @@ uv run --project "$TOOL_ROOT/tools/devenv" --locked python \
 - サイクルごとに: HEAD、レビューの `mode`、レビュアーごとの状態・実際の担当・モデル、判断の記録（round とコメントの URL）、結果、push した commit、`outside_changes`（runner の監査が観測した、作業場所の外の変更。1 回目と再実行を合わせた値）
 - 最終の結果、`ended_by`、マージしたか、`stop_reason`
 - 関連 Issue は、finalize の結果に含まれる、更新後に観測した state を書く。GitHub 側の自動 close を含め、Issue が閉じたことを要件が完了したことの証明として扱わない（要件の評価は review-fix-planning の記録に従う）
-- loop が残した runner の出力（`finish` の `retained`）の完全パスと、回収の操作（「止まったとき」の `recover`）
+- loop が残した runner の出力と、残っている `parent-pr-data`・`rerun-parent-pr-data`（どちらも `finish` の `retained`）の完全パスと、回収の操作（「止まったとき」の `recover`）。`parent-pr-data`・`rerun-parent-pr-data` は `recover` では消えない。AGENTS.md の「コミットしないファイルの置き場所」に従い、利用者が原因を確かめてから消す
 - レビュアーの pr-review が残したと報告したパス（`finish` の `reviewer_retained`）。パスごとに、報告したサイクル・レビュアー・試行（`observed`）と、`finish` の時点の状態（`exists`・`registered`）を分けて書く。loop はこれを回収しない。司令塔も消さず、完全パスを利用者に報告する
 - 所要時間（全体とサイクルごと）
 

@@ -572,7 +572,11 @@ def test_resumed_staged_review_is_finalized_without_hooks(
 def test_parent_input_is_removed_only_after_an_accepted_dsh_review(
     loop: Any, env: Any, monkeypatch: pytest.MonkeyPatch, case: str | None
 ) -> None:
-    """確定して DSH が受け付けられたレビューの親入力だけを消す。確定前・却下では残し、retained で報告する。"""
+    """確定して DSH が受け付けられたレビューの親入力だけを消す。確定前・却下では残し、retained で報告する。
+
+    全レビュアーの失敗（終了コード 6）は review の正常の出力を作らないので、残した入力は run を終える
+    finish・recover の retained に出る。消えた入力は報告しない。
+    """
     dsh_parent_env(loop, env, monkeypatch)
     staged_reviewer(loop, env, monkeypatch, case=case)
     run_dir = Path(env.start()["run_dir"])
@@ -598,6 +602,8 @@ def test_parent_input_is_removed_only_after_an_accepted_dsh_review(
         assert (env.review_dir / "commandcode-actual-model.md").is_file()
         assert list((env.review_dir / "findings").iterdir()) and list((env.review_dir / "runs").iterdir())
         assert (run_dir / "cycle-1" / "comments.json").is_file()
+        finished = loop.finish(run_dir, abort="external: test ends the run")
+        assert str(first) not in finished["retained"]
         return
     kept = [first]
     if case == "identity":
@@ -614,6 +620,43 @@ def test_parent_input_is_removed_only_after_an_accepted_dsh_review(
     for path in kept:
         assert (path / "snapshot.json").is_file()
         assert str(path) in retained
+    if case == "unstopped":
+        # 停止を確かめられない runner の出力があるので、finish はロックを保持して止まる。回収の出力に入力が出る
+        with pytest.raises(loop.LoopError) as error:
+            loop.finish(run_dir, abort="external: fixture reviewer failed")
+        assert error.value.code == 7
+        ended = loop.recover(run_dir, operator_confirmed_stopped="fixture: the fake runner has no process")
+    else:
+        ended = loop.finish(run_dir, abort="external: fixture reviewer failed")
+    for path in kept:
+        assert str(path) in ended["retained"]
+        assert (path / "snapshot.json").is_file()
+
+
+def test_finish_reports_parent_input_left_by_failed_after_run(
+    loop: Any, env: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """後処理の失敗で settle_parent_input に届かなかった親入力も、finish の retained に出る。"""
+    dsh_parent_env(loop, env, monkeypatch)
+    staged_reviewer(loop, env, monkeypatch, case=None)
+    log = tmp_path / "after-run.log"
+    log.write_text("after_run failed\n", encoding="utf-8")
+
+    def failed_after_run(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        return [{"state": "failed", "stop_confirmed": True, "stdout_path": str(log), "stderr_path": str(log)}]
+
+    monkeypatch.setattr(loop, "run_after_run", failed_after_run)
+    run_dir = Path(env.start()["run_dir"])
+    loop.cycle_begin(run_dir, github=env.github)
+    with pytest.raises(loop.LoopError) as error:
+        loop.review(run_dir, github=env.github, tmp_root=env.tmp_root)
+    assert (error.value.code, error.value.stage) == (5, "after_run")
+    # 偽の dispatch はこのプロセスの cwd を runner の worktree に移している。finish が回収する前に戻す
+    monkeypatch.chdir(env.root)
+    finished = loop.finish(run_dir, abort="external: fixture after_run failed")
+    parent_input = run_dir / "cycle-1" / "parent-pr-data"
+    assert str(parent_input) in finished["retained"]
+    assert (parent_input / "snapshot.json").is_file()
 
 
 def parent_input_dir(root: Path) -> Path:

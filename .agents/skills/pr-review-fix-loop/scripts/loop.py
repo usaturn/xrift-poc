@@ -1588,6 +1588,21 @@ def _review_retained(review: ReviewPart) -> list[str]:
     return list(dict.fromkeys(paths))
 
 
+def _kept_parent_inputs(run_dir: Path, cycles: Sequence[CycleRecord]) -> list[str]:
+    """各サイクルのディレクトリにいま残っている親入力（1 回目と再実行）の完全パス。中身は読まず、消さない。
+
+    記録（cleanup.retained）ではなく実在で決めるので、settle_parent_input に届かなかった経路（後処理の失敗・
+    中断）で残ったものも拾い、消えたものは報告しない。
+    """
+    paths: list[str] = []
+    for cycle in cycles:
+        for prefix in ("", "rerun-"):
+            path = cycle_dir(run_dir, cycle.cycle) / f"{prefix}parent-pr-data"
+            if path.exists() or path.is_symlink():
+                paths.append(str(path))
+    return paths
+
+
 def _review_outside_changes(review: ReviewPart) -> list[str]:
     """サイクルの 1 回目と再実行の runner の監査が観測した、作業場所の外の変更。"""
     parts = (review, review.rerun) if review.rerun is not None else (review,)
@@ -1976,14 +1991,21 @@ def recover(run_dir: Path, *, operator_confirmed_stopped: str | None = None) -> 
     run.ended_at = now()
     save_run(run_dir, run)
     released = release_lock(Path(run.review_dir), run.run_id)
+    cycles = load_cycles(run_dir)
     return {
         "status": "ok",
         "run_id": run.run_id,
         "state": run.state,
         "result": run.result.model_dump(mode="json") if run.result else None,
         "lock_released": released,
-        "retained": sorted({*retained, *(resource.path for resource in run.resources if resource.state != "removed")}),
-        "reviewer_retained": _reviewer_retained(run, load_cycles(run_dir)),
+        "retained": sorted(
+            {
+                *retained,
+                *(resource.path for resource in run.resources if resource.state != "removed"),
+                *_kept_parent_inputs(run_dir, cycles),
+            }
+        ),
+        "reviewer_retained": _reviewer_retained(run, cycles),
     }
 
 
@@ -2042,7 +2064,8 @@ def finish(run_dir: Path, *, abort: str | None = None) -> dict[str, Any]:
         "result": run.result.model_dump(mode="json"),
         "cycles": [_cycle_summary(cycle) for cycle in existing],
         "lock_released": released,
-        "retained": [resource.path for resource in run.resources if resource.state == "retained"],
+        "retained": [resource.path for resource in run.resources if resource.state == "retained"]
+        + _kept_parent_inputs(run_dir, existing),
         # 停止を確認できない資源が無いと確かめた後（上の audit_resources）に、報告された残存パスの状態を見る
         "reviewer_retained": _reviewer_retained(run, existing),
     }

@@ -106,7 +106,7 @@ xrift-poc は、XRift のワールドとアイテムを作るための開発環�
 - DSH のレビュアーの作業領域は `/tmp` に置けない。DSH の sandbox（`tools/agent_runner/dsh_sandbox.py`）はツールの呼び出しごとに `/tmp` を新しい tmpfs にするので、ホストの `/tmp` は DSH から見えず、DSH が `/tmp` に書いたものは次の呼び出しで消える。DSH に書き込みを許すのは、隔離した HOME・TMPDIR と runner の worktree（runner と loop が停止の後に消すか回収する）と、loop が渡す保存先（PR のレビューディレクトリ）と保存ロックだけである。helper のセッションは呼び出しをまたいで使い、DSH が止まった後に loop の helper が確定するので、保存先の中に置く
 - DSH のレビュアーの作業領域の片付け
   - helper のセッション: レビューを保存できたら、loop の helper（`review_run.py` の `finalize_parent_batch`）がセッションと、空になった `.staging/` の階層を消す。保存できなかったセッションは残り、PR 修正ループの `finish`・`status`・`recover` が `reviewer_retained` に完全パスと今の状態を出す
-  - loop の helper が渡す入力: そのレビュー（1 回目か再実行）が確定し、受け付けたレビュアーがいて、DSH の試行に失敗・却下が無ければ、loop が消す（`loop.py` の `settle_parent_input`）。DSH の試行が失敗・却下された、または確定する前に止まったレビューの入力は、そのレビュアーに渡した証拠として残す。レビューの検査まで進んだときは、残した入力を `review` の出力の `retained` に載せる
+  - loop の helper が渡す入力: そのレビュー（1 回目か再実行）が確定し、受け付けたレビュアーがいて、DSH の試行に失敗・却下が無ければ、loop が消す（`loop.py` の `settle_parent_input`）。DSH の試行が失敗・却下された、または確定する前に止まったレビューの入力は、そのレビュアーに渡した証拠として残す。残した入力は、run を終える `finish`・`recover` の出力の `retained` に、いま残っているものの完全パスで載る。受け付けたレビュアーがいて `review` が正常に返ったときは、その出力の `retained` にも載る
   - 残ったものは loop と司令塔が消さない。利用者が原因を確かめ、レビュアーを起動したループの run（または runner の caller）が終わった（`finish` か `recover` でロックを解放した）後に、セッションは `.staging/<run>/` ごと、入力はそのディレクトリごと消す。セッションの中の private clone と worktree は、他のリポジトリに worktree の登録を残さない
 - `/tmp` の既存残骸は `.devcontainer/cleanup-workspace.bash` が安全条件付きで片付ける。`items/`・`worlds/`・`reviews/`・`tmp/agents/` は片付けの対象にしない。`git clean -fdx` のように未追跡のファイルを一括で消すコマンドを使わない
 

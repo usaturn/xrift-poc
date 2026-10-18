@@ -26,7 +26,7 @@ reviews/<owner>/<repo>/#<PR>-<ブランチ>/
 ```
 
 - レビューディレクトリの直下には `<model>.md` 以外のファイルを置かない（`.agents/review-findings.md` 2 章）。`loop/` はサブディレクトリである。
-- `parent-pr-data/`・`rerun-parent-pr-data/` は、helper が `review_run.py` の `prepare_parent` で作り、DSH のレビュアーは `Request.prompt` の `parent_pr_data`（path と SHA-256）で受け取る。DSH の sandbox はホストの `/tmp` を隠すので、`/tmp` には置けない。そのレビュー（1 回目か再実行）が確定し（runner の結果の保存・`finalize_parent_batch` による確定・後処理・検査・runner の出力の回収）、受け付けたレビュアーがいて、DSH の試行がどれも受け付けた結果の最後の試行なら、helper が消す（`settle_parent_input`）。それ以外（DSH の試行の失敗・却下、受け付けたレビュアーが無い、確定する前の停止）は、そのレビュアーに渡した証拠として残す。検査まで進んだレビューでは、残したパスを `review.cleanup.retained`（再実行は `review.rerun.cleanup.retained`）に載せる。残ったものを消す時点は AGENTS.md の「コミットしないファイルの置き場所」に従う
+- `parent-pr-data/`・`rerun-parent-pr-data/` は、helper が `review_run.py` の `prepare_parent` で作り、DSH のレビュアーは `Request.prompt` の `parent_pr_data`（path と SHA-256）で受け取る。DSH の sandbox はホストの `/tmp` を隠すので、`/tmp` には置けない。そのレビュー（1 回目か再実行）が確定し（runner の結果の保存・`finalize_parent_batch` による確定・後処理・検査・runner の出力の回収）、受け付けたレビュアーがいて、DSH の試行がどれも受け付けた結果の最後の試行なら、helper が消す（`settle_parent_input`）。それ以外（DSH の試行の失敗・却下、受け付けたレビュアーが無い、確定する前の停止）は、そのレビュアーに渡した証拠として残す。検査まで進んだレビューでは、残したパスを `review.cleanup.retained`（再実行は `review.rerun.cleanup.retained`）に載せる。`finish`・`recover` は、記録ではなくサイクルのディレクトリにいま残っているものを調べ、その完全パスを出力の `retained` に載せる（6 章）。後処理の失敗や中断で記録に載らなかった入力も含み、消えた入力は載せない。残ったものを消す時点は AGENTS.md の「コミットしないファイルの置き場所」に従う
 - runner の worktree と出力は、`${TMPDIR:-/tmp}/xrift-poc-pr-loop-XXXXXX/cycle-<n>-review/` に一意に作る。停止を確認した後に helper が回収する（`run.json` の `resources`）。
 
 ## 2. ロック（`lock.json`）
@@ -117,7 +117,7 @@ reviews/<owner>/<repo>/#<PR>-<ブランチ>/
 
 `finish`・`status` の `cycles[]` の各要素にも、同じ集約の `outside_changes` がある。
 
-`finish`・`status`・`recover` の出力の `retained` は、loop が記録した runner の出力（`run.json` の `resources`）のうち残したものである。レビュアーの pr-review が残したと報告したパスは、別のキー `reviewer_retained` に置く。loop はこれを所有せず、回収しない（`recover` も消さない）。
+`finish`・`recover` の出力の `retained` は、loop が記録した runner の出力（`run.json` の `resources`）のうち残したものと、サイクルのディレクトリにいま残っている `parent-pr-data`・`rerun-parent-pr-data`（1 章）である。`status` は `retained` を返さない。レビュアーの pr-review が残したと報告したパスは、別のキー `reviewer_retained` に置く。loop はこれを所有せず、回収しない（`recover` も消さない）。
 
 | キー | 値 |
 | --- | --- |
