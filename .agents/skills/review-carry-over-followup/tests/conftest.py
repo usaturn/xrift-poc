@@ -3,15 +3,21 @@
 PR のコメントは GitHub の issue comment の API の形（``gh api --paginate --slurp`` のページの配列）で作り、
 判断の記録は ``review_records.compose_comment`` で本物の状況コメントにする。``fold`` と判定フィルタは
 実物（``review_records.py`` の CLI と ``jq``）を実行する。PR はすべて架空の usaturn/xrift-poc#900 である。
+
+SKILL.md のシェルの手順は、1 行目の ``# review-carry-over-followup <目印>`` で取り出し、bash と zsh で実行する。
 """
 
 from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import re
+import shutil
 import subprocess
 import sys
-from collections.abc import Sequence
+import textwrap
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -20,6 +26,7 @@ import pytest
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = Path(__file__).resolve().parents[4]
+SKILL = SKILL_DIR / "SKILL.md"
 FILTER = SKILL_DIR / "scripts/previous_followups.jq"
 RECORDS_SCRIPT = REPO_ROOT / ".agents/scripts/review_records.py"
 REPOSITORY = "usaturn/xrift-poc"
@@ -157,3 +164,35 @@ class CarryOverKit:
 @pytest.fixture
 def carry_over_kit(tmp_path: Path) -> CarryOverKit:
     return CarryOverKit(tmp_path)
+
+
+class SkillShell:
+    """SKILL.md のシェルの手順を取り出し、bash か zsh で実行する。"""
+
+    @staticmethod
+    def block(marker: str) -> str:
+        """1 行目が ``# review-carry-over-followup <marker>`` の bash のブロック。リストの字下げは外す。"""
+        first = f"(?P=indent)# review-carry-over-followup {re.escape(marker)}\n"
+        pattern = rf"^(?P<indent> *)```bash\n(?P<body>{first}.*?)\n(?P=indent)```$"
+        found = list(re.finditer(pattern, SKILL.read_text(encoding="utf-8"), re.DOTALL | re.MULTILINE))
+        assert len(found) == 1, f"{SKILL}: {marker} のブロックが {len(found)} 件"
+        return textwrap.dedent(found[0].group("body"))
+
+    @staticmethod
+    def run(
+        shell: str, script: str, *, cwd: Path, env: Mapping[str, str], replace_env: bool = False
+    ) -> subprocess.CompletedProcess[str]:
+        """``script`` を実行する。zsh は利用者の設定を読まない（``-f``）。``replace_env`` なら ``env`` だけを渡す。
+
+        シェルはテストの ``PATH`` で探す（``replace_env`` の ``PATH`` には、シェルを置かないことがある）。
+        """
+        found = shutil.which(shell)
+        assert found is not None, f"{shell} が PATH に無い"
+        argv = [found, "-f", "-c", script] if shell == "zsh" else [found, "-c", script]
+        environ = dict(env) if replace_env else {**os.environ, **env}
+        return subprocess.run(argv, cwd=cwd, env=environ, capture_output=True, text=True, check=False)
+
+
+@pytest.fixture
+def skill_shell() -> SkillShell:
+    return SkillShell()

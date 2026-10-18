@@ -40,8 +40,11 @@ PR のレビューで直さなかった候補を、今のコミット済みの�
 3. 書き込み先を確かめる。`PR_REPO` が親の origin（`usaturn/xrift-poc`）か、親の main checkout の制作物のうち `route_target.py` が `product` と判定し `repository` が `PR_REPO` と一致するものだけに書き込む。どちらでもなければ、読み取りの調査まではしてよいが、Issue・コメントを書かずに報告する。制作物の origin を確かめられないときに、親へ代わりに起票しない
 
    ```bash
-   for dir in "$PARENT"/items/*/ "$PARENT"/worlds/*/; do
-     [ -d "$dir" ] && uv run --no-project python "$PARENT/.agents/scripts/route_target.py" "$dir"
+   # review-carry-over-followup write targets
+   # glob を使わない（zsh は一致しない glob を no matches found にし、ループ全体を実行しない）。
+   # items/・worlds/ の片方が無いときの find のエラーは表示しない（無い側の制作物が無いだけ）
+   find "$PARENT/items" "$PARENT/worlds" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | while IFS= read -r dir; do
+     uv run --no-project python "$PARENT/.agents/scripts/route_target.py" "$dir" < /dev/null
    done | jq -s --arg repo "$PR_REPO" \
      '[.[] | select(.kind == "product" and ((.repository // "") | ascii_downcase) == ($repo | ascii_downcase))]'
    ```
@@ -81,24 +84,59 @@ jq -n --slurpfile comments "$SESSION/comments.json" --slurpfile state "$SESSION/
 
 ### 3. 調べるコミットを固定して調べ直す
 
-- 調べるコミット: open の PR は現在の PR head（`headRefOid`）、マージ済みの PR はマージ先（`baseRefName`）の最新、未マージで close された PR は最後の PR head と既定ブランチを区別する（既定ブランチに入っていない変更を、稼働中の問題として扱わない）。完全な SHA で固定し、元のレビューの HEAD と混ぜない
-- `TARGET_ROOT` は `target.json` の `target_root`（親の PR なら親の main checkout）。null（制作物など）なら、先に `REPRO_ROOT` を作り、`review_target.py clone --target "$SESSION/target.json" --dest "$REPRO_ROOT/repo"` の一時 clone を `TARGET_ROOT` にする。どちらでも、使う commit を先に取ってくる
+- 調べるコミット: open の PR は現在の PR head（`headRefOid`）。マージ済みの PR は、リポジトリの現在の既定ブランチ（origin の `HEAD` が指す branch。PR のマージ先の `baseRefName` とは限らない）の最新。未マージで close された PR は既定ブランチの最新を調べ、最後の PR head（`PR_HEAD_SHA`）にしか無い変更と区別する。どれも完全な SHA で固定し、元のレビューの HEAD と混ぜない
+- マージ済みの PR でも、マージ commit が既定ブランチに入っていなければ（マージ先が既定ブランチでない場合など）、そのことを区別して書き、既定ブランチに入っていない変更を稼働中の問題として扱わない。下のブロックが表示する `MERGED_INTO_DEFAULT` が `0` なら入っている、`1` なら入っていない。それ以外（マージ commit を取得できない）なら、確かめられなかったことを「確かめていないこと」に書く
+- 下のブロックを 1 回の Bash の呼び出しでそのまま実行する。`TARGET_ROOT` は `target.json` の `target_root`（親の PR なら親の main checkout）で、null（制作物など）ならブロックが `REPRO_ROOT` の下に一時 clone を作って使う。途中で止まったら（`parameter null or not set` など）、原因を直し、作られた `REPRO_ROOT` を消してから最初からやり直す。最後に表示した値は後の手順と後片付けで使う（シェルの状態は Bash の呼び出しをまたいで残らない）
 
   ```bash
+  # review-carry-over-followup pin the investigated commit
   # zsh では "$VAR:r" などが修飾子になるため、: の前の変数は ${VAR} で区切る
   # 接頭辞は review-verify と同じ（AGENTS.md が /tmp に認める場所で、残骸は cleanup-workspace.bash が片付ける）
   REPRO_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/review-fix-planning.XXXXXX")"
-  BASE_REF="$(jq -r .baseRefName "$SESSION/pr.json")"
-  git -C "$TARGET_ROOT" fetch --no-tags origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}" \
-    "+pull/${PR_NUMBER}/head:refs/carry-over/${PR_NUMBER}"
-  INVESTIGATED_SHA="$(git -C "$TARGET_ROOT" rev-parse --verify "refs/remotes/origin/${BASE_REF}^{commit}")"  # open の PR は headRefOid
-  git -C "$TARGET_ROOT" diff --stat "<元のレビューの HEAD>" "$INVESTIGATED_SHA" -- <対象のパス>
-  git -C "$TARGET_ROOT" worktree add --detach "$REPRO_ROOT/worktree" "$INVESTIGATED_SHA"
-  # 終わったら: git -C "$TARGET_ROOT" worktree remove --force "$REPRO_ROOT/worktree" && rm -rf -- "${REPRO_ROOT:?}"
-  #            git -C "$TARGET_ROOT" update-ref -d "refs/carry-over/$PR_NUMBER"
+  TARGET_ROOT="$(jq -r '.target_root // empty' "$SESSION/target.json")"
+  if [ -z "$TARGET_ROOT" ]; then
+    # --target には resolve が出力した JSON の文字列を渡す（ファイルのパスは受け付けない）
+    uv run --no-project python "$PARENT/.agents/scripts/review_target.py" clone \
+      --target "$(cat "$SESSION/target.json")" --dest "$REPRO_ROOT/repo" >&2 && TARGET_ROOT="$REPRO_ROOT/repo"
+  fi
+  : "${TARGET_ROOT:?一時 clone を作れなかった}"
+  DEFAULT_BRANCH="$(git -C "$TARGET_ROOT" ls-remote --symref origin HEAD \
+    | awk '$1 == "ref:" && $3 == "HEAD" { sub("^refs/heads/", "", $2); print $2 }')"
+  : "${DEFAULT_BRANCH:?origin の既定ブランチを読めない}"
+  # fetch に失敗したら、手元に残る古い ref を調べないよう、ここで止める
+  DEFAULT_SHA="" PR_HEAD_SHA=""
+  git -C "$TARGET_ROOT" fetch --no-tags origin "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}" \
+    "+pull/${PR_NUMBER}/head:refs/carry-over/${PR_NUMBER}" \
+    && DEFAULT_SHA="$(git -C "$TARGET_ROOT" rev-parse --verify "refs/remotes/origin/${DEFAULT_BRANCH}^{commit}")" \
+    && PR_HEAD_SHA="$(git -C "$TARGET_ROOT" rev-parse --verify "refs/carry-over/${PR_NUMBER}^{commit}")"
+  : "${PR_HEAD_SHA:?既定ブランチか PR の head を取得できない}"
+  case "$(jq -r .state "$SESSION/pr.json")" in
+    OPEN) INVESTIGATED_SHA="$(git -C "$TARGET_ROOT" rev-parse --verify "$(jq -r .headRefOid "$SESSION/pr.json")^{commit}")" ;;
+    *) INVESTIGATED_SHA="$DEFAULT_SHA" ;;  # MERGED・CLOSED
+  esac
+  MERGED_INTO_DEFAULT=""
+  MERGE_SHA="$(jq -r '.mergeCommit.oid // empty' "$SESSION/pr.json")"
+  if [ -n "$MERGE_SHA" ]; then
+    # マージ先の branch が消えていても、マージ commit は SHA で取れる
+    git -C "$TARGET_ROOT" fetch --no-tags origin "$MERGE_SHA"
+    git -C "$TARGET_ROOT" merge-base --is-ancestor "$MERGE_SHA" "$DEFAULT_SHA"; MERGED_INTO_DEFAULT=$?
+  fi
+  git -C "$TARGET_ROOT" worktree add --detach "$REPRO_ROOT/worktree" "${INVESTIGATED_SHA:?調べる commit を決められない}"
+  printf '%s=%s\n' REPRO_ROOT "$REPRO_ROOT" TARGET_ROOT "$TARGET_ROOT" DEFAULT_BRANCH "$DEFAULT_BRANCH" \
+    PR_HEAD_SHA "$PR_HEAD_SHA" INVESTIGATED_SHA "$INVESTIGATED_SHA" MERGED_INTO_DEFAULT "$MERGED_INTO_DEFAULT"
   ```
 
-  元のレビューの HEAD は、その判断の `history` の最後の `reviewed_head`（`fold` の出力）にする。手元に無ければ `git fetch --no-tags origin <完全な SHA>` で取る。取れなければ、差分の確認ができなかったことを「確かめていないこと」に書く。調査済みの候補の前提が変わったかは、前回の事後調査で調べた commit と比べ、対象のパスに加えて文書（README・`docs/`）と呼び出し元も含める
+  元のレビューの HEAD との差分は `git -C "$TARGET_ROOT" diff --stat <元のレビューの HEAD> "$INVESTIGATED_SHA" -- <対象のパス>` で確かめる。元のレビューの HEAD は、その判断の `history` の最後の `reviewed_head`（`fold` の出力）にする。手元に無ければ `git fetch --no-tags origin <完全な SHA>` で取る。取れなければ、差分の確認ができなかったことを「確かめていないこと」に書く。調査済みの候補の前提が変わったかは、前回の事後調査で調べた commit と比べ、対象のパスに加えて文書（README・`docs/`）と呼び出し元も含める
+
+  調べ終わったら（手順 7）、次で片付ける。別の Bash の呼び出しで実行するときは、上のブロックが表示した `REPRO_ROOT`・`TARGET_ROOT` と `PR_NUMBER` を先に代入する。ほかに worktree を作ったら（close された PR の head など）、それも `worktree remove` する。一時 clone は `REPRO_ROOT` の下にあるので、最後の行で一緒に消える
+
+  ```bash
+  # review-carry-over-followup clean up the investigation
+  git -C "${TARGET_ROOT:?}" worktree remove --force "${REPRO_ROOT:?}/worktree"
+  git -C "$TARGET_ROOT" update-ref -d "refs/carry-over/${PR_NUMBER:?}"
+  rm -rf -- "${REPRO_ROOT:?}"
+  ```
+
 - 対象のコード、呼び出し元・呼び出し先、既存のガード、関係する仕様と文書、テストを読む。指示の食い違いは、抜粋ではなく実際に渡される完全なプロンプト・設定の受け渡しまで追う
 - 挙動を確かめるときは隔離した worktree で再現し、通常の入力・別の形式・境界・失敗の経路を試す。削除・上書きの範囲を調べる再現は、親の worktree では行わず、一時 clone（`review_target.py clone`）と一時ディレクトリの中で行う。親の worktree の中でも `agent_tmp.py` などは親の main checkout の実物（`tmp/agents/` など）を指す
 - 確かめ方を区別して書く: コードを読んだ、fake のコマンドで実行した、実際の sandbox で実行した、実際のモデルで E2E を実行した。プロンプトを組み立てられたことは、モデルが意図どおりに動く証明ではない。未実行・テストの失敗・環境の不足を「再現しない」「影響なし」にしない
@@ -124,24 +162,41 @@ jq -n --slurpfile comments "$SESSION/comments.json" --slurpfile state "$SESSION/
 
 本文は [references/templates.md](references/templates.md) の形で `$SESSION` のファイルに書く。事後調査コメントの 1 行目はマーカー `<!-- review-carry-over-followup:v1 -->`、2 行目は `## 持ち越し候補の再調査（<モデル識別子>）` にし、判断 ID は `fold` の `id` と同じ完全な形（`<ファイル>#<ID>@<HEAD の先頭 12 桁>`）で書く。モデル識別子はランタイムが示す正確な値にする。
 
-投稿する本文ファイルごとに（Issue のタイトルも 1 行のファイルに書いて）、次を同じシェルで実行する。どれかが失敗したら投稿しない。
+投稿する本文ファイルごとに（Issue のタイトルも 1 行のファイルに書いて）、次の関数で検査し、0 以外を返したら投稿しない。どの検査の失敗も終了コードで返すので、条件の中から呼んでよい（例: `check_body "$SESSION/followup.md" || <投稿しない>`、`check_body "$SESSION/issue-1.md" && gh issue create …`）。関数の定義と呼び出しは同じシェルで実行する。
 
 ```bash
+# review-carry-over-followup check body
+# 本文ファイルを 1 つ受け取り、どの検査も通ったときだけ 0 を返す。
+# 条件の中（if・&&・||・!）から呼ぶと set -e が効かないので、各段で失敗を明示的に返す
 check_body() (
     set -euo pipefail
-    body="$1"
-    scan="$(mktemp -d)"
-    trap 'rm -rf -- "${scan:?}"' EXIT
-    printf '[extend]\nuseDefault = true\n' > "$scan/config.toml"
-    : > "$scan/ignore"
-    env -u GITLEAKS_CONFIG -u GITLEAKS_CONFIG_TOML gitleaks dir --no-banner --redact --ignore-gitleaks-allow \
-        --config "$scan/config.toml" --gitleaks-ignore-path "$scan/ignore" "$body" >&2
-    if rg -n -e '<!-- review-fix-planning:' -e '<!-- review-records:' \
-        -e '/(home|workspaces|tmp|root|Users)/' "$body" >&2; then
-        printf 'check_body: 記録のマーカーかローカルの絶対パスがある\n' >&2
+    if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+        printf 'check_body: 本文ファイルを 1 つ指定する\n' >&2
         return 1
     fi
-    [ "$(wc -m < "$body")" -le 65536 ]
+    body="$1"
+    scan="$(mktemp -d)" || return 1
+    trap 'rm -rf -- "${scan:?}"' EXIT
+    printf '[extend]\nuseDefault = true\n' > "$scan/config.toml" || return 1
+    : > "$scan/ignore" || return 1
+    if ! env -u GITLEAKS_CONFIG -u GITLEAKS_CONFIG_TOML gitleaks dir --no-banner --redact --ignore-gitleaks-allow \
+        --config "$scan/config.toml" --gitleaks-ignore-path "$scan/ignore" "$body" >&2; then
+        printf 'check_body: 秘密を検出した、または秘密の検査を実行できなかった\n' >&2
+        return 1
+    fi
+    # rg は 0 が一致、1 が一致なし、2 以上が失敗（127 は rg が無い）。1 だけを通す
+    found=0
+    rg -n -e '<!-- review-fix-planning:' -e '<!-- review-records:' \
+        -e '/(home|workspaces|tmp|root|Users)/' "$body" >&2 || found=$?
+    if [ "$found" -ne 1 ]; then
+        printf 'check_body: 記録のマーカーかローカルの絶対パスがある、または検査を実行できなかった\n' >&2
+        return 1
+    fi
+    chars="$(wc -m < "$body")" || return 1
+    if [ "$chars" -gt 65536 ]; then
+        printf 'check_body: 本文が 65536 文字を超える\n' >&2
+        return 1
+    fi
 )
 ```
 
@@ -168,7 +223,7 @@ gh api --paginate --slurp "repos/$PR_REPO/issues/$PR_NUMBER/comments" \
 
 ### 7. 報告と後片付け
 
-報告には、候補ごとの結論、作った・参照した Issue と PR コメントの URL、調べた SHA、実行した確認、確かめていないこと、未完了の書き込みを書く。open の PR で `review-fix-planning` の再判断が要る候補と、調べなかった `hold`・`unverified` もここに書く。自分で作った worktree・一時の ref・`$REPRO_ROOT` を片付ける。`$SESSION` は、未完了の書き込みが無ければ報告に使い終えてから消し、あれば残して完全パスを報告する。
+報告には、候補ごとの結論、作った・参照した Issue と PR コメントの URL、調べた SHA、実行した確認、確かめていないこと、未完了の書き込みを書く。open の PR で `review-fix-planning` の再判断が要る候補と、調べなかった `hold`・`unverified` もここに書く。自分で作った worktree・一時の ref・`$REPRO_ROOT` を、手順 3 の後片付けのブロックで片付ける。`$SESSION` は、未完了の書き込みが無ければ報告に使い終えてから消し、あれば残して完全パスを報告する。
 
 ## 既存スキルとの分担
 
