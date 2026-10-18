@@ -319,10 +319,44 @@ def test_already_cancelled_does_not_spawn(tmp_path: Path) -> None:
 def alive(pid: int) -> bool:
     try:
         # Zombies cannot execute or mutate retained workspaces.
+        # A pid reaped between open and read fails with ESRCH instead.
         state = Path(f"/proc/{pid}/stat").read_bytes().rsplit(b")", 1)[1].split()[0]
-    except FileNotFoundError:
+    except FileNotFoundError, ProcessLookupError:
         return False
     return state not in (b"Z", b"X")
+
+
+@pytest.mark.parametrize("error", [FileNotFoundError, ProcessLookupError])
+def test_alive_handles_pid_reaped_during_stat_read(monkeypatch: pytest.MonkeyPatch, error: type[OSError]) -> None:
+    # Removing the mid-read ESRCH handler must reproduce the watcher crash.
+    def reaped(path: Path) -> bytes:
+        assert path == Path("/proc/123/stat")
+        raise error()
+
+    monkeypatch.setattr(Path, "read_bytes", reaped)
+    assert alive(123) is False
+
+
+@pytest.mark.parametrize("state,expected", [(b"R", True), (b"S", True), (b"Z", False), (b"X", False)])
+def test_alive_classifies_stat_state(monkeypatch: pytest.MonkeyPatch, state: bytes, expected: bool) -> None:
+    def stat(path: Path) -> bytes:
+        assert path == Path("/proc/123/stat")
+        return b"123 (name with ) inside) " + state + b" 1 2 3"
+
+    monkeypatch.setattr(Path, "read_bytes", stat)
+    assert alive(123) is expected
+
+
+@pytest.mark.parametrize("error", [PermissionError, OSError])
+def test_alive_propagates_unrelated_stat_errors(monkeypatch: pytest.MonkeyPatch, error: type[OSError]) -> None:
+    # An unreadable stat is not evidence that a process stopped.
+    def unreadable(path: Path) -> bytes:
+        assert path == Path("/proc/123/stat")
+        raise error()
+
+    monkeypatch.setattr(Path, "read_bytes", unreadable)
+    with pytest.raises(error):
+        alive(123)
 
 
 async def wait_for(path: Path) -> None:
