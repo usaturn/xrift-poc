@@ -568,6 +568,161 @@ def test_resumed_staged_review_is_finalized_without_hooks(
     assert read(run_dir / "cycle-1.json")["review"]["after_run"] == []
 
 
+@pytest.mark.parametrize("case", [None, "unstopped", "identity"])
+def test_parent_input_is_removed_only_after_an_accepted_dsh_review(
+    loop: Any, env: Any, monkeypatch: pytest.MonkeyPatch, case: str | None
+) -> None:
+    """確定して DSH が受け付けられたレビューの親入力だけを消す。確定前・却下では残し、retained で報告する。"""
+    dsh_parent_env(loop, env, monkeypatch)
+    staged_reviewer(loop, env, monkeypatch, case=case)
+    run_dir = Path(env.start()["run_dir"])
+    loop.cycle_begin(run_dir, github=env.github)
+    first = run_dir / "cycle-1" / "parent-pr-data"
+    real = loop.review_entry.finalize_parent_batch
+
+    def interrupted(batch: BatchResult) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(loop.review_entry, "finalize_parent_batch", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        loop.review(run_dir, github=env.github, tmp_root=env.tmp_root)
+    # 親の確定の前に止まったレビューの入力は残る。再開が同じ入力で確定する
+    assert (first / "snapshot.json").is_file() and (first / "objects.bundle").is_file()
+    monkeypatch.setattr(loop.review_entry, "finalize_parent_batch", real)
+
+    if case is None:
+        reviewed = loop.review(run_dir, github=env.github, tmp_root=env.tmp_root)
+        assert not first.exists()
+        assert str(first) not in reviewed["retained"]
+        # 保存済みのレビューと loop の記録は消さない
+        assert (env.review_dir / "commandcode-actual-model.md").is_file()
+        assert list((env.review_dir / "findings").iterdir()) and list((env.review_dir / "runs").iterdir())
+        assert (run_dir / "cycle-1" / "comments.json").is_file()
+        return
+    kept = [first]
+    if case == "identity":
+        pending = loop.review(run_dir, github=env.github, tmp_root=env.tmp_root)
+        assert str(first) in pending["retained"]
+        # 偽の dispatch はこのプロセスの cwd を回収済みの worktree に移している。親の準備の前に戻す
+        monkeypatch.chdir(env.root)
+        kept.append(run_dir / "cycle-1" / "rerun-parent-pr-data")
+    with pytest.raises(loop.LoopError) as error:
+        loop.review(run_dir, github=env.github, tmp_root=env.tmp_root)
+    assert (error.value.code, error.value.stage) == (6, "review")
+    review = read(run_dir / "cycle-1.json")["review"]
+    retained = review["cleanup"]["retained"] + (review["rerun"]["cleanup"]["retained"] if review["rerun"] else [])
+    for path in kept:
+        assert (path / "snapshot.json").is_file()
+        assert str(path) in retained
+
+
+def parent_input_dir(root: Path) -> Path:
+    """prepare_parent と同じ権限（0o700 のディレクトリに 0o444 のファイル）の親入力。"""
+    path = root / "parent-pr-data"
+    path.mkdir(mode=0o700)
+    for name in ("snapshot.json", "objects.bundle"):
+        (path / name).write_text("{}", encoding="utf-8")
+        (path / name).chmod(0o444)
+    return path
+
+
+def attempt_of(agent: str, *, ok: bool = True) -> Attempt:
+    return Attempt(
+        agent_id=agent, state="success" if ok else "response_failed", elapsed_seconds=1.0, stop_confirmed=True
+    )
+
+
+def result_of(request: str, *attempts: Attempt) -> Result:
+    return Result(
+        request_id=request,
+        role="inspect",
+        requested_agent=attempts[0].agent_id,
+        actual_agent=attempts[-1].agent_id,
+        state=attempts[-1].state,
+        attempts=list(attempts),
+    )
+
+
+def batch_of(root: Path, results: list[Result]) -> BatchResult:
+    return BatchResult(
+        run_id="fixture-run",
+        state="success",
+        assignments={},
+        results=results,
+        outside_changes=[],
+        elapsed_seconds=1.0,
+        artifact_dir=root,
+    )
+
+
+def entry_of(loop: Any, item: Result, verdict: str) -> Any:
+    return loop.ReviewerEntry(
+        requested_agent=item.requested_agent, actual_agent=item.actual_agent, runner_state=item.state, verdict=verdict
+    )
+
+
+RUNTIMES = {"alpha": "dsh", "dsh-go": "dsh", "beta": "pi"}
+
+
+@pytest.mark.parametrize(
+    ("results", "verdicts", "removed"),
+    [
+        # DSH も DSH 以外も受け付けた
+        ([("r1", ["alpha"]), ("r2", ["beta"])], ["accepted", "accepted"], True),
+        # DSH 以外だけを受け付け、DSH は却下した
+        ([("r1", ["alpha"]), ("r2", ["beta"])], ["rejected", "accepted"], False),
+        # DSH の担当が失敗し、DSH の fallback が受け付けられた
+        ([("r1", ["alpha", "dsh-go"])], ["accepted"], False),
+        # fallback に置いた DSH は使われず、DSH 以外が受け付けられた
+        ([("r1", ["beta"])], ["accepted"], True),
+        # 誰も受け付けなかった
+        ([("r1", ["beta"])], ["rejected"], False),
+        # runner が結果を返さなかった
+        ([], [], False),
+        # 設定に無い agent の試行は runtime を判定できない
+        ([("r1", ["alpha"]), ("r2", ["gamma"])], ["accepted", "accepted"], False),
+    ],
+)
+def test_parent_input_is_removed_only_without_failed_dsh_attempts(
+    loop: Any, tmp_path: Path, results: list[tuple[str, list[str]]], verdicts: list[str], removed: bool
+) -> None:
+    path = parent_input_dir(tmp_path)
+    items = [
+        result_of(request, *(attempt_of(agent, ok=index == len(agents) - 1) for index, agent in enumerate(agents)))
+        for request, agents in results
+    ]
+    entries = [entry_of(loop, item, verdict) for item, verdict in zip(items, verdicts, strict=True)]
+    retained = loop.settle_parent_input(path, batch_of(tmp_path, items), entries, RUNTIMES)
+    assert path.exists() is not removed
+    assert retained == ([] if removed else [str(path)])
+
+
+def test_parent_input_cleanup_never_follows_a_link_and_reports_what_remains(
+    loop: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "third-party").mkdir()
+    target = parent_input_dir(tmp_path / "third-party")
+    (tmp_path / "loop").mkdir()
+    link = tmp_path / "loop" / "parent-pr-data"
+    link.symlink_to(target, target_is_directory=True)
+    item = result_of("r1", attempt_of("alpha"))
+    batch = batch_of(tmp_path, [item])
+    accepted = [entry_of(loop, item, "accepted")]
+    assert loop.settle_parent_input(link, batch, accepted, RUNTIMES) == [str(link)]
+    assert link.is_symlink() and (target / "snapshot.json").is_file()
+    # 消せなかった（権限など）入力は黙って残さず、残ったパスとして返す
+    (tmp_path / "own").mkdir()
+    own = parent_input_dir(tmp_path / "own")
+
+    def undeletable(path: Path) -> None:
+        return None
+
+    monkeypatch.setattr(loop, "discard_parent_input", undeletable)
+    assert loop.settle_parent_input(own, batch, accepted, RUNTIMES) == [str(own)]
+    # 親入力が無い（DSH がいないサイクル）なら何も返さない
+    assert loop.settle_parent_input(tmp_path / "absent", batch, accepted, RUNTIMES) == []
+
+
 @pytest.mark.parametrize("change", ["payload_failed", "payload_unchanged"])
 def test_after_run_result_is_reloaded_before_reviewer_validation(
     loop: Any, env: Any, tmp_path: Path, change: str

@@ -866,11 +866,42 @@ def review_write_exceptions(run: RunRecord) -> tuple[str, ...]:
 
 
 def discard_parent_input(path: Path) -> None:
-    """この review が作り、まだどのレビュアーにも渡していない親入力だけを消す（同じサイクルで作り直せるように）。
+    """この review が作った親入力を消す。リンクはたどらない。
 
-    消せなければ残る。やり直しの親準備は既存のディレクトリを拒否するので、黙って上書きはしない。
+    使うのは、まだどのレビュアーにも渡していないとき（同じサイクルで作り直せるように）と、確定したレビューで
+    DSH の試行に失敗・却下が無かったとき（settle_parent_input）だけ。消せなければ残る。やり直しの親準備は
+    既存のディレクトリを拒否するので、黙って上書きはしない。
     """
     shutil.rmtree(path, ignore_errors=True)
+
+
+def settle_parent_input(
+    path: Path, batch: BatchResult, entries: Sequence[ReviewerEntry], runtimes: Mapping[str, str]
+) -> list[str]:
+    """確定したレビューの親入力を、DSH の試行に失敗・却下が無ければ消す。残ったパスを返す。
+
+    失敗・却下した DSH の試行に渡した入力は、残ったセッションや requests/ の写しと合わせて調べる材料なので残す。
+    受け付けたレビュアーがいない、または runtime を判定できない試行があるときも残す。
+    """
+    if not path.exists() and not path.is_symlink():
+        return []
+    if _dsh_attempts_accepted(batch, entries, runtimes):
+        discard_parent_input(path)
+    return [str(path)] if path.exists() or path.is_symlink() else []
+
+
+def _dsh_attempts_accepted(batch: BatchResult, entries: Sequence[ReviewerEntry], runtimes: Mapping[str, str]) -> bool:
+    """受け付けたレビュアーがいて、DSH の試行がどれも、受け付けた結果の最後の試行である。"""
+    if not any(entry.verdict == "accepted" for entry in entries):
+        return False
+    for item, entry in zip(batch.results, entries, strict=True):
+        for index, attempt in enumerate(item.attempts):
+            runtime = runtimes.get(attempt.agent_id)
+            if runtime is None:
+                return False
+            if runtime == "dsh" and (entry.verdict != "accepted" or index != len(item.attempts) - 1):
+                return False
+    return True
 
 
 def reviewer_prompt(
@@ -1828,6 +1859,13 @@ def _review_batch(
     write_json(result_copy, batch)
     resource = next((item for item in run.resources if _output_dir(item) == output_dir), None)
     retained = cleanup_output(Path(run.tool_root), resource, batch) if resource is not None else [str(output_dir)]
+    # 親の確定・後処理・検査が済み、親入力を読む処理はもう無い
+    retained += settle_parent_input(
+        work / f"{prefix}parent-pr-data",
+        batch,
+        entries,
+        {name: agent.runtime for name, agent in config.agents.items()},
+    )
     part.batch = BatchInfo(
         run_id=batch.run_id,
         state=batch.state,
@@ -1837,9 +1875,7 @@ def _review_batch(
     )
     part.ended_at = now()
     part.seconds = batch.elapsed_seconds
-    part.cleanup = CleanupInfo(
-        state="removed" if resource is not None and resource.state == "removed" else "retained", retained=retained
-    )
+    part.cleanup = CleanupInfo(state="retained" if retained else "removed", retained=retained)
     return batch, entries
 
 
