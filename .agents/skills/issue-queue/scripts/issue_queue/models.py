@@ -79,6 +79,7 @@ class Attempt(Record):
     version: dict[str, str]
     launch: Literal["prepared", "splitting", "pane_created", "starting", "started", "submitting", "submitted"]
     pane_id: str | None = None
+    pane_terminal_id: str | None = None
     identity: Identity | None = None
     acknowledged: bool = False
     prompt: str = ""

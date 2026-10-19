@@ -78,6 +78,8 @@ state.jsonのschema_versionは1。helperがflockの下で一時ファイルをfs
 
 意図保存と外部の操作は一つのトランザクションにはできない。意図があり結果が無い窓は「不明」として扱う。startの応答消失は一意agent名とpaneで照合できれば未送信の状態へ戻せる。prompt送信の成否不明はackを待つ。splitの応答消失など、所有paneを確定できない場合は手動調査で止め、再実行しない。
 
+`prepared` はsplit、`pane_created` はstartの意図をまだ保存していない。`launch` は保存したattemptを再利用して、その未実行部分だけを続ける。pane_createdではpaneのterminal IDと、別のagentが起動していないことも確認する。`splitting` / `starting` / `submitting` を未実行に戻さない。起動・送信とも、保存されたblocking判断や停止要求を副作用の前に検査する。
+
 main更新はcleanup工程でのみ行う。次の子は更新後の親main checkoutから起動し、使用版を新たに保存する。helperは呼び出しごとに再ロードし、schemaを検査する。実装・持ち越しの途中で使用版が変わった場合は止める。cleanup後に未確認worktree・claim・更新の衝突があれば、次のIssueへ進めない。
 
 同じOSユーザーによる状態の直接改ざん、Herdrサーバーの交換、別repositoryのキュー、常駐継続運転、失敗した子の自動修復は対象外。状態や識別情報が不一致なら止める。

@@ -56,6 +56,21 @@ class Workflow:
             raise QueueError("子のpaneまたはnative sessionが一致しません")
         return attempt
 
+    def progress_barrier(self) -> tuple[str, str, str] | None:
+        if self.run.complete:
+            return "complete", "none", "全Issueの処理が完了しました"
+        if self.run.paused:
+            return "paused", "resume", "保存した境界で停止しています"
+        if self.run.stopped_reason:
+            return "blocked", "inspect", self.run.stopped_reason
+        if any(d.category == "blocking" and d.resolution is None for d in self.run.decisions):
+            return "blocked", "decision", "次工程を妨げる判断待ちがあります"
+        return None
+
+    def require_progress(self) -> None:
+        if barrier := self.progress_barrier():
+            raise QueueError(barrier[2])
+
     def resume(self, *, proceed: bool, reason: str | None = None) -> None:
         caller = self.ext.caller()
         if caller != self.run.owner:
@@ -70,18 +85,31 @@ class Workflow:
             self.observe()
         if proceed:
             if self.run.stopped_reason:
+                previous = self.run.stopped_reason
                 attempt = self.run.current()
                 pane = self.ext.pane(attempt.pane_id) if attempt and attempt.pane_id else None
-                if (
-                    not reason
-                    or not self.run.stopped_reason.startswith("子がblocked")
-                    or not pane
-                    or pane["agent_status"] not in {"working", "idle", "done"}
-                    or (attempt and attempt.result and attempt.result.outcome != "success")
-                ):
+                if not reason:
                     raise QueueError("停止原因が未解消です。子の結果と判断待ちを確認してください")
-                self.run.event("blocked_resolved", reason=reason)
-                self.run.stopped_reason = None
+                if previous.startswith("監視上限"):
+                    # 上限で子を止めてはいない。完了を照合できた時だけ、明示指示で進行を再開する。
+                    self.run.stopped_reason = None
+                    try:
+                        status, action, _ = self.observe()
+                        if (status, action) != ("ok", "advance"):
+                            raise QueueError("監視上限後の子の完了を確認できません")
+                    except QueueError, OSError, ValueError, KeyError:
+                        self.run.stopped_reason = previous
+                        raise
+                elif (
+                    previous.startswith("子がblocked")
+                    and pane
+                    and pane["agent_status"] in {"working", "idle", "done"}
+                    and not (attempt and attempt.result and attempt.result.outcome != "success")
+                ):
+                    self.run.stopped_reason = None
+                else:
+                    raise QueueError("停止原因が未解消です。子の結果と判断待ちを確認してください")
+                self.run.event("stop_resolved", previous=previous, reason=reason)
             self.run.paused = False
             self.run.stop_after = None
             self.run.event("continue")
@@ -171,13 +199,11 @@ class Workflow:
         self.run.observation = {"at": now(), **inventory}
         attempt = self.run.current()
         if attempt is None:
-            if self.run.paused:
-                return "paused", "resume", "保存した境界で停止しています"
-            if self.run.stopped_reason:
-                return "blocked", "inspect", self.run.stopped_reason
-            return "ok", "launch", "次の工程を起動できます"
+            return self.progress_barrier() or ("ok", "launch", "次の工程を起動できます")
         if attempt.phase != "cleanup" and self.ext.version() != attempt.version:
             raise QueueError("工程の途中でスキル・helper・mainの版が変わりました。境界で照合してください")
+        if attempt.launch == "prepared":
+            return self.progress_barrier() or ("ok", "launch", "保存した起動予定の未実行部分を進められます")
         pane = self.ext.pane(attempt.pane_id) if attempt.pane_id else None
         if not attempt.pane_id:
             return "blocked", "inspect", "pane作成の成否不明です。所有を照合するまで再作成しません"
@@ -195,6 +221,10 @@ class Workflow:
             return "blocked", "inspect", self.run.stopped_reason
         if pane and attempt.identity and identity(pane) != attempt.identity:
             raise QueueError("paneの担当が変わっています")
+        if barrier := self.progress_barrier():
+            return barrier
+        if attempt.launch == "pane_created":
+            return "ok", "launch", "paneは保存済みです。未実行のstartから再開できます"
         if attempt.launch == "started":
             return "ok", "submit", "担当の起動を照合しました。まだ送信していません"
         merged = self.observe_merge(attempt) if attempt.phase == "implement" else None

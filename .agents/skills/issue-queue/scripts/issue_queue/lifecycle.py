@@ -14,51 +14,57 @@ from .workflow import Workflow
 def launch(work: Workflow) -> None:
     work.owner()
     run = work.run
-    if run.complete or run.paused or run.stopped_reason:
-        raise QueueError("完了・一時停止・停止中には起動できません")
-    if any(d.category == "blocking" and d.resolution is None for d in run.decisions):
-        raise QueueError("次工程を妨げる判断待ちがあります")
-    if run.current() is not None:
+    work.require_progress()
+    attempt = run.current()
+    if attempt is not None and attempt.launch not in {"prepared", "pane_created"}:
         raise QueueError("起動済みまたは起動の成否不明です。reconcileで照合し再送しないでください")
     if run.phase == "implement":
         work.preflight()
     elif run.phase == "cleanup":
         work.resource_barrier()
-    token = uuid4().hex
-    attempt = Attempt(
-        id=token,
-        issue=run.queue[run.index],
-        phase=run.phase,
-        agent_name=f"iq-{token[:24]}",
-        marker=f"<!-- issue-queue:{run.id}:{token} -->",
-        version=work.ext.version(),
-        launch="prepared",
-    )
-    attempt.prompt = child_prompt(run, attempt, work.path)
-    run.attempts.append(attempt)
-    run.event("launch_prepared", attempt=token)
-    work.save()
-    attempt.launch = "splitting"
-    work.save()
-    pane = work.ext.herdr(
-        "pane",
-        "split",
-        "--pane",
-        run.owner.pane_id,
-        "--direction",
-        "right",
-        "--cwd",
-        run.parent,
-        "--no-focus",
-        "--env",
-        f"XRIFT_QUEUE_ATTEMPT={token}",
-    )["pane"]
-    attempt.pane_id = pane["pane_id"]
-    attempt.launch = "pane_created"
-    work.save()
+    if attempt is None:
+        token = uuid4().hex
+        attempt = Attempt(
+            id=token,
+            issue=run.queue[run.index],
+            phase=run.phase,
+            agent_name=f"iq-{token[:24]}",
+            marker=f"<!-- issue-queue:{run.id}:{token} -->",
+            version=work.ext.version(),
+            launch="prepared",
+        )
+        attempt.prompt = child_prompt(run, attempt, work.path)
+        run.attempts.append(attempt)
+        run.event("launch_prepared", attempt=token)
+        work.save()
+    elif work.ext.version() != attempt.version:
+        raise QueueError("保存した起動予定から使用版が変わっています")
+    if attempt.launch == "prepared":
+        attempt.launch = "splitting"
+        work.save()
+        pane = work.ext.herdr(
+            "pane",
+            "split",
+            "--pane",
+            run.owner.pane_id,
+            "--direction",
+            "right",
+            "--cwd",
+            run.parent,
+            "--no-focus",
+            "--env",
+            f"XRIFT_QUEUE_ATTEMPT={attempt.id}",
+        )["pane"]
+        attempt.pane_id = pane["pane_id"]
+        attempt.pane_terminal_id = pane["terminal_id"]
+        attempt.launch = "pane_created"
+        work.save()
+    assert attempt.pane_id is not None
+    pane = work.ext.pane(attempt.pane_id)
+    if not pane or pane["terminal_id"] != attempt.pane_terminal_id or pane.get("agent") or pane.get("agent_session"):
+        raise QueueError("保存したpaneが未使用であることを確認できません")
     attempt.launch = "starting"
     work.save()
-    assert attempt.pane_id is not None
     agent = work.ext.herdr(
         "agent",
         "start",
@@ -80,6 +86,7 @@ def launch(work: Workflow) -> None:
 
 def submit(work: Workflow) -> None:
     work.owner()
+    work.require_progress()
     attempt = work.run.current()
     if attempt is None or attempt.launch != "started" or not attempt.identity:
         raise QueueError("未送信と確認できたstarted状態でだけ送信できます")

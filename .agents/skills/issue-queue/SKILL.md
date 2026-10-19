@@ -30,7 +30,7 @@ queue init --input <方針JSONの絶対パス>
 
 | next | 操作 |
 |---|---|
-| `launch` | `queue launch --run <run>`。helperが子の起動予定を保存してから起動し、工程に対応する依頼を送る |
+| `launch` | `queue launch --run <run>`。起動予定を保存して子を起動する。中断前に保存した `prepared` / `pane_created` は、所有を確認して未実行の操作から続ける |
 | `submit` | `queue submit --run <run>`。起動を照合し、未送信と確認できた依頼だけを送る |
 | `wait` | `queue wait --run <run>`。最長30秒のイベント待機の後で現在状態を再取得する。idleで即戻る場合はランタイムの待機を挟み、外部状態は60秒以内を目安に再確認する |
 | `advance` | `queue advance --run <run>`。終了を再確認し、所有paneを閉じて次の工程へ移る |
@@ -53,6 +53,8 @@ queue stop --run <run> --after followup
 `resume` は旧ownerの生存と子・GitHub・worktreeを照合する。旧ownerが残っていれば横取りしない。動いている子は監視に戻し、新しい子を作らない。起動・送信のtimeoutは未実行の証拠ではない。pane作成の応答が失われて所有を証明できない場合は手動調査で止める。
 
 `--after followup` は持ち越しの調査後、片付けの前で止める。未実施のcleanupを保存し、再開はそこから始める。片付け後に止める場合だけ `--after cleanup` を使う。試運転は最初のcleanup後に止まる。利用者が子のblockedを解消した後は、事実を `resume --continue --reason <理由>` に記録できる。失敗した子を自動再起動する機能ではない。
+
+監視上限後に子が正常終了した場合も、続行指示と確認理由を同じ `resume --continue --reason` に渡す。helperが今回の終了結果・子の停止・外部状態を再照合できた時だけ解除する。実行中の子の監視上限をこの操作で延長することはできない。
 
 ## 判断と報告
 

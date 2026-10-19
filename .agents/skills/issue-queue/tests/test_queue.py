@@ -431,3 +431,70 @@ def test_claim_created_after_result_blocks_next_stage(queue_env: QueueEnv) -> No
     queue_env.call("advance", "--run", run)
     queue_env.git("update-ref", "refs/heads/agent-claims/issue-999", "HEAD")
     queue_env.call("launch", "--run", run, code=3)
+
+
+def test_recovered_submit_respects_pending_decision(queue_env: QueueEnv) -> None:
+    run = queue_env.init()
+    data = queue_env.data()
+    data["fail_after"] = "herdr agent start"
+    queue_env.save(data)
+    queue_env.call("launch", "--run", run, code=3)
+    data = queue_env.data()
+    data["fail_after"] = None
+    queue_env.save(data)
+    assert queue_env.call("reconcile", "--run", run)["next"] == "submit"
+    decision = ("decision", "--run", run, "--id", "scope", "--category", "blocking", "--reason", "確認待ち")
+    queue_env.call(*decision)
+    assert queue_env.call("reconcile", "--run", run)["next"] == "decision"
+    queue_env.call("submit", "--run", run, code=3)
+    assert not any(c[:3] == ["herdr", "agent", "prompt"] for c in queue_env.data()["calls"])
+    queue_env.call(*decision, "--resolve")
+    queue_env.call("submit", "--run", run)
+    assert sum(c[:3] == ["herdr", "agent", "prompt"] for c in queue_env.data()["calls"]) == 1
+
+
+def test_monitor_limit_resumes_only_after_verified_child_completion(queue_env: QueueEnv) -> None:
+    run = queue_env.init()
+    attempt = queue_env.launch(run)
+    queue_env.ack(run, attempt)
+    file = Path(run) / "state.json"
+    state = json.loads(file.read_text())
+    state["attempts"][-1]["created_at"] = (datetime.now(UTC) - timedelta(hours=9)).isoformat()
+    file.write_text(json.dumps(state))
+    attempt = state["attempts"][-1]
+    assert queue_env.call("reconcile", "--run", run)["status"] == "blocked"
+    queue_env.call("resume", "--run", run, "--continue", "--reason", "まだ実行中", code=3)
+    queue_env.merge(attempt)
+    queue_env.report(run, attempt)
+    queue_env.child(attempt, "done")
+    resumed = queue_env.call("resume", "--run", run, "--continue", "--reason", "終了とマージを確認")
+    assert resumed["next"] == "advance"
+    queue_env.call("advance", "--run", run)
+    assert sum(c[:3] == ["herdr", "agent", "start"] for c in queue_env.data()["calls"]) == 1
+
+
+@pytest.mark.parametrize("boundary", ["prepared", "pane_created"])
+def test_known_unsent_launch_resumes_after_saved_boundary(queue_env: QueueEnv, boundary: str) -> None:
+    run = queue_env.init()
+    queue_env.interrupt_launch(run, boundary)
+    saved = queue_env.call("status", "--run", run)["run"]["attempts"][-1]
+    assert saved["launch"] == boundary
+    assert not any(c[:3] == ["herdr", "agent", "start"] for c in queue_env.data()["calls"])
+    assert queue_env.call("reconcile", "--run", run)["next"] == "launch"
+    resumed = queue_env.launch(run)
+    assert resumed["id"] == saved["id"]
+    assert resumed["launch"] == "submitted"
+    calls = queue_env.data()["calls"]
+    for command in (["herdr", "pane", "split"], ["herdr", "agent", "start"], ["herdr", "agent", "prompt"]):
+        assert sum(c[:3] == command for c in calls) == 1
+
+
+def test_unsent_start_does_not_take_over_reused_pane(queue_env: QueueEnv) -> None:
+    run = queue_env.init()
+    queue_env.interrupt_launch(run, "pane_created")
+    attempt = queue_env.call("status", "--run", run)["run"]["attempts"][-1]
+    data = queue_env.data()
+    data["panes"][attempt["pane_id"]] = pane(attempt["pane_id"], "another-session", name="other")
+    queue_env.save(data)
+    queue_env.call("launch", "--run", run, code=3)
+    assert not any(c[:3] == ["herdr", "agent", "start"] for c in queue_env.data()["calls"])
