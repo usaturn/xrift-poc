@@ -6,13 +6,16 @@ import json
 import re
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from .external import CommandError, External, agent_args, herdr_error_code, identity
-from .models import Attempt, Identity, Init, Result, Run, now
+from .models import Attempt, Identity, IgnoredWorktree, Init, Result, Run, now
 from .publishing import check_followup_result, reconcile_effects
 from .storage import QueueError, Store
+
+# 確認していないworktreeを照合する検査。無視したworktreeの記録に残す。
+Check = Literal["implement_launch", "cleanup_launch", "cleanup_finish"]
 
 
 def timestamp(value: str) -> datetime:
@@ -20,6 +23,11 @@ def timestamp(value: str) -> datetime:
     if parsed.tzinfo is None:
         raise QueueError("UTCを含む時刻が必要です")
     return parsed
+
+
+def mentions_issue(text: str, number: int) -> bool:
+    """issue-<番号>を番号の境界で探す。issue-11はissue-110やxissue-11に当たらない。"""
+    return re.search(rf"(?<![0-9a-z])issue-{number}(?![0-9])", text, re.IGNORECASE) is not None
 
 
 def initialize(store: Store, ext: External, request: Init) -> tuple[Path, Run]:
@@ -191,13 +199,15 @@ class Workflow:
         dependencies = self.ext.pages(f"issues/{issue['number']}/dependencies/blocked_by")
         if any(d["state"].lower() == "open" for d in dependencies):
             raise QueueError("先行Issueが未完了です")
-        inventory = self.resource_barrier()
+        inventory = self.resource_barrier("implement_launch")
         if not inventory["head"] == inventory["origin_main"] == inventory["remote_main"] or inventory["branch"]:
             raise QueueError("親main checkoutを最新origin/mainのdetached HEADに更新してください")
 
-    def resource_barrier(self) -> dict[str, Any]:
-        inventory = self.ext.inventory()
-        self.run.observation = inventory
+    def resource_barrier(self, check: Check, inventory: dict[str, Any] | None = None) -> dict[str, Any]:
+        """claim・open PR・worktreeを照合する。worktreeは次工程を妨げるものだけで止め、他は無視して記録する。"""
+        if inventory is None:
+            inventory = self.ext.inventory()
+            self.run.observation = inventory
         if inventory["claims"] or inventory["local_claims"]:
             raise QueueError("未解放のclaimがあります")
         # 確認時のHEADのまま残るopen PRだけを保持として通す。
@@ -207,15 +217,47 @@ class Workflow:
             raise QueueError(
                 f"未確認または確認後に更新されたopen PRがあります。処理対象と競合を確認してください: {unconfirmed}"
             )
-        allowed = {str(self.ext.parent)}
-        allowed.update(d.path for d in self.run.decisions if d.category == "retain" and d.path)
+        issue = self.run.queue[self.run.index]
+        known = {str(self.ext.parent)}
+        known.update(d.path for d in self.run.decisions if d.category == "retain" and d.path)
+        blocking: dict[str, str] = {}
         for attempt in self.run.attempts:
-            if attempt.result:
-                allowed.update(r.path for r in attempt.result.retained if not r.blocks_next)
-        unknown = [w["worktree"] for w in inventory["worktrees"] if w["worktree"] not in allowed]
-        if unknown:
-            raise QueueError(f"未確認のworktreeがあります: {unknown}")
+            for kept in attempt.result.retained if attempt.result else []:
+                if kept.blocks_next:
+                    blocking.setdefault(kept.path, kept.reason)
+                else:
+                    known.add(kept.path)
+        problems: list[str] = []
+        ignored: list[IgnoredWorktree] = []
+        for worktree in inventory["worktrees"]:
+            path = worktree["worktree"]
+            # 利用者のretainと子が保持して続けられるとした資源は、今と同じく通す。
+            if path in known:
+                continue
+            branch = worktree["branch"].removeprefix("refs/heads/") if "branch" in worktree else None
+            if path in blocking:
+                problems.append(f"{path}: 子が次工程を妨げる資源として残しました（{blocking[path]}）")
+            elif mentions_issue(path, issue) or (branch is not None and mentions_issue(branch, issue)):
+                problems.append(f"{path}: Issue #{issue} のworktreeまたはbranch（{branch or 'detached'}）です")
+            else:
+                # 別のセッションの作業でありうるので、中身を検査せず（indexを書き換えうるgit statusを使わず）無視する。
+                basis = f"Issue #{issue} のbranch・パスに当たらず、子が次工程を妨げる資源として残したものでもない"
+                ignored.append(IgnoredWorktree(path=path, head=worktree.get("HEAD"), branch=branch, basis=basis))
+        if problems:
+            raise QueueError(
+                "次工程を妨げるworktreeがあります。処理対象と競合を確認してください: " + "; ".join(problems)
+            )
+        self.record_ignored(check, issue, ignored)
         return inventory
+
+    def record_ignored(self, check: Check, issue: int, ignored: list[IgnoredWorktree]) -> None:
+        """無視したworktreeをrunのイベントに残す。直前の記録と同じなら重ねない。"""
+        if not ignored:
+            return
+        values: dict[str, Any] = {"check": check, "issue": issue, "worktrees": [w.model_dump() for w in ignored]}
+        last = next((e for e in reversed(self.run.events) if e["action"] == "worktrees_ignored"), None)
+        if last is None or any(last.get(key) != value for key, value in values.items()):
+            self.run.event("worktrees_ignored", **values)
 
     def observe_merge(self, attempt: Attempt) -> dict[str, Any] | None:
         issue = self.ext.issue(attempt.issue)
@@ -327,11 +369,9 @@ class Workflow:
         if attempt.phase == "followup":
             check_followup_result(self, attempt)
         if attempt.phase == "cleanup":
-            self.resource_barrier()
+            self.resource_barrier("cleanup_finish", inventory)
             if not inventory["head"] == inventory["origin_main"] == inventory["remote_main"] or inventory["branch"]:
                 raise QueueError("片付け後のmain checkoutがorigin/mainと一致しません")
-            if inventory["claims"] or inventory["local_claims"]:
-                raise QueueError("片付け後に未解放のclaimがあります")
         if any(d.category == "blocking" and d.resolution is None for d in self.run.decisions):
             return "blocked", "decision", "次工程を妨げる判断待ちがあります"
         if any(r.blocks_next for r in result.retained):

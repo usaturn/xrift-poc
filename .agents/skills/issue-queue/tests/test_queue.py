@@ -432,19 +432,90 @@ def test_cleanup_does_not_pass_when_only_local_origin_main_is_current(queue_env:
     queue_env.call("advance", "--run", run, code=3)
 
 
-def test_unknown_worktree_blocks_cleanup_launch(queue_env: QueueEnv) -> None:
+def test_issue_worktree_left_before_cleanup_blocks_cleanup_launch(queue_env: QueueEnv) -> None:
     run, attempt = queue_env.followup()
     queue_env.report(run, attempt)
     queue_env.child(attempt, "done")
     queue_env.call("advance", "--run", run)
-    queue_env.git("worktree", "add", "--detach", str(queue_env.home / "other-work"), "HEAD")
-    queue_env.call("launch", "--run", run, code=3)
+    # 実装の子が結果に残さなかった、今回のIssueのworktree。
+    left = queue_env.home / "left-work"
+    queue_env.git("worktree", "add", "-q", "-b", "feat/issue-11-left", str(left), "HEAD")
+    blocked = queue_env.call("launch", "--run", run, code=3)
+    assert str(left) in blocked["reason"]
     assert len(queue_env.data()["panes"]) == 1
+
+
+def test_unrelated_worktrees_are_ignored_and_recorded_at_each_check(queue_env: QueueEnv) -> None:
+    # 番号が前方一致する別のIssueのbranch、レビューの残骸の形のdetached、lockedのworktreeを残す。
+    other = queue_env.home / "wt-issue-110"
+    residue = queue_env.home / "pr-review-90-x" / "worktree"
+    locked = queue_env.home / "locked-work"
+    queue_env.git("worktree", "add", "-q", "-b", "feat/issue-110-other", str(other), "HEAD")
+    queue_env.git("worktree", "add", "-q", "--detach", str(residue), "HEAD")
+    queue_env.git("worktree", "add", "-q", "--lock", "--detach", str(locked), "HEAD")
+    run, followup = queue_env.followup()
+    queue_env.report(run, followup)
+    queue_env.child(followup, "done")
+    queue_env.call("advance", "--run", run)
+    cleanup = queue_env.launch(run)
+    queue_env.ack(run, cleanup)
+    queue_env.report(run, cleanup)
+    queue_env.child(cleanup, "done")
+    for _ in range(2):
+        assert queue_env.call("reconcile", "--run", run)["next"] == "advance"
+    state = queue_env.call("advance", "--run", run)["run"]
+    assert (state["phase"], state["index"]) == ("implement", 1)
+    head = queue_env.git("rev-parse", "HEAD")
+    expected = sorted(
+        [(str(other), head, "feat/issue-110-other"), (str(residue), head, None), (str(locked), head, None)],
+        key=str,
+    )
+    events = [e for e in state["events"] if e["action"] == "worktrees_ignored"]
+    # 同じ内容のreconcileを繰り返しても、検査ごとに1件だけ残る。
+    assert [e["check"] for e in events] == ["implement_launch", "cleanup_launch", "cleanup_finish"]
+    for event in events:
+        assert event["issue"] == 11
+        assert sorted(((w["path"], w["head"], w["branch"]) for w in event["worktrees"]), key=str) == expected
+        assert all("Issue #11" in w["basis"] for w in event["worktrees"])
+
+
+@pytest.mark.parametrize("case", ["branch", "path"])
+def test_worktree_of_launching_issue_blocks_with_path_and_reason(queue_env: QueueEnv, case: str) -> None:
+    run = queue_env.init()
+    if case == "branch":
+        path = queue_env.home / "retry-work"
+        queue_env.git("worktree", "add", "-q", "-b", "feat/issue-11-retry", str(path), "HEAD")
+    else:
+        path = queue_env.home / "issue-11-old"
+        queue_env.git("worktree", "add", "-q", "--detach", str(path), "HEAD")
+    blocked = queue_env.call("launch", "--run", run, code=3)
+    assert str(path) in blocked["reason"]
+    assert "Issue #11" in blocked["reason"]
+    assert blocked["next"] == "inspect"
+    assert not any(c[:3] == ["herdr", "pane", "split"] for c in queue_env.data()["calls"])
+
+
+def test_worktree_kept_by_cleanup_child_as_blocking_stops_cleanup_finish(queue_env: QueueEnv) -> None:
+    run, followup = queue_env.followup()
+    queue_env.report(run, followup)
+    queue_env.child(followup, "done")
+    queue_env.call("advance", "--run", run)
+    cleanup = queue_env.launch(run)
+    queue_env.ack(run, cleanup)
+    kept = queue_env.home / "unpushed-work"
+    queue_env.git("worktree", "add", "-q", "--detach", str(kept), "HEAD")
+    reason = "未pushのcommitがある。\n利用者の確認待ち"
+    queue_env.report(run, cleanup, retained=[{"path": str(kept), "reason": reason, "blocks_next": True}])
+    queue_env.child(cleanup, "done")
+    blocked = queue_env.call("advance", "--run", run, code=3)
+    assert str(kept) in blocked["reason"]
+    assert reason in blocked["reason"]
+    assert blocked["run"]["phase"] == "cleanup"
 
 
 def test_retained_worktree_is_checked_before_launch(queue_env: QueueEnv) -> None:
     run = queue_env.init()
-    retained = queue_env.home / "retained-work"
+    retained = queue_env.home / "issue-11-retained"
     queue_env.git("worktree", "add", "--detach", str(retained), "HEAD")
     queue_env.call("launch", "--run", run, code=3)
     queue_env.call(
@@ -655,7 +726,7 @@ def test_retained_pr_does_not_admit_other_resources(queue_env: QueueEnv, change:
     elif change == "claim":
         queue_env.git("update-ref", "refs/heads/agent-claims/issue-999", "HEAD")
     else:
-        queue_env.git("worktree", "add", "--detach", str(queue_env.home / "other-work"), "HEAD")
+        queue_env.git("worktree", "add", "--detach", str(queue_env.home / "issue-11-other"), "HEAD")
     queue_env.call("launch", "--run", run, code=3)
     assert len(queue_env.data()["panes"]) == 1
 

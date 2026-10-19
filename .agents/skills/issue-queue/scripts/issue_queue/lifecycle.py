@@ -21,7 +21,7 @@ def launch(work: Workflow) -> None:
     if run.phase == "implement":
         work.preflight()
     elif run.phase == "cleanup":
-        work.resource_barrier()
+        work.resource_barrier("cleanup_launch")
     if attempt is None:
         token = uuid4().hex
         attempt = Attempt(

@@ -46,6 +46,15 @@ class Retained(Record):
     blocks_next: bool
 
 
+class IgnoredWorktree(Record):
+    """起動の前の検査で、問題が無いと判定して無視したworktree。runのイベントに残す。"""
+
+    path: str
+    head: str | None
+    branch: str | None
+    basis: str
+
+
 class Result(Record):
     outcome: Literal["success", "stopped", "failed"]
     summary: str = Field(min_length=1)
