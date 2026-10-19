@@ -108,7 +108,11 @@ main()
             text=True,
             check=False,
         )
-        assert result.returncode != 0 and "KeyboardInterrupt" in result.stderr
+        assert result.returncode != 0 and "KeyboardInterrupt" in result.stderr, (
+            result.returncode,
+            result.stdout[:1000],
+            result.stderr[-1000:],
+        )
 
     def child(self, attempt: dict[str, Any], state: str) -> None:
         data = self.data()
@@ -238,6 +242,7 @@ def make_queue_env(base: Path) -> QueueEnv:
         "HOME": str(home),
         "XRIFT_POC_ROOT": str(repo.root),
         "HERDR_ENV": "1",
+        "HERDR_PANE_ID": "w1:p1",
         "QUEUE_FAKE_DATA": str(data_file),
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
     }
