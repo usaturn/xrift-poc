@@ -34,13 +34,20 @@ queue init --input <方針JSONの絶対パス>
 | `submit` | `queue submit --run <run>`。起動を照合し、未送信と確認できた依頼だけを送る |
 | `wait` | `queue wait --run <run>`。最長30秒のイベント待機の後で現在状態を再取得する。idleで即戻る場合はランタイムの待機を挟み、外部状態は60秒以内を目安に再確認する |
 | `advance` | `queue advance --run <run>`。終了を再確認し、所有paneを閉じて次の工程へ移る |
+| `update_main` | 工程の境界で親main checkoutが最新のorigin/mainより古い。下の「main checkoutの更新」に従って更新し、`queue reconcile` で照合し直す。`launch`・`advance` の拒否でも返る |
 | `resume` | 保存した停止位置を利用者へ報告する。続行指示があるときに `queue resume --run <run> --continue` |
 | `decision` / `inspect` | 理由・子・残存資源を報告する。成否不明の操作を再送しない |
 | `none` | 完了を報告する。runの記録は残す |
 
-`issue-to-pr --merge → review-carry-over-followup → repo-cleanup-after-merge` の3工程を直列に行う。スキルの内部記録とロックは、そのスキルのhelperに管理させる。外側の司令塔は子の承認・質問に答えず、マージ・投稿・削除の条件を緩めない。
+`issue-to-pr --merge → review-carry-over-followup → repo-cleanup-after-merge` の3工程を直列に行う。スキルの内部記録とロックは、そのスキルのhelperに管理させる。外側の司令塔は子の承認・質問に答えず、マージ・投稿・削除の条件を緩めない。片付けの子に頼む整理は、今回のPRとIssueのために作られた資源だけを対象にし、別のセッションの作業を消さない。
 
 マージは GitHub、依頼の終了は今回の子の明示結果で確認する。35分のidleでも、マージや完了の証明にならない。マージ後のworking、未確認の結果、blockedではpaneを閉じない。監視上限、CI失敗、利用上限、子のstoppedは外側の停止であり、子をkillする許可ではない。停止・資源の回収は `monitoring-long-tasks` と担当スキルに従う。
+
+### main checkoutの更新
+
+helperが `update_main` を返したら、司令塔が親main checkoutで `repo-cleanup-after-merge` の「作業ツリーを origin/main へ更新する」手順（HEADと作業ツリーの状態の記録、`git fetch` の後の `git checkout --detach origin/main`）だけを行い、`queue reconcile` で照合し直す。worktree・branch・残骸・`refs/pr-review/*` の削除とremote branchの操作はしない。queueの資源は片付けの子が整理済みで、残っているのは別のセッションが使っている可能性のある作業である。
+
+checkoutの衝突、fetch・ghの失敗で更新できなければ、`--force`・`--merge`・stash・resetで回避しない。衝突したパスと理由を `queue decision --category blocking` に記録して利用者へ返す。helperはmain checkoutが最新になるまで起動・advanceを拒否する。`update_main` が返るのは、実装の工程の起動の前と、片付けの子の終了を確かめた後だけである。実装・持ち越しの途中で司令塔がmain checkoutを更新すると、使用版の照合で止まる。
 
 ## 会話の復旧と停止
 
@@ -65,7 +72,7 @@ queue stop --run <run> --after followup
 
 判断待ちは `queue decision --run <run> --id <名前> --category blocking|retain|final --reason <理由>` で保存する。`blocking` は次へ進めない。`retain` は資源を保持して続行できる判断、`final` は最後にまとめて確認する判断。解決した事実は同じIDへ `--resolve` を付けて残す。既存の許可を復旧のたびに尋ね直さず、対象や操作の範囲を広げない。
 
-開始前から残っているworktreeは、担当・停止・マージと競合の有無を既存スキルで確かめ、保持して続けられる場合だけ `--category retain --path <絶対パス>` と確認理由を記録する。キューと無関係なopen PRも、担当と競合の有無を確かめてから `--category retain --pr <番号>` と確認理由を記録する。helperは確認した時点のPRのHEADを保存し、同じPRが同じHEADのままの間だけ通す。pathとPRは別の判断IDで記録する。未確認のworktree・open PR、確認後にHEADが変わったPR、未解放のclaimがあれば実装・片付けを起動しない。保持の登録は削除・マージの許可ではない。
+helperは、実装・片付けの工程の起動の前と片付けの工程の終了の照合で、確認していないworktreeを1つずつ判定する。処理中のIssueのworktree・branch（パスかbranch名に `issue-<番号>` が番号の境界で現れる）と、子が次工程を妨げる資源として残したworktreeだけで止め、パスと理由を返す。それ以外（別のIssueやセッションの作業、レビューの残骸、未commitの変更を持つworktreeを含む）は無視して進み、パス・HEAD・branch・判定の根拠をrunのイベント `worktrees_ignored` に残す。止まったworktreeは、担当・停止・マージと競合の有無を既存スキルで確かめ、保持して続けられる場合だけ `--category retain --path <絶対パス>` と確認理由を記録する。キューと無関係なopen PRは、担当と競合の有無を確かめてから `--category retain --pr <番号>` と確認理由を記録する。helperは確認した時点のPRのHEADを保存し、同じPRが同じHEADのままの間だけ通す。pathとPRは別の判断IDで記録する。未確認のopen PR、確認後にHEADが変わったPR、未解放のclaimがあれば実装・片付けを起動しない。保持の登録と無視の記録は、削除・マージの許可ではない。
 
 各周回ではIssue・PR・loop run・子の識別情報、所要時間、マージ検出時刻、判断待ち、保持資源、使用版を報告する。正常終了・停止・確認できないことを分ける。終了時も `reviews/`・`tmp/agents/`・remote branch を一括削除しない。
 

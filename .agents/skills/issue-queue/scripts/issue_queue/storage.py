@@ -14,7 +14,11 @@ from .models import Run, now
 
 
 class QueueError(Exception):
-    """副作用へ進めない入力・観測・順序の不整合。"""
+    """副作用へ進めない入力・観測・順序の不整合。next_actionは司令塔が次に行う操作。"""
+
+    def __init__(self, message: str, *, next_action: str = "inspect"):
+        super().__init__(message)
+        self.next_action = next_action
 
 
 class Store:

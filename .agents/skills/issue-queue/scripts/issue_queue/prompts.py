@@ -43,6 +43,8 @@ SDD workspaceは親main checkoutのtmp/agentsに置き、worktree内に.superpow
 同じkeyの再実行は照合だけを行う。unknownを新しいkeyで再送してはいけない。
 外部投稿の権限は既存スキルの範囲のまま。ユーザーの承認/質問に代わりに答えない。
 cleanupは既存スキルのゲートを全て維持し、remote branch・reviews・tmp/agentsを保持する。
+cleanupで整理するのは今回のPRとIssueのために作られたbranch・worktree・残骸（pr-reviewの残骸とrefs/pr-review/<PR番号>を含む）だけ。
+それ以外のworktree・branch・残骸は別のセッションが使用している可能性があるので、マージ済み・cleanでも削除せずに報告する。
 このrunディレクトリは再開に必要なので削除しない。未確認の資源を一括削除しない。
 全工程終了後、バックグラウンドの停止と終了処理を確認し、次のJSONをこのrunの下の一意ファイルへ書き、
 `{cli} report {arguments} --input <結果JSON>` を最後の操作として実行して最終報告してください。

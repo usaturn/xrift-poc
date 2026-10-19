@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,19 @@ from tools.test_support.repos import create_env_repo
 REPOSITORY = "usaturn/xrift-poc"
 ROOT = Path(__file__).resolve().parents[2]
 CLI = ROOT / ".agents/skills/issue-queue/scripts/queue.py"
+# remoteのcloneには利用者の設定が無いので、commitの名前と署名・remote名・ローカルのcloneを固定する。
+GIT_FLAGS = (
+    "-c",
+    "user.name=Test",
+    "-c",
+    "user.email=test@example.invalid",
+    "-c",
+    "commit.gpgsign=false",
+    "-c",
+    "clone.defaultRemoteName=origin",
+    "-c",
+    "protocol.file.allow=always",
+)
 
 
 def pane(pane_id: str, session: str, *, name: str = "controller", state: str = "working") -> dict[str, Any]:
@@ -37,6 +51,7 @@ class QueueEnv:
     data_file: Path
     env: dict[str, str]
     home: Path
+    remote: Path
 
     def data(self) -> dict[str, Any]:
         return json.loads(self.data_file.read_text())
@@ -155,6 +170,23 @@ main()
     def git(self, *args: str) -> str:
         return subprocess.check_output(["git", "-C", str(self.root), *args], text=True).strip()
 
+    def push_main(self, file: str, content: str) -> str:
+        """main checkoutを動かさずに、remoteのmainへcommitを1つ足してSHAを返す。別のPRのマージを再現する。"""
+        clone = Path(tempfile.mkdtemp(prefix="remote-clone-", dir=self.home))
+        git = ["git", *GIT_FLAGS]
+        # bareのremoteのHEADはmainを指さないので、mainを明示してcloneする。
+        subprocess.run([*git, "clone", "-q", "--branch", "main", str(self.remote), str(clone)], check=True)
+        (clone / file).write_text(content)
+        subprocess.run([*git, "-C", str(clone), "add", "--", file], check=True)
+        subprocess.run([*git, "-C", str(clone), "commit", "-qm", f"update {file}"], check=True)
+        subprocess.run([*git, "-C", str(clone), "push", "-q", "origin", "HEAD:refs/heads/main"], check=True)
+        return subprocess.check_output([*git, "-C", str(clone), "rev-parse", "HEAD"], text=True).strip()
+
+    def update_main(self) -> None:
+        """司令塔がupdate_mainで行う更新（fetchとdetachedのcheckout）を再現する。失敗はCalledProcessError。"""
+        self.git("fetch", "-q", "origin", "main")
+        self.git("checkout", "-q", "--detach", "origin/main")
+
     def result(self, run: str, attempt: dict[str, Any], **overrides: Any) -> Path:
         result: dict[str, Any] = {
             "outcome": "success",
@@ -200,6 +232,16 @@ main()
         followup = self.launch(run)
         self.ack(run, followup)
         return run, followup
+
+    def cleanup(self) -> tuple[str, dict[str, Any]]:
+        """持ち越しを終えて片付けの子を起動し、ackまで進める。"""
+        run, followup = self.followup()
+        self.report(run, followup)
+        self.child(followup, "done")
+        self.call("advance", "--run", run)
+        cleanup = self.launch(run)
+        self.ack(run, cleanup)
+        return run, cleanup
 
 
 def make_queue_env(base: Path) -> QueueEnv:
@@ -249,7 +291,7 @@ def make_queue_env(base: Path) -> QueueEnv:
         "QUEUE_FAKE_DATA": str(data_file),
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
     }
-    return QueueEnv(repo.root, data_file, environment, home)
+    return QueueEnv(repo.root, data_file, environment, home, remote)
 
 
 FAKE_CLI = r"""

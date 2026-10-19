@@ -19,9 +19,9 @@ def launch(work: Workflow) -> None:
     if attempt is not None and attempt.launch not in {"prepared", "pane_created"}:
         raise QueueError("起動済みまたは起動の成否不明です。reconcileで照合し再送しないでください")
     if run.phase == "implement":
-        work.preflight()
+        work.preflight(new=attempt is None)
     elif run.phase == "cleanup":
-        work.resource_barrier()
+        work.resource_barrier("cleanup_launch")
     if attempt is None:
         token = uuid4().hex
         attempt = Attempt(

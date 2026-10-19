@@ -183,7 +183,8 @@ def main() -> int:
         print(json.dumps(response, ensure_ascii=False))
         return 0
     except (QueueError, OSError, ValueError, KeyError, ValidationError) as error:
-        response = {"status": "blocked", "reason": str(error), "next": "inspect"}
+        next_action = error.next_action if isinstance(error, QueueError) else "inspect"
+        response = {"status": "blocked", "reason": str(error), "next": next_action}
         if work is not None:
             response.update(run_dir=str(work.path), run=work.run.model_dump(mode="json"))
         print(json.dumps(response, ensure_ascii=False))
