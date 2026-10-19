@@ -89,6 +89,8 @@ class Attempt(Record):
     effects: list[Effect] = Field(default_factory=list[Effect])
     closing: bool = False
     closed: bool = False
+    # 受領前に子が消えたattemptをabandonで閉じた理由。
+    abandon_reason: str | None = None
     merged_at: str | None = None
     pr_url: str | None = None
     finished_at: str | None = None

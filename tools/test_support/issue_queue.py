@@ -260,6 +260,8 @@ data = json.loads(file.read_text())
 args = sys.argv[1:]
 tool = Path(sys.argv[0]).name
 key = tool + " " + " ".join(args[:2])
+# failは "herdr agent get" のように操作全体か、"herdr agent get <対象>" のように対象を絞って指定する。
+failing = data.get("fail") in (key, tool + " " + " ".join(args[:3]))
 data["calls"].append([tool, *args])
 def emit(value):
     file.write_text(json.dumps(data))
@@ -271,7 +273,7 @@ def emit(value):
 def error(code="fake_failure", message="fake failure"):
     # 実Herdr 0.9.5はstderrへ {"error":{"code","message"},"id"} を出してexit 1になる。ghは文章を出す。
     file.write_text(json.dumps(data))
-    if data.get("fail") == key and data.get("fail_stderr") is not None:
+    if failing and data.get("fail_stderr") is not None:
         print(data["fail_stderr"], file=sys.stderr)
     elif tool == "herdr":
         print(json.dumps({"error": {"code": code, "message": message}, "id": "cli:" + ":".join(args[:2])}),
@@ -279,7 +281,7 @@ def error(code="fake_failure", message="fake failure"):
     else:
         print(message, file=sys.stderr)
     sys.exit(1)
-if data.get("fail") == key:
+if failing:
     error()
 if tool == "herdr":
     if args[:2] in (["pane", "list"], ["agent", "list"]):
