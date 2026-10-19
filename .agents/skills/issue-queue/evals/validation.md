@@ -1,0 +1,26 @@
+# 検証記録
+
+## 2026-10-19 baseline
+
+スキルが無い新規エージェントでscenarios.md相当の3場面を評価した（25秒）。
+既存のHerdr・監視手順を調べ、3場面とも重複起動・未確認のpane閉鎖・投稿の無条件再送を避けた。
+一方で、永続runのowner照合・操作intent・明示結果を使う新しいCLIはまだ存在せず、手動の観測と記録を提案した。
+安全規則を破るbaselineではなかったため、禁止文を増やす形にはせず、CLIを使う順序と結果の形式を記述した。
+
+## 2026-10-19 スキルあり
+
+別の新規エージェントがSKILL.md・protocol.md・scenarios.mdを読んで同じ3場面に回答した（67秒）。
+旧ownerの不在確認とresume/reconcile、明示結果を待つwait、投稿マーカーによる照合を選んだ。
+投稿Bの成否が不明なときはblockingの判断を記録し、別keyによる再送をしない。
+followup後の停止要求を守り、cleanupへ進めるresume --continueを実行しなかった。
+baselineでの手動判断に対し、保存したrunとCLIの具体的な操作へ対応付けられた。
+失われた子の自動作り直しや、成否不明の投稿の再送は提供せず、手動調査で止める範囲も認識した。
+
+## 実機
+
+実Issueの試運転は未実施。対象Issueと子の起動方針が未確定である。
+2026-10-19 のPR #78 のレビュー確認で、実Herdr 0.9.5の読み取りと、所有したpaneでのCodex（追加の引数なし）の接続確認を行った。
+無いpaneの `pane get` はstderrの `{"error":{"code":"pane_not_found",...}}` で終わる。
+Codexのstartの応答とその後のgetにはnative sessionが無く、最初の入力の後に同じpane・terminalで現れる。
+fake CLIをこの形に合わせた。子の通しの起動・実Issueの試運転とclaude・piの実起動は未実施である。
+fake CLI試験はPythonのテストで管理し、実機検証を代替したと記録しない。
