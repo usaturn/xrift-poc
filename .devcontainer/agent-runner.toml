@@ -160,7 +160,7 @@ after_run = [[
 # いつも使う構成は、個人設定のこの節の agents を書き換える。
 # 下の 5 人は指定が無いときの既定値で、移植元（agent-workspace #657）と同じ構成にした。性能の順位ではない。
 [workflows.review.assignments.inspect]
-agents = ["devin-swe", "dsh-ccd", "claude-opus", "pixg"]
+agents = ["devin-swe", "dsh-ccd", "claude-opus", "pi-gpt"]
 
 [workflows.fix.assignments.implement]
 agents = ["claude-opus"]
