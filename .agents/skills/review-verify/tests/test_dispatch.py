@@ -18,7 +18,7 @@ from typing import Any
 
 import pytest
 
-from tools.agent_runner import Config, ConfigError
+from tools.agent_runner import Config, ConfigError, RunnerError
 from tools.agent_runner.adapters import AdapterContext, AdapterOutcome, Capabilities, LaunchSpec
 from tools.agent_runner.models import Identity
 from tools.agent_runner.runner import EXCEPTIONS_HEADING
@@ -225,6 +225,20 @@ def test_invalid_fix_check_assignment_is_rejected_before_launch(
     else:
         cfg.roles["fix-check"].result_shape = "text"
     with pytest.raises(ConfigError):
+        dispatch.dispatch(cfg, verification_input, tmp_path / "run")
+    assert not (tmp_path / "run").exists()
+
+
+def test_codex_fix_check_is_refused_before_any_output(
+    dispatch: Any, verification_input: dict[str, Any], tmp_path: Path
+) -> None:
+    """実際の codex の adapter は writes=false を -s read-only で起動し、fix-check の一時的な書き込み
+    （uv のキャッシュ、worktree の登録）ができない。dispatch が渡す例外を runner が出力の前に拒否する（#52）。"""
+    cfg = config("probe")
+    cfg.agents["probe"].runtime = "codex"
+    # 存在しないコマンド。拒否が外れても実際の CLI を起動しない
+    cfg.agents["probe"].command = [str(tmp_path / "missing-agent")]
+    with pytest.raises(RunnerError):
         dispatch.dispatch(cfg, verification_input, tmp_path / "run")
     assert not (tmp_path / "run").exists()
 
