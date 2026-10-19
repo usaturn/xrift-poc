@@ -847,6 +847,7 @@ def test_stale_shared_daemon_ack_is_rejected_and_run_recovers_by_abandon(queue_e
         "acknowledged",
         "child_alive",
         "same_kind_in_pane",
+        "caller_in_child_pane",
         "marker_pr",
         "owner_alive",
         "herdr_failure",
@@ -854,7 +855,8 @@ def test_stale_shared_daemon_ack_is_rejected_and_run_recovers_by_abandon(queue_e
     ],
 )
 def test_abandon_accepts_only_unacknowledged_attempt_whose_child_is_gone(queue_env: QueueEnv, case: str) -> None:
-    # child_leftだけを受け付ける。他のcaseはchild_leftから条件を1つだけ変える。
+    # child_leftと、子のpaneで司令塔を復旧したcaller_in_child_paneだけを受け付ける。
+    # 他のcaseはchild_leftから条件を1つだけ変える。
     run = queue_env.init(kind="codex")
     caller = "w1:p1"
     if case == "not_split":
@@ -870,6 +872,20 @@ def test_abandon_accepts_only_unacknowledged_attempt_whose_child_is_gone(queue_e
             child.update(name=None, agent=None, agent_session=None, agent_status="unknown")
         if case == "same_kind_in_pane":
             child["agent"] = "codex"
+        if case == "caller_in_child_pane":
+            # 旧ownerは消え、子と同じkindの司令塔の会話を子のpane・保存したterminalで復旧した。
+            del data["panes"]["w1:p1"]
+            child.update(
+                agent="codex",
+                agent_status="working",
+                agent_session={
+                    "agent": "codex",
+                    "kind": "id",
+                    "source": "herdr:codex",
+                    "value": "recovered-controller",
+                },
+            )
+            caller = attempt["pane_id"]
         if case == "owner_alive":
             caller = "w1:p9"
             data["panes"][caller] = pane(caller, "another-controller")
@@ -879,7 +895,7 @@ def test_abandon_accepts_only_unacknowledged_attempt_whose_child_is_gone(queue_e
         queue_env.save(data)
         if case == "marker_pr":
             queue_env.merge(attempt, close=False)
-    accepted = case == "child_left"
+    accepted = case in ("child_left", "caller_in_child_pane")
     queue_env.call("abandon", "--run", run, "--reason", "子の停止を確認", pane_id=caller, code=0 if accepted else 3)
     saved = queue_env.call("status", "--run", run)["run"]["attempts"][-1]
     assert (saved["closed"], saved["abandon_reason"]) == ((True, "子の停止を確認") if accepted else (False, None))

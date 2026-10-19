@@ -127,6 +127,8 @@ class Workflow:
             pane
             and pane.get("terminal_id") == attempt.pane_terminal_id
             and pane.get("agent") == self.run.policy.agent_kind
+            # paneのagentは1つなので、呼び出し元がそのpane・terminalにいれば子ではない。
+            and (caller.pane_id, caller.terminal_id) != (attempt.pane_id, attempt.pane_terminal_id)
         ):
             raise QueueError("子のpaneで同じkindのagentが動いています。停止を確認してから打ち切ってください")
         if any(attempt.marker in (p.get("body") or "") for p in self.ext.pages("pulls?state=all&per_page=100")):
