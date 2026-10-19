@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from .external import External, identity
-from .models import Attempt, Init, Result, Run, now
+from .external import CommandError, External, agent_args, herdr_error_code, identity
+from .models import Attempt, Identity, Init, Result, Run, now
 from .publishing import check_followup_result, reconcile_effects
 from .storage import QueueError, Store
 
@@ -25,6 +25,7 @@ def timestamp(value: str) -> datetime:
 def initialize(store: Store, ext: External, request: Init) -> tuple[Path, Run]:
     if any(n <= 0 for n in request.issues) or len(set(request.issues)) != len(request.issues):
         raise QueueError("Issue番号は正の整数で、重複なく指定してください")
+    agent_args(request.policy.agent_kind, request.policy.agent_args)
     for number in request.issues:
         issue = ext.issue(number)
         if issue["state"] != "OPEN" or "<!-- planning-parallel-issues board:" in issue["body"]:
@@ -90,15 +91,61 @@ class Workflow:
         if barrier := self.progress_barrier():
             raise QueueError(barrier[2])
 
+    def check_takeover(self, caller: Identity) -> None:
+        for agent in self.ext.agents():
+            # 呼び出し元自身は旧ownerと数えない。同じ会話を別pane・新しいterminalで復旧できる。
+            if (agent.get("pane_id"), agent.get("terminal_id")) == (caller.pane_id, caller.terminal_id):
+                continue
+            if agent.get("agent_session") and identity(agent).session == self.run.owner.session:
+                raise QueueError("元の司令塔がまだ存在します。古さを理由に引き継げません")
+
+    def abandon(self, reason: str) -> None:
+        """受領前に子が消えたattemptを閉じる。同じ工程は次のlaunchで新しいattemptとして起動する。
+
+        paneは閉じず、ownerも移さない。工程の境界の操作なので使用版は照合しない。
+        """
+        if not reason.strip():
+            raise QueueError("打ち切る理由を指定してください")
+        caller = self.ext.caller()
+        if caller != self.run.owner:
+            self.check_takeover(caller)
+        attempt = self.run.current()
+        if attempt is None or not attempt.pane_id:
+            raise QueueError("打ち切れるattemptがありません。pane作成前の起動予定はlaunchで続けてください")
+        if attempt.acknowledged or attempt.result is not None:
+            raise QueueError("受領済みのattemptは打ち切れません。子の結果と作業を確認してください")
+        try:
+            self.ext.herdr("agent", "get", attempt.agent_name)
+        except CommandError as error:
+            # 不在はHerdrの構造化エラーのcodeの完全一致だけで判定する。接続失敗・別のcodeは不在にしない。
+            if herdr_error_code(error.stderr) != "agent_not_found":
+                raise
+        else:
+            raise QueueError("子のagentがまだ存在します。停止を確認してから打ち切ってください")
+        pane = self.ext.pane(attempt.pane_id)
+        if (
+            pane
+            and pane.get("terminal_id") == attempt.pane_terminal_id
+            and pane.get("agent") == self.run.policy.agent_kind
+            # paneのagentは1つなので、呼び出し元がそのpane・terminalにいれば子ではない。
+            and (caller.pane_id, caller.terminal_id) != (attempt.pane_id, attempt.pane_terminal_id)
+        ):
+            raise QueueError("子のpaneで同じkindのagentが動いています。停止を確認してから打ち切ってください")
+        if any(attempt.marker in (p.get("body") or "") for p in self.ext.pages("pulls?state=all&per_page=100")):
+            raise QueueError("このattemptのマーカーを持つPRがあります。打ち切らずに照合してください")
+        attempt.closed = True
+        attempt.abandon_reason = reason
+        self.run.event("attempt_abandoned", attempt=attempt.id, reason=reason)
+        if self.run.stopped_reason:
+            # blocked・監視上限は閉じたattemptの子についての停止なので、打ち切りで解消する。
+            self.run.event("stop_resolved", previous=self.run.stopped_reason, reason=reason)
+            self.run.stopped_reason = None
+        self.save()
+
     def resume(self, *, proceed: bool, reason: str | None = None) -> None:
         caller = self.ext.caller()
         if caller != self.run.owner:
-            for agent in self.ext.agents():
-                # 呼び出し元自身は旧ownerと数えない。同じ会話を別pane・新しいterminalで復旧できる。
-                if (agent.get("pane_id"), agent.get("terminal_id")) == (caller.pane_id, caller.terminal_id):
-                    continue
-                if agent.get("agent_session") and identity(agent).session == self.run.owner.session:
-                    raise QueueError("元の司令塔がまだ存在します。古さを理由に引き継げません")
+            self.check_takeover(caller)
             # 保存値以外に子・GitHub・worktreeも取得できた時だけownerを移す。
             self.observe()
             self.run.event("owner_transferred", previous=self.run.owner.model_dump(), current=caller.model_dump())

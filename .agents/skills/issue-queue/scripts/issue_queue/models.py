@@ -77,6 +77,8 @@ class Attempt(Record):
     marker: str
     created_at: str = Field(default_factory=now)
     version: dict[str, str]
+    # agent startへ渡す引数。旧helperのattemptには無い。
+    launch_args: list[str] | None = None
     launch: Literal["prepared", "splitting", "pane_created", "starting", "started", "submitting", "submitted"]
     pane_id: str | None = None
     pane_terminal_id: str | None = None
@@ -87,6 +89,8 @@ class Attempt(Record):
     effects: list[Effect] = Field(default_factory=list[Effect])
     closing: bool = False
     closed: bool = False
+    # 受領前に子が消えたattemptをabandonで閉じた理由。
+    abandon_reason: str | None = None
     merged_at: str | None = None
     pr_url: str | None = None
     finished_at: str | None = None

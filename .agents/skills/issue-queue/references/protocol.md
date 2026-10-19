@@ -18,7 +18,7 @@
 }
 ```
 
-値は利用者の指示に合わせる。上の番号・kindは例である。`agent_args` はargv配列で、シェルへ展開しない。秘密を含む引数を保存しない。`additional_issues` は `propose` または `enqueue`。remote branchの自動削除は提供しない。監視上限は60〜28800秒。
+値は利用者の指示に合わせる。上の番号・kindは例である。`agent_args` はargv配列で、シェルへ展開しない。秘密を含む引数を保存しない。helperは順序を保って子へ渡す。`agent_kind` が `codex` のときは先頭に `--no-daemon` を加え（既にあれば加えない）、`--remote` はinitとlaunchで拒否する。`additional_issues` は `propose` または `enqueue`。remote branchの自動削除は提供しない。監視上限は60〜28800秒。
 
 すべてのコマンドはJSONを返す。終了コード0はコマンドの処理成功であり、キュー完了とは限らない。`status` が `complete` のときだけ全件完了。`waiting`・`paused`・`blocked` と `next`・`reason` を読む。入力や観測、順序の拒否は3、argparseの引数エラーは2。失敗時も `run_dir` と保存済みの状態を返す。
 
@@ -26,7 +26,7 @@
 
 ## 子への依頼と結果
 
-helperは毎回、親main checkoutをcwdとする新しいHerdr paneを作り、一意のagent名を付ける。最初の操作として `ack --run ... --attempt ...` を依頼する。startの応答とその後のgetにnative sessionが無いagent（Codexなど）は、一意のagent名・kind・pane・terminalが起動時と一致することを照合して依頼を1回だけ送り、最初のackで呼び出し元のnative sessionを確定する。最初のackも、別のpane・terminal・agentからは受け付けない。確定後は呼び出し元のpane・terminal・native sessionが保存値と一致することを検査し、sessionの変更は拒否する。子に渡したスキルとhelperのhash、mainのcommitをattemptに保存する。
+helperは毎回、親main checkoutをcwdとする新しいHerdr paneを作り、一意のagent名を付ける。`agent start` へ渡す引数は、起動前にattemptの `launch_args` へ保存する。最初の操作として `ack --run ... --attempt ...` を依頼する。startの応答とその後のgetにnative sessionが無いagent（Codexなど）は、一意のagent名・kind・pane・terminalが起動時と一致することを照合して依頼を1回だけ送り、最初のackで呼び出し元のnative sessionを確定する。最初のackも、別のpane・terminal・agentからは受け付けない。確定後は呼び出し元のpane・terminal・native sessionが保存値と一致することを検査し、sessionの変更は拒否する。子に渡したスキルとhelperのhash、mainのcommitをattemptに保存する。
 
 実装のPR本文には `<!-- issue-queue:<run ID>:<attempt ID> -->` を付ける。IssueがCLOSEDでも、対応するマーカーを持つ同repositoryのPRがMERGEDで、closedByPullRequestsReferencesに含まれることが確認できなければ次へ進まない。今回の `pr-review-fix-loop` の `run.json`、ended/no_fix_needed/merged、開始時刻、ロック解放も確認する。
 
@@ -77,6 +77,8 @@ helperは毎回、親main checkoutをcwdとする新しいHerdr paneを作り、
 state.jsonのschema_versionは1。helperがflockの下で一時ファイルをfsyncし、replaceして保存する。未対応schemaは拒否する。排他はコマンド単位のflockと、runに保存する司令塔のnative sessionの両方で行う。子が呼ぶ `ack`・`report`・`publish` は、司令塔の `wait` などが終わるまでflockを待ってから実行する。司令塔のコマンド同士の競合は待たずに拒否する。古さだけでロックを奪わない。司令塔を移すときはHerdrの現在の一覧で、呼び出し元以外に旧sessionのagentが無いことを確かめる。同じsessionの会話を別pane・新しいterminalで復旧した場合も引き継げる。
 
 意図保存と外部の操作は一つのトランザクションにはできない。意図があり結果が無い窓は「不明」として扱う。startの応答消失は一意agent名・kind・pane・terminalで照合できれば未送信の状態へ戻せる。prompt送信の成否不明はackを待つ。splitの応答消失など、所有paneを確定できない場合は手動調査で止め、再実行しない。paneの不在は、Herdrがstderrに返す構造化エラーの `error.code` が `pane_not_found` に完全一致するときだけと判断する。接続失敗・JSONでない応答・別のcodeは不在にしない。closeの意図を保存した後にpaneが無ければ、終了結果と外部状態を確認し直して次の工程へ進む。closeの意図が無いのにpaneが無ければ、再起動せず調査で止める。
+
+ackの前に子が消えたattemptは `abandon --run ... --reason <理由>` で閉じる。helperは、呼び出し元がownerか、resumeと同じ照合で旧ownerが不在であること、ackと結果が無いこと、agent名の `get` がstderrの構造化エラー `agent_not_found` で終わること、paneが残っていれば、保存したterminalで呼び出し元以外の同じkindのagentが動いていないこと、attemptのマーカーを持つPR（全状態）が無いことを確かめる。閉じたattemptは `abandon_reason` に理由を残し、そのattemptの子による `stopped_reason` を解除する。paneは閉じず、ownerと判断待ちは変えず、使用版は照合しない。同じ工程は次の `launch` で新しいattemptとして起動する。
 
 `prepared` はsplit、`pane_created` はstartの意図をまだ保存していない。`launch` は保存したattemptを再利用して、その未実行部分だけを続ける。pane_createdではpaneのterminal IDと、別のagentが起動していないことも確認する。`splitting` / `starting` / `submitting` を未実行に戻さない。起動・送信とも、保存されたblocking判断や停止要求を副作用の前に検査する。
 

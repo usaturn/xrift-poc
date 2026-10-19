@@ -47,10 +47,13 @@ queue init --input <方針JSONの絶対パス>
 ```bash
 queue status --run <run>
 queue resume --run <run>
+queue abandon --run <run> --reason <理由>
 queue stop --run <run> --after followup
 ```
 
 `resume` は旧ownerの生存と子・GitHub・worktreeを照合する。呼び出し元の会話自身は旧ownerと数えないので、元の会話を別のpaneや新しいterminalで復旧しても引き継げる。呼び出し元以外に旧ownerと同じnative sessionのagentが残っていれば横取りしない。動いている子は監視に戻し、新しい子を作らない。起動・送信のtimeoutは未実行の証拠ではない。pane作成の応答が失われて所有を証明できない場合は手動調査で止める。
+
+子がackの前に終わった場合（子のpaneが閉じられた、別のagentに使われた、起動直後に止まった）は、子が動いていないことと、attemptのマーカーを持つPRが無いことを確かめてから `abandon` でattemptを閉じ、理由を残す。helperも同じ条件を照合し、使用版が変わった後でも閉じられる。この会話や別のkindのagentが子のpaneを使っていても閉じられる。子のpaneの保存したterminalに、この会話以外の同じkindのagentがいれば、名前の消えた子と区別できないので閉じない。paneは閉じず、ownerと判断待ちは変えない。旧ownerが不在なら続けて `resume` で引き継ぎ、判断待ちを解決してから `reconcile` → `launch` で同じ工程を新しいattemptとして起動する。ack済みの子は打ち切れない。失敗した子を自動で作り直す機能ではない。
 
 `--after followup` は持ち越しの調査後、片付けの前で止める。未実施のcleanupを保存し、再開はそこから始める。片付け後に止める場合だけ `--after cleanup` を使う。試運転は最初のcleanup後に止まる。利用者が子のblockedを解消した後は、事実を `resume --continue --reason <理由>` に記録できる。失敗した子を自動再起動する機能ではない。
 
@@ -69,3 +72,5 @@ queue stop --run <run> --after followup
 ## ランタイムごとの違い
 
 本体は `.agents/skills/issue-queue`、Claude Codeは `.claude/skills/issue-queue` の相対リンクから読む。司令塔はどのランタイムでも同じCLIを使い、Herdrのnative sessionで識別する。子は明示した `claude`・`codex`・`pi` のkindとargvで起動する。Codexのように起動直後はnative sessionが無いkindも、一意のagent名・kind・pane・terminalを照合して依頼を1回だけ送り、子の最初の `ack` でsessionを確定する。別モデルや別ランタイムへ暗黙に切り替えない。
+
+helperは利用者のargvを順序どおり渡し、加えるのはCodexの `--no-daemon` だけである。Codexの共有app-server daemonは、daemonを起動したpaneの環境でツールとフックを動かすので、子の `ack` とHerdrへのnative sessionの報告が別のpaneを指す。Codexの子では、共有のapp-serverへ接続する `--remote` を受け付けない。共有daemonは他の会話も使うので止めない。

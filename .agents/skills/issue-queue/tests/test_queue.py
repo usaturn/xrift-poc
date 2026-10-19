@@ -754,3 +754,164 @@ def test_lost_start_with_mismatched_terminal_is_not_submitted(queue_env: QueueEn
     queue_env.call("reconcile", "--run", run, code=3)
     queue_env.call("submit", "--run", run, code=3)
     assert not any(c[:3] == ["herdr", "agent", "prompt"] for c in queue_env.data()["calls"])
+
+
+@pytest.mark.parametrize(
+    ("kind", "args", "expected"),
+    [
+        ("codex", [], ["--no-daemon"]),
+        ("codex", ["-m", "gpt-x", "--search"], ["--no-daemon", "-m", "gpt-x", "--search"]),
+        ("codex", ["--no-daemon", "-m", "gpt-x"], ["--no-daemon", "-m", "gpt-x"]),
+        ("claude", ["--model", "opus"], ["--model", "opus"]),
+    ],
+)
+def test_child_starts_with_saved_launch_args(
+    queue_env: QueueEnv, kind: str, args: list[str], expected: list[str]
+) -> None:
+    # Codexの共有daemonは起動時の環境でツールとフックを動かすので、子ごとにdaemonを使わずに起動する。
+    run = queue_env.init(kind=kind, args=args)
+    attempt = queue_env.launch(run)
+    assert attempt["launch_args"] == expected
+    start = next(c for c in queue_env.data()["calls"] if c[:3] == ["herdr", "agent", "start"])
+    assert start[start.index("--") + 1 :] == expected
+    assert queue_env.call("status", "--run", run)["run"]["policy"]["agent_args"] == args
+
+
+@pytest.mark.parametrize("remote", [["--remote", "unix://"], ["--remote=unix://"]])
+def test_codex_remote_is_rejected_before_side_effects(queue_env: QueueEnv, remote: list[str]) -> None:
+    queue_env.call("init", "--input", str(queue_env.init_file(kind="codex", args=remote)), code=3)
+    assert not list((queue_env.root / "tmp/agents").glob("issue-queue.*"))
+    # 旧helperが受け付けた方針のrunも、paneを作る前に止める。
+    run = queue_env.init(kind="codex")
+    state_file = Path(run) / "state.json"
+    state = json.loads(state_file.read_text())
+    state["policy"]["agent_args"] = remote
+    state_file.write_text(json.dumps(state))
+    queue_env.call("launch", "--run", run, code=3)
+    assert not any(c[:3] == ["herdr", "pane", "split"] for c in queue_env.data()["calls"])
+
+
+def test_stale_shared_daemon_ack_is_rejected_and_run_recovers_by_abandon(queue_env: QueueEnv) -> None:
+    run = queue_env.init(kind="codex")
+    attempt = queue_env.launch(run)
+    child = attempt["pane_id"]
+    # 共有daemonが継承した、閉じた接続確認のpaneの環境から子のackが動いた(#79)。
+    queue_env.call("ack", "--run", run, "--attempt", attempt["id"], pane_id="w1:p0", code=3)
+    saved = queue_env.call("status", "--run", run)["run"]["attempts"][-1]
+    assert (saved["acknowledged"], saved["identity"]) == (False, None)
+    decision = ("decision", "--run", run, "--id", "daemon", "--category", "blocking")
+    queue_env.call(*decision, "--reason", "共有daemon\n旧pane")
+    # 旧helperが書いた状態のまま司令塔の会話が失われ、子のpaneを新しい会話が使う。helperの版も変わった。
+    state_file = Path(run) / "state.json"
+    state = json.loads(state_file.read_text())
+    for item in state["attempts"]:
+        item.pop("launch_args", None)
+        item.pop("abandon_reason", None)
+    state_file.write_text(json.dumps(state))
+    data = queue_env.data()
+    del data["panes"]["w1:p1"]
+    data["panes"][child].update(
+        name=None,
+        agent="claude",
+        agent_status="working",
+        agent_session={"agent": "claude", "kind": "id", "source": "herdr:claude", "value": "restored-controller"},
+    )
+    queue_env.save(data)
+    skills = queue_env.root / ".agents/skills/issue-to-pr"
+    skills.mkdir(parents=True)
+    (skills / "SKILL.md").write_text("updated skills\n")
+    queue_env.call("resume", "--run", run, pane_id=child, code=3)
+    reason = "受領前に子が終了。\nマーカー付きPRなし"
+    abandoned = queue_env.call("abandon", "--run", run, "--reason", reason, pane_id=child)["run"]
+    assert (abandoned["attempts"][0]["closed"], abandoned["attempts"][0]["abandon_reason"]) == (True, reason)
+    assert abandoned["owner"]["pane_id"] == "w1:p1"
+    resumed = queue_env.call("resume", "--run", run, pane_id=child)
+    assert (resumed["run"]["owner"]["pane_id"], resumed["next"]) == (child, "decision")
+    queue_env.call(*decision, "--reason", "修正済み", "--resolve", pane_id=child)
+    assert queue_env.call("reconcile", "--run", run, pane_id=child)["next"] == "launch"
+    relaunched = queue_env.call("launch", "--run", run, pane_id=child)["run"]["attempts"][-1]
+    assert relaunched["id"] != attempt["id"]
+    assert (relaunched["issue"], relaunched["phase"], relaunched["launch_args"]) == (11, "implement", ["--no-daemon"])
+    queue_env.ack(run, relaunched)
+    calls = queue_env.data()["calls"]
+    assert sum(c[:3] == ["herdr", "agent", "start"] for c in calls) == 2
+    assert sum(c[:3] == ["herdr", "agent", "prompt"] for c in calls) == 2
+    assert not any(c[:3] == ["herdr", "pane", "close"] for c in calls)
+    assert child in queue_env.data()["panes"]
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "child_left",
+        "acknowledged",
+        "child_alive",
+        "same_kind_in_pane",
+        "caller_in_child_pane",
+        "marker_pr",
+        "owner_alive",
+        "herdr_failure",
+        "not_split",
+    ],
+)
+def test_abandon_accepts_only_unacknowledged_attempt_whose_child_is_gone(queue_env: QueueEnv, case: str) -> None:
+    # child_leftと、子のpaneで司令塔を復旧したcaller_in_child_paneだけを受け付ける。
+    # 他のcaseはchild_leftから条件を1つだけ変える。
+    run = queue_env.init(kind="codex")
+    caller = "w1:p1"
+    if case == "not_split":
+        queue_env.interrupt_launch(run, "prepared")
+    else:
+        attempt = queue_env.launch(run)
+        if case == "acknowledged":
+            queue_env.ack(run, attempt)
+        data = queue_env.data()
+        child = data["panes"][attempt["pane_id"]]
+        if case != "child_alive":
+            # 子が終了し、paneにはshellだけが残る。
+            child.update(name=None, agent=None, agent_session=None, agent_status="unknown")
+        if case == "same_kind_in_pane":
+            child["agent"] = "codex"
+        if case == "caller_in_child_pane":
+            # 旧ownerは消え、子と同じkindの司令塔の会話を子のpane・保存したterminalで復旧した。
+            del data["panes"]["w1:p1"]
+            child.update(
+                agent="codex",
+                agent_status="working",
+                agent_session={
+                    "agent": "codex",
+                    "kind": "id",
+                    "source": "herdr:codex",
+                    "value": "recovered-controller",
+                },
+            )
+            caller = attempt["pane_id"]
+        if case == "owner_alive":
+            caller = "w1:p9"
+            data["panes"][caller] = pane(caller, "another-controller")
+        if case == "herdr_failure":
+            data["fail"] = "herdr agent get " + attempt["agent_name"]
+            data["fail_stderr"] = '{"error":{"code":"server_error","message":"lookup failed"},"id":"cli:agent:get"}'
+        queue_env.save(data)
+        if case == "marker_pr":
+            queue_env.merge(attempt, close=False)
+    accepted = case in ("child_left", "caller_in_child_pane")
+    queue_env.call("abandon", "--run", run, "--reason", "子の停止を確認", pane_id=caller, code=0 if accepted else 3)
+    saved = queue_env.call("status", "--run", run)["run"]["attempts"][-1]
+    assert (saved["closed"], saved["abandon_reason"]) == ((True, "子の停止を確認") if accepted else (False, None))
+    starts = sum(c[:3] == ["herdr", "agent", "start"] for c in queue_env.data()["calls"])
+    assert starts == (0 if case == "not_split" else 1)
+
+
+def test_abandon_clears_stop_from_child_blocked_before_ack(queue_env: QueueEnv) -> None:
+    run = queue_env.init(kind="codex")
+    attempt = queue_env.launch(run)
+    queue_env.child(attempt, "blocked")
+    assert queue_env.call("reconcile", "--run", run)["status"] == "blocked"
+    # 起動時の確認画面で止まった子を、利用者がpaneごと閉じた。
+    data = queue_env.data()
+    del data["panes"][attempt["pane_id"]]
+    queue_env.save(data)
+    queue_env.call("abandon", "--run", run, "--reason", "確認画面で止まった子を利用者が閉じた")
+    observed = queue_env.call("reconcile", "--run", run)
+    assert (observed["next"], observed["run"]["stopped_reason"]) == ("launch", None)
