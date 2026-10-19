@@ -11,12 +11,14 @@ import hashlib
 import importlib.util
 import json
 import os
+import random
 import re
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from collections.abc import Generator, Mapping
 from contextlib import contextmanager
@@ -213,6 +215,30 @@ def git(repo: Path, *args: str, binary: bool = False) -> str | bytes:
     if binary:
         return result.stdout
     return result.stdout.decode("utf-8", errors="strict").strip()
+
+
+# 同じリポジトリへ並行した git worktree add は、別の登録の commondir を書き終える前に読むと、何も作らずに
+# "failed to read .../worktrees/<id>/commondir: Success"（終了コード 128）で止まる（#68）。パスと、エラーの
+# 文の前の ": " は翻訳されない。tools/agent_runner/workspace.py の prepare_worktree と同じ判定と回数
+WORKTREE_ADD_RACE = re.compile(r"worktrees/[^/\n]+/commondir: ")
+WORKTREE_ADD_TRIES = 3
+
+
+def wait_before_retry(seconds: float) -> None:
+    time.sleep(seconds)
+
+
+def add_detached_worktree(repo: Path, worktree: Path, commit: str) -> None:
+    """detached の worktree を作る。並行した worktree add との競合で何も作らずに止まったときだけやり直す。"""
+    for tries in range(1, WORKTREE_ADD_TRIES + 1):
+        try:
+            git(repo, "worktree", "add", "--detach", str(worktree), commit)
+            return
+        except WorkspaceError as error:
+            lost = WORKTREE_ADD_RACE.search(str(error)) is not None
+            if tries == WORKTREE_ADD_TRIES or not lost or worktree.exists() or worktree.is_symlink():
+                raise
+        wait_before_retry(random.uniform(0.05, 0.2))
 
 
 def init_temporary_repository(cwd: Path, path: Path) -> None:
@@ -563,13 +589,13 @@ def create_from_target(args: argparse.Namespace, target_value: str) -> dict[str,
                     if review_commit is not None:
                         git(source, "fetch", "--quiet", "--no-write-fetch-head", str(checkout), review_commit)
             require_review_commit(source, commit)
-            git(source, "worktree", "add", "--detach", str(worktree), commit)
+            add_detached_worktree(source, worktree, commit)
         else:
             source = checkout
             before = snapshot(source)
             with target_errors() as review_target:
                 review_target.fetch_pull_head(source, number, pr_head)
-            git(source, "worktree", "add", "--detach", str(worktree), commit)
+            add_detached_worktree(source, worktree, commit)
             if snapshot(source) != before:
                 raise WorkspaceError("creating the review worktree changed the target checkout")
         if parent_input is None and current_pr_head(repository, number) != pr_head:
@@ -633,7 +659,7 @@ def create_from_repository(args: argparse.Namespace) -> dict[str, str | None]:
     )
 
     before = snapshot(repo)
-    git(repo, "worktree", "add", "--detach", str(worktree), commit)
+    add_detached_worktree(repo, worktree, commit)
 
     require_created_worktree(worktree, commit)
     if snapshot(repo) != before:
