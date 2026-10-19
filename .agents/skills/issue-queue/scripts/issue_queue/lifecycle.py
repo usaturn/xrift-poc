@@ -78,7 +78,7 @@ def launch(work: Workflow) -> None:
         "--",
         *run.policy.agent_args,
     )["agent"]
-    attempt.identity = identity(agent)
+    work.started(attempt, agent)
     attempt.launch = "started"
     work.save()
     submit(work)
@@ -88,10 +88,11 @@ def submit(work: Workflow) -> None:
     work.owner()
     work.require_progress()
     attempt = work.run.current()
-    if attempt is None or attempt.launch != "started" or not attempt.identity:
+    if attempt is None or attempt.launch != "started":
         raise QueueError("未送信と確認できたstarted状態でだけ送信できます")
     agent = work.ext.herdr("agent", "get", attempt.agent_name)["agent"]
-    if identity(agent) != attempt.identity or agent["agent_status"] not in {"idle", "done"}:
+    work.started(attempt, agent)
+    if agent["agent_status"] not in {"idle", "done"}:
         raise QueueError("起動した担当が入力待ちではありません")
     attempt.launch = "submitting"
     work.save()
@@ -104,8 +105,12 @@ def acknowledge(work: Workflow, attempt_id: str) -> None:
     attempt = work.run.current()
     if attempt is None or attempt.id != attempt_id:
         raise QueueError("今回のattemptではありません")
-    caller = work.ext.caller()
-    if attempt.identity != caller:
+    if attempt.launch not in {"submitting", "submitted"}:
+        raise QueueError("依頼の送信前にはackできません")
+    # 初回のackで呼び出し元のnative sessionを確定する。別pane・terminal・agentからは受け付けない。
+    agent = work.ext.caller_agent()
+    work.started(attempt, agent)
+    if attempt.identity is None or identity(agent) != attempt.identity:
         raise QueueError("起動した子のsessionと一致しません")
     attempt.acknowledged = True
     work.run.event("ack", attempt=attempt_id)

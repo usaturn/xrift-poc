@@ -19,4 +19,8 @@ baselineでの手動判断に対し、保存したrunとCLIの具体的な操作
 ## 実機
 
 実Issueの試運転は未実施。対象Issueと子の起動方針が未確定である。
+2026-10-19 のPR #78 のレビュー確認で、実Herdr 0.9.5の読み取りと、所有したpaneでのCodex（追加の引数なし）の接続確認を行った。
+無いpaneの `pane get` はstderrの `{"error":{"code":"pane_not_found",...}}` で終わる。
+Codexのstartの応答とその後のgetにはnative sessionが無く、最初の入力の後に同じpane・terminalで現れる。
+fake CLIをこの形に合わせた。子の通しの起動・実Issueの試運転とclaude・piの実起動は未実施である。
 fake CLI試験はPythonのテストで管理し、実機検証を代替したと記録しない。

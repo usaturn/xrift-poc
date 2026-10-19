@@ -58,6 +58,7 @@ def parser() -> argparse.ArgumentParser:
             item.add_argument("--reason", required=True)
             item.add_argument("--resolve", action="store_true")
             item.add_argument("--path", type=Path)
+            item.add_argument("--pr", type=int)
     return root
 
 
@@ -70,7 +71,8 @@ def main() -> int:
         ext = External(parent)
         ext.validate_parent()
         store = Store(parent)
-        with store.lock(wait=args.command in {"ack", "report"}):
+        # 子のコマンドは司令塔のwait・reconcileの終了を待って直列化する。司令塔同士の競合は拒否する。
+        with store.lock(wait=args.command in {"ack", "report", "publish"}):
             if args.command == "init":
                 path, run = initialize(store, ext, Init.model_validate_json(args.input.read_text()))
                 work = Workflow(store, ext, path, run)
@@ -121,12 +123,26 @@ def main() -> int:
                     else:
                         if args.path and (args.category != "retain" or not args.path.is_absolute()):
                             raise QueueError("保持する資源はretainに絶対パスで指定してください")
+                        head = None
+                        if args.pr is not None:
+                            if args.category != "retain" or args.path or args.pr < 1:
+                                raise QueueError("保持するPRはpathと分けてretainにPR番号で指定してください")
+                            # 確認した時点のHEADを保存する。保持は削除・マージの許可ではない。
+                            pr = next(
+                                (p for p in work.ext.pages("pulls?state=open&per_page=100") if p["number"] == args.pr),
+                                None,
+                            )
+                            head = pr["head"]["sha"] if pr else None
+                            if not isinstance(head, str) or not head:
+                                raise QueueError("同repositoryのopen PRとそのHEADを確認できません")
                         work.run.decisions.append(
                             Decision(
                                 id=args.id,
                                 category=args.category,
                                 reason=args.reason,
                                 path=str(args.path.resolve()) if args.path else None,
+                                pr=args.pr,
+                                pr_head=head,
                             )
                         )
                     work.run.event("decision", id=args.id, reason=args.reason, resolved=args.resolve)

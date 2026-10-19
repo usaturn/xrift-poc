@@ -98,6 +98,8 @@ class Decision(Record):
     reason: str = Field(min_length=1)
     resolution: str | None = None
     path: str | None = None
+    pr: int | None = None
+    pr_head: str | None = None
 
 
 class Run(Record):

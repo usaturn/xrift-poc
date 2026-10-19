@@ -18,13 +18,21 @@ TOOL_ROOT = Path(__file__).resolve().parents[5]
 REPOSITORY = "usaturn/xrift-poc"
 
 
+class CommandError(QueueError):
+    """外部コマンドが非0で終了した。stderrは構造化されたエラーの判定に使う。"""
+
+    def __init__(self, tool: str, returncode: int, stderr: str):
+        super().__init__(f"{tool}がexit {returncode}: {stderr[-600:]}")
+        self.stderr = stderr
+
+
 def command(argv: list[str], *, cwd: Path | None = None, timeout: int = 40) -> str:
     try:
         result = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout, check=False)
     except (OSError, subprocess.TimeoutExpired) as error:
         raise QueueError(f"{argv[0]}の実行結果を確認できません: {type(error).__name__}") from error
     if result.returncode:
-        raise QueueError(f"{argv[0]}がexit {result.returncode}: {result.stderr[-600:]}")
+        raise CommandError(argv[0], result.returncode, result.stderr)
     return result.stdout.strip()
 
 
@@ -33,6 +41,17 @@ def object_json(text: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise QueueError("オブジェクト形式の応答ではありません")
     return cast(dict[str, Any], value)
+
+
+def herdr_error_code(stderr: str) -> str | None:
+    """Herdrのstderrの {"error":{"code":...}} を読む。JSONでなければNone。"""
+    try:
+        value = json.loads(stderr)
+    except ValueError:
+        return None
+    error = cast(dict[str, Any], value).get("error") if isinstance(value, dict) else None
+    code = cast(dict[str, Any], error).get("code") if isinstance(error, dict) else None
+    return code if isinstance(code, str) else None
 
 
 def identity(pane: dict[str, Any]) -> Identity:
@@ -75,11 +94,14 @@ class External:
             raise QueueError("Herdrの応答を確認できません")
         return result["result"]
 
-    def caller(self) -> Identity:
+    def caller_agent(self) -> dict[str, Any]:
         pane_id = os.environ.get("HERDR_PANE_ID")
         if not pane_id:
             raise QueueError("現在のpaneが不明です")
-        return identity(self.herdr("agent", "get", pane_id)["agent"])
+        return self.herdr("agent", "get", pane_id)["agent"]
+
+    def caller(self) -> Identity:
+        return identity(self.caller_agent())
 
     def agents(self) -> list[dict[str, Any]]:
         agents = self.herdr("agent", "list")["agents"]
@@ -88,11 +110,12 @@ class External:
         return cast(list[dict[str, Any]], agents)
 
     def pane(self, pane_id: str) -> dict[str, Any] | None:
-        # エラー文言から不在を推測しない。一覧に無い場合もgetで別workspaceを確認する。
+        # 不在はHerdrの構造化エラーのcodeの完全一致だけで判定する。接続失敗・JSONでない応答・
+        # 別のcodeは不在にしない。一覧に無い場合もgetで別workspaceを確認する。
         try:
             return self.herdr("pane", "get", pane_id)["pane"]
-        except QueueError as error:
-            if '"code":"not_found"' in str(error).replace(" ", ""):
+        except CommandError as error:
+            if herdr_error_code(error.stderr) == "pane_not_found":
                 return None
             raise
 

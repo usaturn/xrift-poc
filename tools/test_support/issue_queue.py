@@ -61,13 +61,13 @@ class QueueEnv:
         assert result.returncode == code, (result.stdout, result.stderr)
         return json.loads(result.stdout)
 
-    def init(self, *, trial: bool = False) -> str:
+    def init(self, *, trial: bool = False, kind: str = "claude") -> str:
         file = self.json_file(
             "input.json",
             {
                 "issues": [11, 12],
                 "policy": {
-                    "agent_kind": "claude",
+                    "agent_kind": kind,
                     "agent_args": [],
                     "trial": trial,
                     "remote_branches": "keep",
@@ -265,9 +265,16 @@ def emit(value):
         sys.exit(1)
     print(json.dumps(value))
     sys.exit(0)
-def error():
+def error(code="fake_failure", message="fake failure"):
+    # 実Herdr 0.9.5はstderrへ {"error":{"code","message"},"id"} を出してexit 1になる。ghは文章を出す。
     file.write_text(json.dumps(data))
-    print(json.dumps({"error": {"code": "not_found"}}), file=sys.stderr)
+    if data.get("fail") == key and data.get("fail_stderr") is not None:
+        print(data["fail_stderr"], file=sys.stderr)
+    elif tool == "herdr":
+        print(json.dumps({"error": {"code": code, "message": message}, "id": "cli:" + ":".join(args[:2])}),
+              file=sys.stderr)
+    else:
+        print(message, file=sys.stderr)
     sys.exit(1)
 if data.get("fail") == key:
     error()
@@ -277,7 +284,7 @@ if tool == "herdr":
     if args[:2] in (["pane", "get"], ["agent", "get"]):
         target = args[2]
         p = next((p for p in data["panes"].values() if p["pane_id"] == target or p.get("name") == target), None)
-        if p is None: error()
+        if p is None: error(args[0] + "_not_found", args[0] + " " + target + " not found")
         emit({"result": {"pane" if args[0] == "pane" else "agent": p}})
     if args[:2] == ["pane", "split"]:
         p = "w1:p" + str(data["next_pane"])
@@ -287,14 +294,27 @@ if tool == "herdr":
         emit({"result": {"pane": data["panes"][p]}})
     if args[:2] == ["agent", "start"]:
         p = args[args.index("--pane") + 1]
-        data["panes"][p].update({"name": args[2], "agent": "claude", "agent_status": "idle",
-            "agent_session": {"agent": "claude", "kind": "id", "source": "herdr:claude", "value": "session-" + p}})
-        emit({"result": {"agent": data["panes"][p]}})
+        kind = args[args.index("--kind") + 1]
+        data["panes"][p].update({"name": args[2], "agent": kind, "agent_status": "idle"})
+        if kind == "codex":
+            # 実CodexはstartとそのgetにHerdrのnative sessionが無く、最初の入力の後で現れる。
+            data["panes"][p]["agent_status"] = "done"
+        else:
+            data["panes"][p]["agent_session"] = {"agent": kind, "kind": "id", "source": "herdr:" + kind,
+                                                 "value": "session-" + p}
+        emit({"result": {"agent": data["panes"][p], "argv": [kind], "type": "agent_started"}})
     if args[:2] == ["agent", "prompt"]:
         p = next(p for p in data["panes"].values() if p.get("name") == args[2])
         p["agent_status"] = "working"
+        p.setdefault("agent_session", {"agent": p["agent"], "kind": "id", "source": "herdr:" + p["agent"],
+                                       "value": "session-" + p["pane_id"]})
         emit({"result": {"agent": p}})
     if args[:2] == ["agent", "wait"]:
+        if data.get("wait_seconds"):
+            # 実Herdrは子がworkingの間ブロックする。開始を示すファイルを置いてから待つ。
+            Path(str(file) + ".waiting").touch()
+            import time
+            time.sleep(data["wait_seconds"])
         emit({"result": {"state": "done"}})
     if args[:2] == ["pane", "close"]:
         data["panes"].pop(args[2], None)
@@ -306,7 +326,7 @@ if tool == "gh":
     if args[:2] == ["pr", "view"]:
         assert args[args.index("--repo") + 1] == "usaturn/xrift-poc"
         p = next((p for p in data["prs"] if str(p["number"]) == args[2] or p["url"] == args[2]), None)
-        if p is None: error()
+        if p is None: error(message="no pull requests found")
         emit(p)
     if args[0] == "api":
         endpoint = next(a for a in args[1:] if a.startswith("repos/"))
@@ -334,5 +354,5 @@ if tool == "gh":
             emit([prs] if "--slurp" in args else prs)
         if "/issues?" in endpoint:
             emit([list(data["issues"].values())])
-error()
+error("unsupported", "fake: unsupported " + key)
 """

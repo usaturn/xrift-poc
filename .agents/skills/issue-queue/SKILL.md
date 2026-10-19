@@ -50,7 +50,7 @@ queue resume --run <run>
 queue stop --run <run> --after followup
 ```
 
-`resume` は旧ownerの生存と子・GitHub・worktreeを照合する。旧ownerが残っていれば横取りしない。動いている子は監視に戻し、新しい子を作らない。起動・送信のtimeoutは未実行の証拠ではない。pane作成の応答が失われて所有を証明できない場合は手動調査で止める。
+`resume` は旧ownerの生存と子・GitHub・worktreeを照合する。呼び出し元の会話自身は旧ownerと数えないので、元の会話を別のpaneや新しいterminalで復旧しても引き継げる。呼び出し元以外に旧ownerと同じnative sessionのagentが残っていれば横取りしない。動いている子は監視に戻し、新しい子を作らない。起動・送信のtimeoutは未実行の証拠ではない。pane作成の応答が失われて所有を証明できない場合は手動調査で止める。
 
 `--after followup` は持ち越しの調査後、片付けの前で止める。未実施のcleanupを保存し、再開はそこから始める。片付け後に止める場合だけ `--after cleanup` を使う。試運転は最初のcleanup後に止まる。利用者が子のblockedを解消した後は、事実を `resume --continue --reason <理由>` に記録できる。失敗した子を自動再起動する機能ではない。
 
@@ -62,10 +62,10 @@ queue stop --run <run> --after followup
 
 判断待ちは `queue decision --run <run> --id <名前> --category blocking|retain|final --reason <理由>` で保存する。`blocking` は次へ進めない。`retain` は資源を保持して続行できる判断、`final` は最後にまとめて確認する判断。解決した事実は同じIDへ `--resolve` を付けて残す。既存の許可を復旧のたびに尋ね直さず、対象や操作の範囲を広げない。
 
-開始前から残っているworktreeは、担当・停止・マージと競合の有無を既存スキルで確かめ、保持して続けられる場合だけ `--category retain --path <絶対パス>` と確認理由を記録する。未確認のworktree、open PR、未解放のclaimがあれば実装・片付けを起動しない。保持の登録は削除の許可ではない。
+開始前から残っているworktreeは、担当・停止・マージと競合の有無を既存スキルで確かめ、保持して続けられる場合だけ `--category retain --path <絶対パス>` と確認理由を記録する。キューと無関係なopen PRも、担当と競合の有無を確かめてから `--category retain --pr <番号>` と確認理由を記録する。helperは確認した時点のPRのHEADを保存し、同じPRが同じHEADのままの間だけ通す。pathとPRは別の判断IDで記録する。未確認のworktree・open PR、確認後にHEADが変わったPR、未解放のclaimがあれば実装・片付けを起動しない。保持の登録は削除・マージの許可ではない。
 
 各周回ではIssue・PR・loop run・子の識別情報、所要時間、マージ検出時刻、判断待ち、保持資源、使用版を報告する。正常終了・停止・確認できないことを分ける。終了時も `reviews/`・`tmp/agents/`・remote branch を一括削除しない。
 
 ## ランタイムごとの違い
 
-本体は `.agents/skills/issue-queue`、Claude Codeは `.claude/skills/issue-queue` の相対リンクから読む。司令塔はどのランタイムでも同じCLIを使い、Herdrのnative sessionで識別する。子は明示した `claude`・`codex`・`pi` のkindとargvで起動する。別モデルや別ランタイムへ暗黙に切り替えない。
+本体は `.agents/skills/issue-queue`、Claude Codeは `.claude/skills/issue-queue` の相対リンクから読む。司令塔はどのランタイムでも同じCLIを使い、Herdrのnative sessionで識別する。子は明示した `claude`・`codex`・`pi` のkindとargvで起動する。Codexのように起動直後はnative sessionが無いkindも、一意のagent名・kind・pane・terminalを照合して依頼を1回だけ送り、子の最初の `ack` でsessionを確定する。別モデルや別ランタイムへ暗黙に切り替えない。

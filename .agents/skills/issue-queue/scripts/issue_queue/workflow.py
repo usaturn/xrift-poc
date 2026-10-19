@@ -47,6 +47,25 @@ class Workflow:
         if self.ext.caller() != self.run.owner:
             raise QueueError("この会話はownerではありません。resumeで実環境と照合してください")
 
+    def started(self, attempt: Attempt, agent: dict[str, Any]) -> None:
+        """起動した一意名・kind・pane・terminalを照合し、native sessionが現れていれば確定する。
+
+        Codexのようにstart時点でsessionの無いagentは、最初のackまでに確定する。確定後の変更は拒否する。
+        """
+        if (
+            agent.get("name") != attempt.agent_name
+            or agent.get("agent") != self.run.policy.agent_kind
+            or agent.get("pane_id") != attempt.pane_id
+            or agent.get("terminal_id") != attempt.pane_terminal_id
+        ):
+            raise QueueError("起動した子のagent名・kind・pane・terminalが一致しません")
+        if agent.get("agent_session"):
+            current = identity(agent)
+            if attempt.identity is None:
+                attempt.identity = current
+            elif current != attempt.identity:
+                raise QueueError("子のnative sessionが確定後に変わっています")
+
     def child(self, attempt_id: str) -> Attempt:
         attempt = self.run.current()
         if attempt is None or attempt.id != attempt_id:
@@ -75,6 +94,9 @@ class Workflow:
         caller = self.ext.caller()
         if caller != self.run.owner:
             for agent in self.ext.agents():
+                # 呼び出し元自身は旧ownerと数えない。同じ会話を別pane・新しいterminalで復旧できる。
+                if (agent.get("pane_id"), agent.get("terminal_id")) == (caller.pane_id, caller.terminal_id):
+                    continue
                 if agent.get("agent_session") and identity(agent).session == self.run.owner.session:
                     raise QueueError("元の司令塔がまだ存在します。古さを理由に引き継げません")
             # 保存値以外に子・GitHub・worktreeも取得できた時だけownerを移す。
@@ -131,8 +153,13 @@ class Workflow:
         self.run.observation = inventory
         if inventory["claims"] or inventory["local_claims"]:
             raise QueueError("未解放のclaimがあります")
-        if inventory["open_prs"]:
-            raise QueueError("open PRがあります。処理対象と競合を確認してください")
+        # 確認時のHEADのまま残るopen PRだけを保持として通す。
+        retained = {(d.pr, d.pr_head) for d in self.run.decisions if d.category == "retain" and d.pr is not None}
+        unconfirmed = [p["number"] for p in inventory["open_prs"] if (p["number"], p["head"]["sha"]) not in retained]
+        if unconfirmed:
+            raise QueueError(
+                f"未確認または確認後に更新されたopen PRがあります。処理対象と競合を確認してください: {unconfirmed}"
+            )
         allowed = {str(self.ext.parent)}
         allowed.update(d.path for d in self.run.decisions if d.category == "retain" and d.path)
         for attempt in self.run.attempts:
@@ -209,13 +236,12 @@ class Workflow:
             return "blocked", "inspect", "pane作成の成否不明です。所有を照合するまで再作成しません"
         if pane is None and not attempt.closing:
             return "blocked", "inspect", "子のpaneが見つかりません。再起動せず調査してください"
-        if attempt.launch == "starting" and attempt.identity is None:
-            # startの応答が失われても、保存した一意名とpaneを照合できれば入力前へ戻れる。
-            agent = self.ext.herdr("agent", "get", attempt.agent_name)["agent"]
-            if agent.get("name") != attempt.agent_name or agent["pane_id"] != attempt.pane_id:
-                raise QueueError("起動予定の子の識別情報を確認できません")
-            attempt.identity = identity(agent)
-            attempt.launch = "started"
+        if attempt.launch == "starting" or (attempt.identity is None and attempt.launch != "pane_created"):
+            # startの応答が失われても、sessionが初回入力後に現れるagentでも、
+            # 保存した一意名・kind・pane・terminalを照合できれば同じ起動先として扱う。
+            self.started(attempt, self.ext.herdr("agent", "get", attempt.agent_name)["agent"])
+            if attempt.launch == "starting":
+                attempt.launch = "started"
         if pane is not None and pane.get("agent_status") == "blocked":
             self.run.stopped_reason = "子がblockedです。司令塔は代わりに回答しません"
             return "blocked", "inspect", self.run.stopped_reason

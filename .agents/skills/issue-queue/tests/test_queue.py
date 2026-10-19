@@ -1,11 +1,15 @@
 import fcntl
 import json
+import subprocess
+import sys
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from tools.test_support.issue_queue import QueueEnv, pane
+from tools.test_support.issue_queue import CLI, QueueEnv, pane
 
 
 def test_init_persists_policy_outside_worktrees_and_excludes_second_run(queue_env: QueueEnv) -> None:
@@ -155,6 +159,39 @@ def test_closed_pane_response_loss_resumes_without_skipping_followup(queue_env: 
     data["fail_after"] = "herdr pane close"
     queue_env.save(data)
     queue_env.call("advance", "--run", run, code=3)
+    assert attempt["pane_id"] not in queue_env.data()["panes"]
+    assert queue_env.call("reconcile", "--run", run)["next"] == "advance"
+    assert queue_env.call("advance", "--run", run)["run"]["phase"] == "followup"
+    assert sum(c[:3] == ["herdr", "pane", "close"] for c in queue_env.data()["calls"]) == 1
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        '{"error":{"code":"server_error","message":"pane lookup failed"},"id":"cli:pane:get"}',
+        '{"error":{"code":"pane_not_found_later"}}',
+        "pane_not_found",
+        "connection refused: /run/herdr.sock",
+    ],
+)
+def test_pane_lookup_failure_after_close_is_not_treated_as_absent(queue_env: QueueEnv, stderr: str) -> None:
+    run = queue_env.init()
+    attempt = queue_env.launch(run)
+    queue_env.ack(run, attempt)
+    queue_env.merge(attempt)
+    queue_env.report(run, attempt)
+    queue_env.child(attempt, "done")
+    data = queue_env.data()
+    data["fail_after"] = "herdr pane close"
+    queue_env.save(data)
+    queue_env.call("advance", "--run", run, code=3)
+    data = queue_env.data()
+    data.update(fail_after=None, fail="herdr pane get", fail_stderr=stderr)
+    queue_env.save(data)
+    assert queue_env.call("advance", "--run", run, code=3)["run"]["phase"] == "implement"
+    data = queue_env.data()
+    data.update(fail=None, fail_stderr=None)
+    queue_env.save(data)
     assert queue_env.call("advance", "--run", run)["run"]["phase"] == "followup"
 
 
@@ -298,7 +335,11 @@ def test_missing_child_is_blocked_even_without_ack(queue_env: QueueEnv) -> None:
     data = queue_env.data()
     del data["panes"][attempt["pane_id"]]
     queue_env.save(data)
-    assert queue_env.call("reconcile", "--run", run)["status"] == "blocked"
+    observed = queue_env.call("reconcile", "--run", run)
+    assert observed["status"] == "blocked"
+    assert observed["reason"] == "子のpaneが見つかりません。再起動せず調査してください"
+    queue_env.call("launch", "--run", run, code=3)
+    assert sum(c[:3] == ["herdr", "agent", "start"] for c in queue_env.data()["calls"]) == 1
 
 
 def test_resume_reconciles_blocked_child_after_user_resolves_dialog(queue_env: QueueEnv) -> None:
@@ -498,3 +539,218 @@ def test_unsent_start_does_not_take_over_reused_pane(queue_env: QueueEnv) -> Non
     queue_env.save(data)
     queue_env.call("launch", "--run", run, code=3)
     assert not any(c[:3] == ["herdr", "agent", "start"] for c in queue_env.data()["calls"])
+
+
+def test_child_publish_waits_for_controller_wait_and_posts_once(queue_env: QueueEnv) -> None:
+    run, attempt = queue_env.followup()
+    data = queue_env.data()
+    data["wait_seconds"] = 5
+    queue_env.save(data)
+    marker = Path(str(queue_env.data_file) + ".waiting")
+    body = queue_env.json_file(
+        "comment.json",
+        {"key": "summary", "kind": "comment", "target": 100, "title": None, "body": "待機中の投稿\n複数行の本文"},
+    )
+    waiting = subprocess.Popen(
+        [sys.executable, str(CLI), "wait", "--run", run],
+        cwd=queue_env.root,
+        env=queue_env.env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 20
+        while not marker.exists():
+            assert waiting.poll() is None and time.monotonic() < deadline
+            time.sleep(0.05)
+        published = queue_env.call(
+            "publish", "--run", run, "--attempt", attempt["id"], "--input", str(body), pane_id=attempt["pane_id"]
+        )
+    finally:
+        stdout, stderr = waiting.communicate(timeout=30)
+    assert waiting.returncode == 0, (stdout, stderr)
+    assert [e["state"] for e in published["run"]["attempts"][-1]["effects"]] == ["confirmed"]
+    assert len(queue_env.data()["comments"]) == 1
+
+
+@pytest.mark.parametrize("restored", ["new_pane", "new_terminal"])
+def test_same_session_restored_elsewhere_takes_over(queue_env: QueueEnv, restored: str) -> None:
+    run = queue_env.init()
+    data = queue_env.data()
+    if restored == "new_pane":
+        caller = "w1:p9"
+        del data["panes"]["w1:p1"]
+        data["panes"][caller] = pane(caller, "controller-session")
+    else:
+        caller = "w1:p1"
+        data["panes"][caller]["terminal_id"] = "term_after_herdr_restart"
+    queue_env.save(data)
+    resumed = queue_env.call("resume", "--run", run, pane_id=caller)
+    assert resumed["run"]["owner"]["pane_id"] == caller
+    assert queue_env.call("launch", "--run", run, pane_id=caller)["run"]["attempts"][-1]["launch"] == "submitted"
+
+
+def test_same_session_does_not_take_over_while_old_pane_lives(queue_env: QueueEnv) -> None:
+    run = queue_env.init()
+    data = queue_env.data()
+    data["panes"]["w1:p9"] = pane("w1:p9", "controller-session")
+    queue_env.save(data)
+    queue_env.call("resume", "--run", run, pane_id="w1:p9", code=3)
+    queue_env.call("launch", "--run", run, pane_id="w1:p9", code=3)
+    assert queue_env.call("status", "--run", run)["run"]["owner"]["pane_id"] == "w1:p1"
+
+
+def open_pr(queue_env: QueueEnv, number: int, sha: str) -> None:
+    data = queue_env.data()
+    url = f"https://github.com/usaturn/xrift-poc/pull/{number}"
+    data["prs"].append(
+        {
+            "number": number,
+            "url": url,
+            "html_url": url,
+            "state": "OPEN",
+            "body": "利用者の別作業",
+            "head": {"ref": "docs/readme", "sha": sha},
+            "base": {"ref": "main"},
+        }
+    )
+    queue_env.save(data)
+
+
+def retain_pr(queue_env: QueueEnv, run: str, *extra: str, number: str = "90", code: int = 0) -> dict[str, Any]:
+    reason = "無関係なREADMEのPR。\n競合しないことを確認して保持"
+    args = ("decision", "--run", run, "--id", "keep-" + number, "--category", "retain", "--pr", number)
+    return queue_env.call(*args, "--reason", reason, *extra, code=code)
+
+
+def test_confirmed_open_pr_is_retained_without_merging_or_closing(queue_env: QueueEnv) -> None:
+    run = queue_env.init()
+    open_pr(queue_env, 90, "a" * 40)
+    queue_env.call("launch", "--run", run, code=3)
+    retain_pr(queue_env, run, number="91", code=3)
+    retain_pr(queue_env, run, "--path", str(queue_env.home), code=3)
+    queue_env.call(
+        "decision", "--run", run, "--id", "x", "--category", "blocking", "--pr", "90", "--reason", "r", code=3
+    )
+    decision = retain_pr(queue_env, run)["run"]["decisions"][-1]
+    assert (decision["pr"], decision["pr_head"], decision["path"]) == (90, "a" * 40, None)
+    attempt = queue_env.launch(run)
+    assert attempt["phase"] == "implement"
+    assert queue_env.data()["prs"][0]["state"] == "OPEN"
+    assert not any(c[:2] == ["gh", "pr"] and c[2] in {"merge", "close"} for c in queue_env.data()["calls"])
+
+
+@pytest.mark.parametrize("change", ["head_moved", "another_pr", "claim", "worktree"])
+def test_retained_pr_does_not_admit_other_resources(queue_env: QueueEnv, change: str) -> None:
+    run = queue_env.init()
+    open_pr(queue_env, 90, "a" * 40)
+    retain_pr(queue_env, run)
+    if change == "head_moved":
+        data = queue_env.data()
+        data["prs"][0]["head"]["sha"] = "b" * 40
+        queue_env.save(data)
+    elif change == "another_pr":
+        open_pr(queue_env, 91, "c" * 40)
+    elif change == "claim":
+        queue_env.git("update-ref", "refs/heads/agent-claims/issue-999", "HEAD")
+    else:
+        queue_env.git("worktree", "add", "--detach", str(queue_env.home / "other-work"), "HEAD")
+    queue_env.call("launch", "--run", run, code=3)
+    assert len(queue_env.data()["panes"]) == 1
+
+
+def test_codex_without_initial_session_gets_one_prompt_and_fixes_session_at_ack(queue_env: QueueEnv) -> None:
+    run = queue_env.init(kind="codex")
+    attempt = queue_env.launch(run)
+    assert (attempt["launch"], attempt["identity"]) == ("submitted", None)
+    assert queue_env.call("reconcile", "--run", run)["next"] == "wait"
+    queue_env.ack(run, attempt)
+    saved = queue_env.call("status", "--run", run)["run"]["attempts"][-1]
+    assert saved["identity"]["pane_id"] == attempt["pane_id"]
+    assert json.loads(saved["identity"]["session"])["value"] == "session-" + attempt["pane_id"]
+    queue_env.merge(attempt)
+    queue_env.report(run, attempt)
+    queue_env.child(attempt, "done")
+    assert queue_env.call("advance", "--run", run)["run"]["phase"] == "followup"
+    assert sum(c[:3] == ["herdr", "agent", "prompt"] for c in queue_env.data()["calls"]) == 1
+
+
+@pytest.mark.parametrize("caller", ["other_pane", "new_terminal", "other_agent", "other_kind"])
+def test_first_ack_without_session_comes_only_from_started_child(queue_env: QueueEnv, caller: str) -> None:
+    run = queue_env.init(kind="codex")
+    attempt = queue_env.launch(run)
+    data = queue_env.data()
+    child = data["panes"][attempt["pane_id"]]
+    pane_id = attempt["pane_id"]
+    if caller == "other_pane":
+        pane_id = "w1:p9"
+        data["panes"][pane_id] = pane(pane_id, "intruder-session", name=attempt["agent_name"])
+        data["panes"][pane_id]["agent"] = "codex"
+    elif caller == "new_terminal":
+        child["terminal_id"] = "term_replaced"
+    elif caller == "other_agent":
+        child["name"] = "someone-else"
+    else:
+        child["agent"] = "claude"
+    queue_env.save(data)
+    queue_env.call("ack", "--run", run, "--attempt", attempt["id"], pane_id=pane_id, code=3)
+    saved = queue_env.call("status", "--run", run)["run"]["attempts"][-1]
+    assert (saved["identity"], saved["acknowledged"]) == (None, False)
+
+
+def test_session_change_after_first_ack_is_rejected(queue_env: QueueEnv) -> None:
+    run = queue_env.init(kind="codex")
+    attempt = queue_env.launch(run)
+    queue_env.ack(run, attempt)
+    data = queue_env.data()
+    data["panes"][attempt["pane_id"]]["agent_session"]["value"] = "session-after-clear"
+    queue_env.save(data)
+    queue_env.call("reconcile", "--run", run, code=3)
+    queue_env.call("ack", "--run", run, "--attempt", attempt["id"], pane_id=attempt["pane_id"], code=3)
+    file = queue_env.result(run, attempt)
+    queue_env.call(
+        "report", "--run", run, "--attempt", attempt["id"], "--input", str(file), pane_id=attempt["pane_id"], code=3
+    )
+
+
+@pytest.mark.parametrize("lost", ["herdr agent start", "herdr agent prompt"])
+def test_codex_response_loss_never_sends_prompt_twice(queue_env: QueueEnv, lost: str) -> None:
+    run = queue_env.init(kind="codex")
+    data = queue_env.data()
+    data["fail_after"] = lost
+    queue_env.save(data)
+    queue_env.call("launch", "--run", run, code=3)
+    data = queue_env.data()
+    data["fail_after"] = None
+    queue_env.save(data)
+    observed = queue_env.call("reconcile", "--run", run)
+    if lost == "herdr agent start":
+        assert observed["next"] == "submit"
+        queue_env.call("submit", "--run", run)
+    else:
+        assert observed["next"] == "wait"
+        queue_env.call("submit", "--run", run, code=3)
+    attempt = queue_env.call("status", "--run", run)["run"]["attempts"][-1]
+    queue_env.ack(run, attempt)
+    queue_env.call("submit", "--run", run, code=3)
+    queue_env.call("launch", "--run", run, code=3)
+    calls = queue_env.data()["calls"]
+    assert sum(c[:3] == ["herdr", "agent", "start"] for c in calls) == 1
+    assert sum(c[:3] == ["herdr", "agent", "prompt"] for c in calls) == 1
+
+
+def test_lost_start_with_mismatched_terminal_is_not_submitted(queue_env: QueueEnv) -> None:
+    run = queue_env.init(kind="codex")
+    data = queue_env.data()
+    data["fail_after"] = "herdr agent start"
+    queue_env.save(data)
+    queue_env.call("launch", "--run", run, code=3)
+    attempt = queue_env.call("status", "--run", run)["run"]["attempts"][-1]
+    data = queue_env.data()
+    data["fail_after"] = None
+    data["panes"][attempt["pane_id"]]["terminal_id"] = "term_replaced"
+    queue_env.save(data)
+    queue_env.call("reconcile", "--run", run, code=3)
+    queue_env.call("submit", "--run", run, code=3)
+    assert not any(c[:3] == ["herdr", "agent", "prompt"] for c in queue_env.data()["calls"])
