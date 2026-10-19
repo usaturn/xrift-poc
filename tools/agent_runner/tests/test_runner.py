@@ -20,7 +20,7 @@ import pytest
 from tools.agent_runner import environ, runner, workspace
 from tools.agent_runner.adapters import AdapterContext, AdapterOutcome, Capabilities, LaunchSpec
 from tools.agent_runner.config import ConfigError
-from tools.agent_runner.models import Agent, Assignment, Config, Identity, Receipt, Role, State, Workflow
+from tools.agent_runner.models import Agent, Assignment, Config, Identity, Receipt, Role, Runtime, State, Workflow
 from tools.agent_runner.process import ProcessResult
 from tools.agent_runner.runner import RunnerError, run_workflow
 from tools.agent_runner.tests.test_process import alive
@@ -769,6 +769,82 @@ def test_a_bare_string_is_not_split_into_exceptions(repository: Path, tmp_path: 
     with pytest.raises(RunnerError):
         run_workflow(configuration(), "audit", "prompt", repository, output_dir=output, write_exceptions="abc")
     assert not output.exists()
+
+
+class ReadOnlyAdapter(FakeAdapter):
+    """codex の -s read-only のように、writes=false の役割をランタイム側で読み取り専用にする担当（#52）。"""
+
+    capabilities = Capabilities(enforces_read_only=True)
+
+
+def mixed_runtimes(agents: list[str], fallback: list[str] | None = None) -> Config:
+    """configuration() の担当の runtime を a=pi・b=codex・c=cursor にする（loader が runtime で切り替えるため）。"""
+    config = configuration(agents, fallback)
+    runtimes: dict[str, Runtime] = {"a": "pi", "b": "codex", "c": "cursor"}
+    for name, agent in config.agents.items():
+        agent.runtime = runtimes[name]
+    return config
+
+
+def read_only_codex(runtime: str) -> FakeAdapter:
+    return ReadOnlyAdapter() if runtime == "codex" else FakeAdapter()
+
+
+@pytest.mark.parametrize(("agents", "fallback"), [(["b"], None), (["a"], ["b"])], ids=["primary", "fallback"])
+def test_read_only_agents_are_rejected_before_any_output_when_writes_are_needed(
+    repository: Path, tmp_path: Path, agents: list[str], fallback: list[str] | None
+) -> None:
+    output = tmp_path / "output"
+    with pytest.raises(RunnerError):
+        run_workflow(
+            mixed_runtimes(agents, fallback),
+            "audit",
+            "prompt",
+            repository,
+            output_dir=output,
+            adapter_loader=read_only_codex,
+            write_exceptions=("/x/reviews: run records",),
+        )
+    assert not output.exists()
+
+
+def test_read_only_agents_still_run_without_write_exceptions(repository: Path) -> None:
+    batch = run_workflow(mixed_runtimes(["b"]), "audit", "prompt", repository, adapter_loader=read_only_codex)
+    assert batch.state == "success"
+
+
+def test_read_only_agents_still_run_in_writing_roles(repository: Path) -> None:
+    config = mixed_runtimes(["b"])
+    config.roles["inspect"].writes = True
+    batch = run_workflow(
+        config,
+        "audit",
+        "prompt",
+        repository,
+        adapter_loader=read_only_codex,
+        write_exceptions=("/x/reviews: run records",),
+    )
+    assert batch.state == "success"
+
+
+def test_read_only_assignments_lists_roles_and_agents() -> None:
+    assert runner.read_only_assignments(mixed_runtimes(["a"], ["b", "c"]), "audit", read_only_codex) == [
+        ("inspect", "b")
+    ]
+
+    def no_load(runtime: str) -> FakeAdapter:
+        raise AssertionError("self must not load adapters")
+
+    assert runner.read_only_assignments(configuration(["self"]), "audit", no_load) == []
+
+
+def test_unloadable_adapters_are_left_to_the_launch() -> None:
+    """読み込めない adapter は起動の時点で unsupported になる既存の扱いのまま。検査では拒否しない。"""
+
+    def broken(runtime: str) -> FakeAdapter:
+        raise ImportError("unavailable")
+
+    assert runner.read_only_assignments(configuration(["a"]), "audit", broken) == []
 
 
 def test_existing_or_symlink_output_is_never_reused(repository: Path, tmp_path: Path) -> None:

@@ -24,6 +24,9 @@ prompt は末尾の ``-`` 引数と組み合わせて stdin から渡し、argv 
 - ``exec`` … 非対話実行サブコマンド。TOML では ``command = ["codex", "exec"]`` とする。
 - ``--json`` … JSONL イベントを stdout に出す。
 - ``-s read-only`` … 書き込み不可ロール用。書き込みロールは ``workspace-write``。
+  OS の sandbox がすべての書き込みを拒否するので、adapter は ``Capabilities(enforces_read_only=True)`` を宣言する。
+  書き込み不可でも helper の書き込みが要る役割（PR レビューの inspect、self-review、fix-check）には割り当てられない
+  （下の「書き込み不可ロールで helper を動かさない理由（#52）」）。
 - ``-m`` … 設定 model をそのまま渡す。
 - ``-c model_reasoning_effort=<値>`` … effort 設定時のみ付ける。
 - 対話確認なしで完走する。``--dangerously-bypass-approvals-and-sandbox`` は使わない。
@@ -93,6 +96,30 @@ identity
   adapter が版を記録できるかは区別する。
 - 書き込みロールでは ``RESULT.txt`` の期待した生バイトと ``written: true`` を確認。
   所要31.0秒、exit 0。全 run で終了確認済み、他 checkout の変更なし。
+
+書き込み不可ロールで helper を動かさない理由（#52）
+---------------------------------------------------
+
+PR #50 の loop（2026-10-18、codex-cli 0.163.0、``gpt-6.1-sol``）で、inspect の codex は 2 回とも rejected になった。
+pr-review の helper（``uv run ... review_run.py``）が uv のキャッシュ ``~/.cache/uv`` に一時ファイルを作れず
+（read-only file system、os error 30）、prepare の前に終わった。
+
+inspect・self-review・fix-check は、writes=false でも helper がレビューディレクトリ、親の Git の共有ディレクトリ
+（保存ロック、review worktree の登録・ref・オブジェクト）、``tools/devenv/.venv`` と uv のキャッシュに書き、
+DSH 以外の pr-review は ``gh api`` と ``git fetch`` でネットワークも使う。``-s workspace-write`` と ``--add-dir`` で
+書き込み先を足しても、codex は書き込みを許したディレクトリの中の ``.git``（ディレクトリかポインタファイル）・
+``gitdir:`` の解決先・``.codex`` を読み取り専用に保ち、``.git/config`` などの metadata も明示の許可が無ければ書かせない。
+ネットワークも既定で制限される（Context7 ``/openai/codex``、2026-10-19 に確認）。helper を動かすにはこれらを明示的に
+許す必要があり、``.git/hooks``・``.git/config``・uv のキャッシュに書ければ sandbox の外で後から実行されるコードを置けるので、
+sandbox の意味が無くなる。このため書き込みを許可せず、割り当てを止める。
+
+- loop の ``check-options``・``start`` は、codex を review の inspect と fix の self-review・fix-check（一次担当か fallback）に
+  割り当てた設定を、run を作る前に終了コード 2 で止める。``run_roles.py`` は 1 回枠の予約の前に止める
+- runner は、``write_exceptions`` を渡された run で writes=false の役割に codex がいれば、何も作らずに invalid_input で止める
+  （``review-verify/scripts/dispatch.py`` の fix-check、CLI の ``--write-exception``）。例外の無い読み取りの run は従来どおり
+- 書き込みロール（implement）の codex は変えない
+- codex を DSH と同じ経路（親が PR の情報を用意し、専用 clone、``staged`` を親が確定）に乗せれば安全に渡せるが、
+  loop・``review_run.py``・runner の DSH 固有の分岐を広げる別の変更になる
 
 制約・既知の限界
 ----------------

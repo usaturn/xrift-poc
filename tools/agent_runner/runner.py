@@ -264,6 +264,30 @@ def _collect(
         return "invalid_result", Identity(), None
 
 
+def read_only_assignments(
+    config: Config, workflow: str, adapter_loader: Callable[[str], Adapter] = load_adapter
+) -> list[tuple[str, str]]:
+    """(role, agent) for the workflow's writes=False roles whose agent, primary or fallback (never self),
+    has an adapter declaring enforces_read_only: such an agent cannot perform caller-authorized writes.
+
+    An adapter that cannot be loaded is left out; its launch reports unsupported as before.
+    """
+    found: list[tuple[str, str]] = []
+    for role, assignment in config.workflows[workflow].assignments.items():
+        if config.roles[role].writes:
+            continue
+        for name in dict.fromkeys([*assignment.agents, *assignment.fallback]):
+            if name == "self":
+                continue
+            try:
+                enforced = adapter_loader(config.agents[name].runtime).capabilities.enforces_read_only is True
+            except Exception:
+                continue
+            if enforced:
+                found.append((role, name))
+    return found
+
+
 def run_workflow(
     config: Config,
     workflow: str,
@@ -287,7 +311,9 @@ def run_workflow(
     is always forced to 1. Caller-chosen paths and request prompts are intentional
     artifacts; environment values never enter request.json or error diagnostics.
     write_exceptions are caller-authorized exceptions listed verbatim under the
-    work-scope lines, one per line; the runner neither interprets nor enforces them.
+    work-scope lines, one per line; the runner neither interprets nor enforces them,
+    but refuses them before creating anything when a writes=False role is assigned
+    an agent that cannot perform them (read_only_assignments).
     payload_check, when given, also checks each well-shaped success payload (before
     redaction); anything but True, or an exception, is invalid_result and moves on
     to the next explicit fallback.
@@ -304,6 +330,8 @@ def run_workflow(
         or isinstance(write_exceptions, str)
         or not all(_single_line(item) for item in exceptions)
     ):
+        raise RunnerError()
+    if exceptions and read_only_assignments(config, workflow, adapter_loader):
         raise RunnerError()
     try:
         asyncio.get_running_loop()

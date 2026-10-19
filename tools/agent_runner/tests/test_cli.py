@@ -551,14 +551,25 @@ class EchoAdapter:
         return AdapterOutcome()
 
 
+_CODEX_FALLBACK = 'fallback = ["b"]\n'
+
+
 def run_echo(template: Path, repository: Path, output: Path, monkeypatch: pytest.MonkeyPatch, *options: str) -> int:
-    """実際の run_workflow を通し、pi の adapter だけを EchoAdapter に差し替えて CLI の run を実行する。"""
+    """実際の run_workflow を通し、pi の adapter だけを EchoAdapter に差し替えて CLI の run を実行する。
+
+    雛形の fallback の codex は writes=false の役割を読み取り専用で起動するので、--write-exception を付けた run を
+    runner が止める（#52）。例外の行を確かめるため、その fallback を外した写しを使う。
+    """
     module = ModuleType("tools.agent_runner.adapters.pi")
     module.__dict__["ADAPTER"] = EchoAdapter()
     monkeypatch.setitem(sys.modules, module.__name__, module)
+    text = template.read_text()
+    assert _CODEX_FALLBACK in text
+    echo_template = output.with_name(f"{output.name}-template.toml")
+    echo_template.write_text(text.replace(_CODEX_FALLBACK, ""))
     prompt = output.with_name(f"{output.name}-prompt.txt")
     prompt.write_text(_BODY)
-    argv = ["--template", str(template), "run", "--workflow", "audit", "--repository", str(repository)]
+    argv = ["--template", str(echo_template), "run", "--workflow", "audit", "--repository", str(repository)]
     return cli.main([*argv, "--prompt-file", str(prompt), "--output-dir", str(output), *options])
 
 
@@ -646,3 +657,27 @@ def test_invalid_write_exceptions_are_rejected_before_any_output(
         assert ("--write-exception=-x" if value == "-x" else "one line") in captured.err
     else:
         assert captured.err == ""
+
+
+def test_write_exceptions_with_a_read_only_fallback_are_refused_before_any_output(
+    template: Path,
+    repository: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """雛形の fallback は実際の codex の adapter（writes=false を -s read-only で起動する）。例外を実行できないので、
+    --write-exception を付けた run は何も作らずに止まる。付けなければ従来どおり動く（#52）。"""
+    module = ModuleType("tools.agent_runner.adapters.pi")
+    module.__dict__["ADAPTER"] = EchoAdapter()
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    prompt = tmp_path / "prompt.txt"
+    prompt.write_text(_BODY)
+    argv = ["--template", str(template), "run", "--workflow", "audit", "--repository", str(repository)]
+    argv += ["--prompt-file", str(prompt), "--output-dir"]
+    refused, plain = tmp_path / "refused", tmp_path / "plain"
+    assert cli.main([*argv, str(refused), "--write-exception", "/x/reviews: run records"]) == 2
+    assert capsys.readouterr().out == json.dumps({"error": "invalid_input"}) + "\n"
+    assert not refused.exists()
+    assert cli.main([*argv, str(plain)]) == 0
+    assert plain.exists()

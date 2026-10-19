@@ -31,6 +31,9 @@ class LaunchSpec:
 class Capabilities:
     noninteractive: bool = True
     stdin: bool = True
+    # writes=False roles run in a runtime-enforced read-only state (codex -s read-only),
+    # so caller-authorized write exceptions cannot be performed. Not a launch condition.
+    enforces_read_only: bool = False
 
 
 @dataclass(frozen=True, slots=True)

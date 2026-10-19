@@ -151,7 +151,8 @@ def _rollout_fields(text: str) -> dict[str, str]:
 
 
 class _CodexAdapter:
-    capabilities = Capabilities()
+    # -s read-only denies every write, including the caller's write exceptions (#52).
+    capabilities = Capabilities(enforces_read_only=True)
 
     def prepare(self, context: AdapterContext) -> LaunchSpec:
         agent = context.agent
