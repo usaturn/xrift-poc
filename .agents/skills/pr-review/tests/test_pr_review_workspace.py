@@ -2367,3 +2367,87 @@ def test_parser_accepts_pinned_commit_and_source_root() -> None:
     )
     assert args.review_commit == "a" * 40
     assert args.source_root == "/example/source"
+
+
+# --- Issue #68: 同じリポジトリへの並行した git worktree add の commondir の競合 --------------------------------------
+
+
+def plant_racer(repo: Path) -> Path:
+    """並行した git worktree add が書きかけの登録（空の commondir）を置き、その commondir を返す。
+
+    書き終えるまで、このリポジトリの git worktree add は登録の一覧を読むところで、何も作らずに止まる。
+    """
+    admin = repo / ".git" / "worktrees" / "racer"
+    admin.mkdir(parents=True)
+    (admin / "gitdir").write_text(f"{repo.parent / 'racer' / '.git'}\n", encoding="utf-8")
+    (admin / "HEAD").write_text(git(repo, "rev-parse", "HEAD") + "\n", encoding="utf-8")
+    commondir = admin / "commondir"
+    commondir.write_bytes(b"")
+    return commondir
+
+
+def replace_wait(monkeypatch: pytest.MonkeyPatch, action: Any = lambda: None) -> list[float]:
+    """やり直しの前の待ちを記録し、待つ代わりに action（相手が書き終える など）を実行する。"""
+    waits: list[float] = []
+
+    def wait(seconds: float) -> None:
+        waits.append(seconds)
+        action()
+
+    monkeypatch.setattr(workspace, "wait_before_retry", wait)
+    return waits
+
+
+def test_create_retries_worktree_after_half_written_commondir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    codex_home = tmp_path / "codex"
+    write_rollout(codex_home, ["gpt-5.6-sol"])
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("CODEX_THREAD_ID", THREAD_ID)
+    repo = tmp_path / "repo"
+    commit = make_repo(repo)
+    commondir = plant_racer(repo)
+    waits = replace_wait(monkeypatch, lambda: commondir.write_text("../..\n", encoding="utf-8"))
+
+    result = workspace.create(
+        argparse.Namespace(
+            repo=str(repo),
+            pr_number=4,
+            commit=commit,
+            head_branch="fix/herdr-session-cwd",
+            model_name=None,
+            temp_root=str(tmp_path / "sessions"),
+        )
+    )
+
+    assert git(Path(str(result["worktree"])), "rev-parse", "HEAD") == commit
+    assert len(waits) == 1 and 0.05 <= waits[0] <= 0.2
+
+
+def test_add_detached_worktree_gives_up_after_three_lost_races(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    commit = make_repo(repo)
+    plant_racer(repo)
+    waits = replace_wait(monkeypatch)
+    worktree = tmp_path / "session" / "worktree"
+
+    with pytest.raises(workspace.WorkspaceError, match="commondir: "):
+        workspace.add_detached_worktree(repo, worktree, commit)
+
+    assert len(waits) == 2
+    assert not worktree.exists()
+
+
+# 終了コードが同じでも競合でない失敗は、やり直しても同じ失敗を繰り返すだけ
+def test_add_detached_worktree_does_not_retry_other_failures(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = tmp_path / "repo"
+    commit = make_repo(repo)
+    waits = replace_wait(monkeypatch)
+    blocker = tmp_path / "blocker"
+    blocker.write_text("", encoding="utf-8")
+
+    with pytest.raises(workspace.WorkspaceError):
+        workspace.add_detached_worktree(repo, blocker / "worktree", commit)
+
+    assert waits == []

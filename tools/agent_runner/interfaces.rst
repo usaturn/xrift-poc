@@ -205,6 +205,13 @@ invalid_result / timed_out / interrupted。
 worktree の準備と明示 fallback を含む。準備の git checkout と hook/filter も
 非同期の監督下で実行し、期限・中断で停止する。準備ログは worktree.stdout.log /
 worktree.stderr.log とし、不完全な worktree も保持する。
+同じ repository への並行した ``git worktree add`` が、別の登録の書きかけの
+commondir を読んで何も作らずに止まったとき（終了コード 128、停止を確認済み、
+作成先なし、stderr に ``worktrees/<id>/commondir:``）だけ、準備を最大 3 回まで
+やり直す（#68）。期限は準備全体で数え、やり直す前の待ちで中断・期限切れに
+なったら、やり直さずにその回の失敗を返す。やり直すときは、失敗した回のログを
+worktree.stdout.log.<n> / worktree.stderr.log.<n>（n は失敗した回の番号）に
+名前を変えて残す。
 プロセスの停止確認に必要な猶予は期限を超えることがある。
 trusted adapter の prepare/collect は同期処理なので、短いローカル処理だけに限定する。
 SIGINT は共有 cancel event をセットし、所有するプロセスを停止して結果を保存する。

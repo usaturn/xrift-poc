@@ -8,8 +8,11 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 import traceback
+from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -524,3 +527,161 @@ def test_git_common_dir_of_a_non_repository_is_a_workspace_error(tmp_path: Path)
     plain.mkdir()
     with pytest.raises(WorkspaceError):
         workspace.git_common_dir(plain)
+
+
+def plant_racer(repository: Path, name: str = "racer") -> Path:
+    """Register a worktree whose commondir is still empty, as a concurrent `git worktree add` leaves it mid-write.
+
+    Until it is written, any `git worktree add` in the repository dies listing the worktrees,
+    before creating anything (#68). Returns the commondir to write.
+    """
+    admin = repository / ".git" / "worktrees" / name
+    admin.mkdir(parents=True)
+    (admin / "gitdir").write_text(f"{repository.parent / name / '.git'}\n")
+    (admin / "HEAD").write_text(git(repository, "rev-parse", "HEAD") + "\n")
+    commondir = admin / "commondir"
+    commondir.write_bytes(b"")
+    return commondir
+
+
+def replace_pause(
+    monkeypatch: pytest.MonkeyPatch, action: Callable[[threading.Event], object] = lambda _: None
+) -> list[float]:
+    """Record each pause before a retry and run action in its place (the other writer finishing, a cancel, ...)."""
+    pauses: list[float] = []
+
+    async def pause(seconds: float, cancel: threading.Event) -> None:
+        pauses.append(seconds)
+        action(cancel)
+
+    monkeypatch.setattr(workspace, "_pause", pause)
+    return pauses
+
+
+def prepare(repository: Path, destination: Path, logs: Path) -> process.ProcessResult:
+    return asyncio.run(
+        workspace.prepare_worktree(
+            repository,
+            resolve_revision(repository),
+            destination,
+            deadline_seconds=30,
+            cancel=threading.Event(),
+            stdout_path=logs / "worktree.stdout.log",
+            stderr_path=logs / "worktree.stderr.log",
+        )
+    )
+
+
+def retained_logs(logs: Path) -> list[str]:
+    return sorted(path.name for path in logs.glob("worktree.std*.log.*"))
+
+
+# Simultaneous preparations make each runner name its admin directory worktree, worktree1, ...;
+# from a linked worktree Git prints the common directory as an absolute path.
+@pytest.mark.parametrize(("racer", "linked"), [("racer", False), ("worktree1", False), ("racer", True)])
+def test_preparation_retries_after_reading_a_half_written_commondir(
+    repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, racer: str, linked: bool
+) -> None:
+    source = create_worktree(repository, "HEAD", tmp_path / "linked") if linked else repository
+    commondir = plant_racer(repository, racer)
+    pauses = replace_pause(monkeypatch, lambda _: commondir.write_text("../..\n"))
+    logs = tmp_path / "出力 先"
+    logs.mkdir()
+    destination = logs / "worktree"
+
+    result = prepare(source, destination, logs)
+
+    assert (result.state, result.exit_code, result.stop_confirmed) == (None, 0, True)
+    assert git(destination, "rev-parse", "HEAD") == resolve_revision(repository)
+    assert len(pauses) == 1 and 0.05 <= pauses[0] <= 0.2
+    # The lost try's logs stay next to the successful try's.
+    assert retained_logs(logs) == ["worktree.stderr.log.1", "worktree.stdout.log.1"]
+    assert f"worktrees/{racer}/commondir: " in (logs / "worktree.stderr.log.1").read_text()
+    assert "commondir" not in (logs / "worktree.stderr.log").read_text()
+
+
+def test_preparation_gives_up_after_three_lost_races(
+    repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plant_racer(repository)
+    pauses = replace_pause(monkeypatch)
+    destination = tmp_path / "worktree"
+
+    result = prepare(repository, destination, tmp_path)
+
+    assert (result.state, result.exit_code, result.stop_confirmed) == ("response_failed", 128, True)
+    assert len(pauses) == 2
+    assert retained_logs(tmp_path) == [
+        "worktree.stderr.log.1",
+        "worktree.stderr.log.2",
+        "worktree.stdout.log.1",
+        "worktree.stdout.log.2",
+    ]
+    assert "commondir: " in (tmp_path / "worktree.stderr.log").read_text()
+    assert not destination.exists()
+
+
+# The same exit code without the race: retrying would only repeat a lasting failure.
+def test_preparation_does_not_retry_other_failures(
+    repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pauses = replace_pause(monkeypatch)
+    blocker = tmp_path / "blocker"
+    blocker.write_text("")
+
+    result = prepare(repository, blocker / "worktree", tmp_path)
+
+    assert (result.state, result.exit_code, result.stop_confirmed) == ("response_failed", 128, True)
+    assert pauses == []
+    assert retained_logs(tmp_path) == []
+
+
+# Files of a preparation without independent stop evidence are never moved or rewritten.
+def test_preparation_never_retries_an_unconfirmed_stop(
+    repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commondir = plant_racer(repository)
+    pauses = replace_pause(monkeypatch, lambda _: commondir.write_text("../..\n"))
+
+    def no_stop(_: object) -> bool:
+        return False
+
+    monkeypatch.setattr("tools.agent_runner.process._stop_confirmed", no_stop)
+    destination = tmp_path / "worktree"
+
+    result = prepare(repository, destination, tmp_path)
+
+    assert (result.exit_code, result.stop_confirmed) == (128, False)
+    assert pauses == []
+    assert retained_logs(tmp_path) == []
+    assert not destination.exists()
+
+
+# A cancel or an exhausted deadline during the pause returns the lost try, exactly as without retries.
+@pytest.mark.parametrize("interruption", ["cancel", "deadline"])
+def test_preparation_is_not_retried_after_cancel_or_deadline_during_the_pause(
+    repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, interruption: str
+) -> None:
+    commondir = plant_racer(repository)
+    offset = [0.0]
+    real = time.monotonic
+    # Advance only the preparation's clock; supervised execution keeps the real one.
+    monkeypatch.setattr(workspace, "time", SimpleNamespace(monotonic=lambda: real() + offset[0]))
+
+    def interrupt(cancel: threading.Event) -> None:
+        commondir.write_text("../..\n")  # a retry would now succeed
+        if interruption == "cancel":
+            cancel.set()
+        else:
+            offset[0] = 60.0
+
+    pauses = replace_pause(monkeypatch, interrupt)
+    destination = tmp_path / "worktree"
+
+    result = prepare(repository, destination, tmp_path)
+
+    assert (result.state, result.exit_code, result.stop_confirmed) == ("response_failed", 128, True)
+    assert len(pauses) == 1
+    assert retained_logs(tmp_path) == []
+    assert "commondir: " in (tmp_path / "worktree.stderr.log").read_text()
+    assert not destination.exists()
