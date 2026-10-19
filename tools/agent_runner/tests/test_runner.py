@@ -1110,12 +1110,16 @@ def test_cancel_at_preparation_completion_retains_log_paths(
 
 # Assignments that prepare one repository together read each other's half-written
 # commondir and die before creating anything (#68). Every one of them loses once here,
-# and every one still reaches its agent.
+# and every one still reaches its agent. The racer's commondir is finished only once,
+# while all three wait: rewriting it would empty it under a retry that is already
+# running and recreate the race. Later losses are genuine races between the retries,
+# so they take the real randomized pause instead of retrying together again.
 def test_simultaneous_preparations_survive_a_half_written_commondir(
     repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     admin = repository / ".git" / "worktrees" / "racer"
     real_snapshot = runner.snapshot_checkouts
+    real_pause = workspace._pause  # pyright: ignore[reportPrivateUsage] - the retries' own backoff
 
     def snapshot_then_race(repository: Path) -> dict[str, str | None]:
         before = real_snapshot(repository)
@@ -1131,10 +1135,15 @@ def test_simultaneous_preparations_survive_a_half_written_commondir(
     async def finish_write_once_all_lost(seconds: float, cancel: threading.Event) -> None:
         nonlocal pauses
         pauses += 1
-        async with asyncio.timeout(30):
-            while pauses < 3:
-                await asyncio.sleep(0.01)
-        (admin / "commondir").write_text("../..\n")
+        if pauses > 3:
+            await real_pause(seconds, cancel)
+        elif pauses == 3:
+            # The last to lose finishes the write; no assignment is running git now.
+            (admin / "commondir").write_text("../..\n")
+        else:
+            async with asyncio.timeout(30):
+                while pauses < 3:
+                    await asyncio.sleep(0.01)
 
     monkeypatch.setattr(runner, "snapshot_checkouts", snapshot_then_race)
     monkeypatch.setattr(workspace, "_pause", finish_write_once_all_lost)
@@ -1148,7 +1157,7 @@ def test_simultaneous_preparations_survive_a_half_written_commondir(
         adapter_loader=lambda _: FakeAdapter(),
     )
     assert batch.state == "success"
-    assert pauses == 3
+    assert pauses >= 3
     for result in batch.results:
         assert [attempt.state for attempt in result.attempts] == ["success"]
         work_dir = result.attempts[0].work_dir
