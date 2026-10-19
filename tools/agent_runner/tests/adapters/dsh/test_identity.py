@@ -78,3 +78,19 @@ def test_rejects_unbound_or_invalid_records(tmp_path: Path, case: str) -> None:
         os.mkfifo(path)
     with pytest.raises((ValueError, OSError)):
         dsh_identity.read_session_identity(home, cwd, "session-test")
+
+
+@pytest.mark.parametrize("field", ["model", "reasoningEffort"])
+@pytest.mark.parametrize("live", [False, True])
+def test_rejects_route_change_after_last_response(tmp_path: Path, live: bool, field: str) -> None:
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    home = tmp_path / "state"
+    path = write_session(home, cwd)
+    config = {"provider": "observed-provider", "model": "observed-model", "reasoningEffort": "high", field: "changed"}
+    header = {"type": "request/header", "seq": 2, "time": 3, "data": {"header": {"config": config}}}
+    with path.open("a") as stream:
+        stream.write(json.dumps(header) + "\n")
+    # match pins the rejecting branch; a ValueError from another check (seq, binding) must not pass here.
+    with pytest.raises(ValueError, match="route changed without an observed response"):
+        dsh_identity.read_session_identity(home, cwd, "session-test", live=live)
