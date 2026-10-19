@@ -6,12 +6,17 @@ referents, and arbitrary directories outside registered checkouts are outside
 this boundary. A changed fingerprint is evidence of change, not attribution.
 """
 
+import asyncio
+import contextlib
+import dataclasses
 import hashlib
 import os
+import random
 import re
 import stat
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 from tools.agent_runner.adapters import LaunchSpec
@@ -86,6 +91,34 @@ def create_worktree(repository: Path, revision: str, destination: Path) -> Path:
     return destination
 
 
+# A concurrent `git worktree add` in the same repository creates its commondir before
+# writing it. Listing the registered worktrees in between reads it empty and dies with
+# "failed to read .../worktrees/<id>/commondir: Success" (exit 128) before creating
+# anything (#68). The path and the ": " before the error text are never translated.
+_COMMONDIR_RACE = re.compile(rb"worktrees/[^/\n]+/commondir: ")
+_ADD_TRIES = 3
+
+
+def _lost_commondir_race(result: ProcessResult, stderr_path: Path, destination: Path) -> bool:
+    """Only a stopped `git worktree add` that created nothing and names the race is retried."""
+    if (result.state, result.exit_code, result.stop_confirmed) != ("response_failed", 128, True):
+        return False
+    if destination.exists() or destination.is_symlink():
+        return False
+    try:
+        with stderr_path.open("rb") as stream:
+            return _COMMONDIR_RACE.search(stream.read(65536)) is not None
+    except OSError:
+        return False
+
+
+async def _pause(seconds: float, cancel: threading.Event) -> None:
+    """Wait before retrying; return early once cancel is set."""
+    until = time.monotonic() + seconds
+    while time.monotonic() < until and not cancel.is_set():
+        await asyncio.sleep(0.01)
+
+
 async def prepare_worktree(
     repository: Path,
     commit: str,
@@ -101,7 +134,9 @@ async def prepare_worktree(
 
     Accept only an already-resolved full commit ID. No synchronous Git calls or
     worker threads are used; deadline/cancellation and independent stop evidence
-    have the same semantics as agent execution.
+    have the same semantics as agent execution. A try that lost the commondir race
+    with a concurrent `git worktree add` is retried within the same deadline, up to
+    _ADD_TRIES tries; each lost try's logs are kept as ``<log>.<try>``.
     """
     if (
         re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", commit) is None
@@ -110,29 +145,45 @@ async def prepare_worktree(
         or destination.is_symlink()
     ):
         raise WorkspaceError()
-    return await execute(
-        LaunchSpec(
-            (
-                "git",
-                "-C",
-                str(repository.absolute()),
-                "worktree",
-                "add",
-                "--detach",
-                "--",
-                str(destination.absolute()),
-                commit,
-            ),
-            b"",
+    launch = LaunchSpec(
+        (
+            "git",
+            "-C",
+            str(repository.absolute()),
+            "worktree",
+            "add",
+            "--detach",
+            "--",
+            str(destination.absolute()),
+            commit,
         ),
-        cwd=repository.absolute(),
-        env={key: value for key, value in literal_environ().items() if not key.startswith("GIT_")},
-        deadline_seconds=deadline_seconds,
-        cancel=cancel,
-        stdout_path=stdout_path,
-        stderr_path=stderr_path,
-        secrets=secrets,
+        b"",
     )
+    env = {key: value for key, value in literal_environ().items() if not key.startswith("GIT_")}
+    started = time.monotonic()
+    tries = 1
+    while True:
+        result = await execute(
+            launch,
+            cwd=repository.absolute(),
+            env=env,
+            deadline_seconds=deadline_seconds - (time.monotonic() - started),
+            cancel=cancel,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            secrets=secrets,
+        )
+        if tries == _ADD_TRIES or not _lost_commondir_race(result, stderr_path, destination):
+            break
+        await _pause(random.uniform(0.05, 0.2), cancel)
+        if cancel.is_set() or time.monotonic() - started >= deadline_seconds:
+            break
+        for path in (stdout_path, stderr_path):
+            # Keep the lost try's logs; the retry writes the named logs afresh.
+            with contextlib.suppress(OSError):
+                path.rename(path.with_name(f"{path.name}.{tries}"))
+        tries += 1
+    return dataclasses.replace(result, elapsed_seconds=time.monotonic() - started)
 
 
 def _fingerprint(checkout: Path) -> str:

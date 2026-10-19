@@ -1108,6 +1108,54 @@ def test_cancel_at_preparation_completion_retains_log_paths(
     assert attempt.stderr_path.name == "worktree.stderr.log"
 
 
+# Assignments that prepare one repository together read each other's half-written
+# commondir and die before creating anything (#68). Every one of them loses once here,
+# and every one still reaches its agent.
+def test_simultaneous_preparations_survive_a_half_written_commondir(
+    repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    admin = repository / ".git" / "worktrees" / "racer"
+    real_snapshot = runner.snapshot_checkouts
+
+    def snapshot_then_race(repository: Path) -> dict[str, str | None]:
+        before = real_snapshot(repository)
+        # Even `git worktree list` fails on this registration, so it appears after the baseline audit.
+        admin.mkdir(parents=True)
+        (admin / "gitdir").write_text(f"{tmp_path / 'racer' / '.git'}\n")
+        (admin / "HEAD").write_text(workspace.resolve_revision(repository) + "\n")
+        (admin / "commondir").write_bytes(b"")
+        return before
+
+    pauses = 0
+
+    async def finish_write_once_all_lost(seconds: float, cancel: threading.Event) -> None:
+        nonlocal pauses
+        pauses += 1
+        async with asyncio.timeout(30):
+            while pauses < 3:
+                await asyncio.sleep(0.01)
+        (admin / "commondir").write_text("../..\n")
+
+    monkeypatch.setattr(runner, "snapshot_checkouts", snapshot_then_race)
+    monkeypatch.setattr(workspace, "_pause", finish_write_once_all_lost)
+    batch = run_workflow(
+        configuration(["a", "b", "c"]),
+        "audit",
+        "prompt",
+        repository,
+        concurrency=3,
+        output_dir=tmp_path / "run",
+        adapter_loader=lambda _: FakeAdapter(),
+    )
+    assert batch.state == "success"
+    assert pauses == 3
+    for result in batch.results:
+        assert [attempt.state for attempt in result.attempts] == ["success"]
+        work_dir = result.attempts[0].work_dir
+        assert work_dir is not None
+        assert "worktrees/racer/commondir: " in (work_dir.parent / "worktree.stderr.log.1").read_text()
+
+
 # Devin leaves an ATIF export next to the receipt. Its transcript can repeat
 # inherited secret values in the final answer, history, and tool arguments,
 # so the runner must redact the managed export like the receipt.
