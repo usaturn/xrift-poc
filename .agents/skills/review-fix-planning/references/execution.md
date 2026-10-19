@@ -78,6 +78,8 @@ self-review・fix-checkには、runtimeが `dsh` の担当（`dsh-ccd`・`dsh-go
 
 run_rolesは投影の直後、requestの検査とGitの照会より前にexit 2で止まり、planningの予約、`--output-dir`、起動のどれも行わない（stderrに理由を出す）。DSHをself-review・fix-checkに使うには、run_rolesにloopと同じ親側の準備（prepare_parent・書き込みの許可・stagedの保存）を足す別の変更が要る。implementは対象外（runnerのworktreeの中に書く役割で、pr-reviewのDSHの手順を使わない）。
 
+self-review・fix-checkには、writes=Falseの役割を読み取り専用で起動する担当（adapterが `enforces_read_only` を宣言する。runtimeが `codex` の担当）も、一次担当にもfallbackにも割り当てられない（#52）。codexはwrites=Falseの役割を `codex exec -s read-only` で起動し、OSのsandboxがすべての書き込みを拒否するので、pr-review・review-verifyのhelperの書き込み（保存、uvのキャッシュ、Gitのworktreeの登録）ができない。run_rolesはDSHの検査の直後、予約の前にexit 2で止まる（stderrに理由を出す）。runnerも、書き込みの例外を渡したrunでwrites=Falseの役割にこの担当がいれば、何も作らずに止まる。implementは対象外（writes=Trueの役割で、codexは `workspace-write` で起動する）。
+
 外部の担当（self以外）に割り当てた役割には、その役割の書き込みをrunnerの作業範囲の指示の例外（Caller-authorized exceptions）として渡す。self-reviewはpr-reviewのhelperの書き込み先（`pr-review/scripts/review_run.py` の `helper_write_exceptions`。保存先はブランチ名を使わず `#<PR>-*`、Gitの書き込み先はrequestの `repository` の共有ディレクトリ）、fix-checkは `review-verify/scripts/dispatch.py` の `fix_check_write_exceptions`。runnerは全役割に同じ一覧を付けるので、各行の末尾に `(self-review role only)` / `(fix-check role only)` を付ける。selfの役割には何も求めず渡さない。self-reviewの一覧を作れない（親のmain worktreeを解決できない）ときは、1回枠を予約する前にexit 2で止まる。
 
 ### 回数と受け取り

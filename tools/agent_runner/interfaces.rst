@@ -102,9 +102,14 @@ nested_invocation / invalid_config。原文・値・Git 診断は返さない。
        def collect(self, context: AdapterContext,
                    stdout_path: Path, stderr_path: Path) -> AdapterOutcome: ...
 
-``Capabilities(noninteractive=True, stdin=True)``
-  両方が literal True の場合だけ起動する。
+``Capabilities(noninteractive=True, stdin=True, enforces_read_only=False)``
+  noninteractive と stdin の両方が literal True の場合だけ起動する。
   機能宣言はランタイム担当が実機で確かめる。対話への代替は不可。
+  ``enforces_read_only`` は起動の条件ではない。writes=false の役割を、ランタイム自身が書き込みを拒否する状態で
+  起動する adapter が True を宣言する（codex の ``-s read-only``。#52）。その担当は、呼び出し側が許可した書き込み
+  （``write_exceptions``）を実行できない。``read_only_assignments(config, workflow, adapter_loader=load_adapter)``
+  は、workflow の writes=false の役割に割り当てた担当（一次担当と fallback、self を除く）のうち、宣言した担当を
+  ``(role, agent)`` の一覧で返す。adapter を読み込めない担当は含めない（起動の時点で unsupported になる）。
 
 ``AdapterContext(request, agent, role, work_dir, receipt_path)``
   request は現在の識別情報と依頼、agent/role は有効な設定。
@@ -295,6 +300,8 @@ API は既存 asyncio event loop 内からは呼ばない。
 ``write_exceptions`` は、呼び出し側が作業範囲の指示（``Work in this worktree only`` と ``writes=...``）への
 例外として許可するものの列。runner は空でなければ、その 2 行の直後に見出しと ``- <値>`` の行を順に置くだけで、
 内容を解釈・強制しない（sandbox ではない。DSH の ``sandbox_write_paths`` とは別）。
+ただし、例外を実行できない担当（``read_only_assignments`` が返す担当）が writes=false の役割にいれば、
+何も作らずに invalid_input で止まる（CLI の ``--write-exception`` も同じ）。例外の無い run では止めない。
 例えば PR レビューの loop と review-fix-planning の self-review は、pr-review の helper が書く実行記録・保存先・保存ロックなどを、
 review-verify の fix-check は一時ディレクトリ・再現用 worktree の登録などを渡す。
 見出しは ``Caller-authorized exceptions to the rules above (only these; everything else stays forbidden):`` で、

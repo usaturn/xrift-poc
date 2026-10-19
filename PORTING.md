@@ -191,6 +191,7 @@
 
 - #37: 応答の記録が無い DSH の試行で、認証不足の分類が `response_failed` に上書きされる（#24 の PR で見つかった）。xrift-poc で直した: Identity の読み取りに失敗したとき `response_failed` にするのは `success` の試行だけで、ほかの状態はそのまま残す。移植元（`715d981`）は上書きのままなので、移植元の `dsh.py` の `collect` を取り込むときはこの差を残す
 - #38: DSH のレビューが `reviews/` に作る作業領域（`.staging`・`parent-pr-data`）の置き場所と後片付け
+- #52: codex をレビュアー（inspect）にすると、writes=false の役割を `codex exec -s read-only` で起動するため pr-review の helper が書けず、毎回 rejected になる（PR #50 の loop で見つかった）。xrift-poc で直した: adapter が `Capabilities.enforces_read_only` を宣言し、loop の `check-options`・`start`、`run_roles.py`、runner（書き込みの例外のある run）が、その担当を inspect・self-review・fix-check に割り当てた設定を起動の前に止める。移植元（`a47b206`）の `codex.py` も `-s read-only` で、この検査は無いので、移植元の agent_runner・loop・run_roles を取り込むときはこの差を残す
 
 ## 移植漏れの補完（2026-10、Issue #53）
 

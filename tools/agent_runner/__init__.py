@@ -15,7 +15,7 @@ from tools.agent_runner.models import (
     State,
     Workflow,
 )
-from tools.agent_runner.runner import RunnerError, run_workflow
+from tools.agent_runner.runner import RunnerError, read_only_assignments, run_workflow
 
 __all__ = [
     "Agent",
@@ -34,6 +34,7 @@ __all__ = [
     "Workflow",
     "check_depth",
     "load_config",
+    "read_only_assignments",
     "resolve_config_path",
     "run_workflow",
 ]

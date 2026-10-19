@@ -47,6 +47,7 @@ from tools.agent_runner import (  # noqa: E402
     Result,
     RunnerError,
     load_config,
+    read_only_assignments,
     resolve_config_path,
     run_workflow,
 )
@@ -654,6 +655,8 @@ def load_assignments(
 
     run_roles.py が設定だけで拒否する fix の割り当て（DSH の self-review・fix-check など）は、レビューや implement の
     後の run_roles の呼び出しを待たずにここで止める（#675）。判定と理由は run_roles の関数を使い、規則を写さない。
+    writes=false の役割を読み取り専用で起動する担当（codex）は、inspect・self-review・fix-check の helper の書き込みが
+    できないので止める（#52）。判定は runner の read_only_assignments を使う。
     """
     personal = personal_config(config)
     inspect = {role: agents for role, agents in assign.items() if role == "inspect"}
@@ -680,6 +683,16 @@ def load_assignments(
             f"run_roles.py が拒否する fix の割り当て（{run_roles.failure_reason(error)}）。"
             "--assign か、個人設定の workflows.fix・roles を直す",
         ) from error
+    read_only = read_only_assignments(review_config, "review") + read_only_assignments(fix_config, "fix")
+    if read_only:
+        pairs = ", ".join(f"{role}={agent}" for role, agent in read_only)
+        raise LoopError(
+            2,
+            "config",
+            f"writes=false の役割を読み取り専用で起動する担当（codex など）が割り当てられている: {pairs}。"
+            "pr-review・review-verify の helper の書き込み（保存、uv のキャッシュ、Git の worktree の登録）が"
+            "できない。--assign か、個人設定の workflows から外す",
+        )
     return {
         "review": {"inspect": review_assignments["inspect"].model_dump(mode="json")},
         "fix": {role: fix_assignments[role].model_dump(mode="json") for role in FIX_ROLES},

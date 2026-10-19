@@ -30,6 +30,7 @@ from tools.agent_runner import (  # noqa: E402
     RunnerError,
     Workflow,
     load_config,
+    read_only_assignments,
     resolve_config_path,
     run_workflow,
 )
@@ -151,6 +152,21 @@ def reject_dsh_review_agents(config: Config) -> None:
                 "lacks the parent-side preparation DSH needs (prepare_parent, sandbox write paths, saving staged "
                 "results)"
             )
+
+
+def reject_read_only_review_agents(config: Config, adapter_loader: Callable[[str], Adapter]) -> None:
+    """self-review・fix-check を、writes=false を読み取り専用で起動する担当に割り当てた設定を、1 回枠を予約する前に
+    拒否する（#52）。
+
+    codex は writes=false の役割を ``-s read-only`` で起動するので、pr-review・review-verify の helper の書き込み
+    （保存、uv のキャッシュ、Git の worktree の登録）ができず、戻せない枠だけを消費する。runner も例外のある run を
+    拒否するが、それは予約の後なのでここで止める。判定は runner の ``read_only_assignments`` を使う。
+    """
+    if read_only_assignments(config, "fix", adapter_loader):
+        raise RoleInputError(
+            "self-review/fix-check cannot be assigned to an agent whose runtime runs writes=false roles read-only "
+            "(codex; primary or fallback): it cannot perform the pr-review/review-verify helper writes"
+        )
 
 
 def read_json(path: Path) -> Any:
@@ -290,6 +306,7 @@ def run(
     selected = project(config, phase)
     if phase == "self-review":
         reject_dsh_review_agents(selected)
+        reject_read_only_review_agents(selected, adapter_loader)
     data = RoleInput.model_validate(request)
     repository = Path(data.repository)
     try:
