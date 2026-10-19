@@ -18,6 +18,18 @@ runtime = "dsh"
 command = ["fake-delta"]
 model = "delta-model"
 """
+# runtime が codex の担当。名前ではなく runtime（adapter の宣言）で止まることを確かめるため、別名にする（#52）
+CODEX_AGENT = """
+[agents.gpt-review]
+runtime = "codex"
+command = ["fake-codex"]
+model = "gpt-review-model"
+"""
+CODEX_INSPECT_FALLBACK = """
+[workflows.review.assignments.inspect]
+agents = ["alpha"]
+fallback = ["gpt-review"]
+"""
 
 
 def check_options(loop: Any, capsys: pytest.CaptureFixture[str], *arguments: str) -> tuple[int, dict[str, Any]]:
@@ -107,6 +119,14 @@ def without_fix_check(template: Path, root: Path) -> Path:
         ),
         pytest.param({"assign": ["self-review=delta"]}, ["--assign", "self-review=delta"], id="dsh-self-review"),
         pytest.param({"template": "no-fix-check"}, [], id="missing-fix-check"),
+        pytest.param(
+            {"assign": ["inspect=alpha,gpt-review"]}, ["--assign", "inspect=alpha,gpt-review"], id="codex-inspect"
+        ),
+        pytest.param({"personal": CODEX_INSPECT_FALLBACK}, [], id="codex-inspect-fallback"),
+        pytest.param(
+            {"assign": ["self-review=gpt-review"]}, ["--assign", "self-review=gpt-review"], id="codex-self-review"
+        ),
+        pytest.param({"assign": ["fix-check=gpt-review"]}, ["--assign", "fix-check=gpt-review"], id="codex-fix-check"),
     ],
 )
 def test_check_options_rejects_what_start_rejects_with_the_same_reason(
@@ -118,7 +138,7 @@ def test_check_options_rejects_what_start_rejects_with_the_same_reason(
     cli: list[str],
 ) -> None:
     personal = tmp_path / "personal.toml"
-    personal.write_text(DSH_AGENT, encoding="utf-8")
+    personal.write_text(DSH_AGENT + CODEX_AGENT + start_options.pop("personal", ""), encoding="utf-8")
     template = isolated.template
     if start_options.get("template") == "no-fix-check":
         template = without_fix_check(template, tmp_path)
@@ -132,6 +152,51 @@ def test_check_options_rejects_what_start_rejects_with_the_same_reason(
     assert output["status"] == "error"
     assert (output["stage"], output["reason"]) == (error.value.stage, error.value.reason)
     assert output["next"] is None
+    assert_untouched(isolated)
+
+
+def test_check_options_rejects_codex_reviewers_in_the_real_template(
+    loop: Any, isolated: Any, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """README の例（--assign inspect=claude-opus,codex）を、実際の雛形で run の前に止める（#52）。"""
+    personal = tmp_path / "personal.toml"
+    personal.write_text("", encoding="utf-8")
+    code, output = check_options(
+        loop,
+        capsys,
+        "--assign",
+        "inspect=claude-opus,codex",
+        "--template",
+        str(loop.DEFAULT_TEMPLATE),
+        "--config",
+        str(personal),
+    )
+
+    assert code == 2
+    assert (output["status"], output["stage"]) == ("error", "config")
+    assert "inspect=codex" in output["reason"]
+    assert_untouched(isolated)
+
+
+def test_check_options_keeps_codex_as_the_implementer(
+    loop: Any, isolated: Any, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """implement は writes=true の役割で、codex は workspace-write で起動する。止めない（#52）。"""
+    personal = tmp_path / "personal.toml"
+    personal.write_text("", encoding="utf-8")
+    code, output = check_options(
+        loop,
+        capsys,
+        "--assign",
+        "implement=codex",
+        "--template",
+        str(loop.DEFAULT_TEMPLATE),
+        "--config",
+        str(personal),
+    )
+
+    assert code == 0
+    assert output["assignments"]["fix"]["implement"]["agents"] == ["codex"]
     assert_untouched(isolated)
 
 
