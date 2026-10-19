@@ -167,7 +167,7 @@ dispatch の終了コードは次のとおり。出力の JSON 行は `state`・
 - behavior: 別の入力・境界・失敗状態も実行する。
 - static: コミット済みの記述を読む。実行が必要な主張を static へ読み替えない。
 
-変更ファイルは道具が全パスを列挙する。各ファイルに適用する lint・型検査・ビルドの規則を定義元から読む。たとえば親の検証は AGENTS.md の検証の節、制作物の検証は制作物の `package.json` の scripts と `xrift check <world|item> --build`。規則をここに写さない。削除/rename/テストも検査欄から落とさない。コマンドを `to` の隔離 worktree で実行し、規則の定義元、コマンド、HEAD、終了コード、結果を `fix_evidence.files` に残す。削除や適用する検査が無い場合だけ理由付き not_applicable。環境不足・時間切れは unchecked と coverage.remaining。lint 規則が `--fix` を使う場合は隔離コピーでだけ実行し、実行前後の hash/diff も保存する。終了 0 でも修正が発生したらコミット済みの原文は規則違反なので failed の指摘にする。自動修正後のコピーを元のコミットの合格証拠にしない。
+変更ファイルは道具が全パスを列挙する。各ファイルに適用する lint・型検査・ビルドの規則を定義元から読む。たとえば親の検証は AGENTS.md の検証の節、制作物の検証は制作物の `package.json` の scripts と `xrift check --build`。規則をここに写さない。削除/rename/テストも検査欄から落とさない。コマンドを `to` の隔離 worktree で実行し、規則の定義元、コマンド、HEAD、終了コード、結果を `fix_evidence.files` に残す。削除や適用する検査が無い場合だけ理由付き not_applicable。環境不足・時間切れは unchecked と coverage.remaining。lint 規則が `--fix` を使う場合は隔離コピーでだけ実行し、実行前後の hash/diff も保存する。終了 0 でも修正が発生したらコミット済みの原文は規則違反なので failed の指摘にする。自動修正後のコピーを元のコミットの合格証拠にしない。
 
 確認を始めたら、文書候補と主張と変更ファイルを道具で列挙してから照合する。
 

@@ -241,7 +241,7 @@ Spec 2 章の決定（PR のマージには CI の green を必須にする）�
 | 型チェック | `npm run typecheck`（`tsc --noEmit`） | ワールド・アイテムとも終了コード 0 |
 | 開発サーバー | `npm run dev -- --host 0.0.0.0`（ワールドは 5173、アイテムは `--port 5174`） | どちらも HTTP 200。vite 7.3.1 が `Network:` のアドレスも表示した。確認後に `kill -- -"$DEV_PID"` でプロセスグループごと止め、`ss -ltnp` で 5173・5174 を待ち受けるプロセスが残っていないことを確かめた |
 | 描画 | Python Playwright（Chromium のヘッドレス）で `http://localhost:<port>/` のスクリーンショットを撮り、目で確かめた | ワールド: 空の背景（街並みの全天球画像）、茶色の壁、緑の床、左下に操作の説明（`WASD` で移動など）が描画された。アイテム: 灰色の床の上に、青い八面体と黒い台座（青い光の広がり付き）が描画された。ページのエラー（`pageerror`）は無し |
-| セキュリティ検査 | `xrift check world --build`、`xrift check item --build` | どちらも `Security check passed`（ワールド 22 ファイル、アイテム 20 ファイルすべて `APPROVE`）。警告は出なかった。`--ignore-warnings`・`--skip-check` は使っていない |
+| セキュリティ検査 | `xrift check world --build`、`xrift check item --build` | どちらも `Security check passed`（ワールド 22 ファイル、アイテム 20 ファイルすべて `APPROVE`）。警告は出なかった。`--ignore-warnings`・`--skip-check` は使っていない。0.25.0 の種類を書く形は `--build` を付けてもビルドしない（#57）ので、この結果は既にあった `dist/`（上の「ビルド」の行の成果物）を検査したもので、`--build` によるビルドの確認ではない |
 
 ブラウザのコンソールには、次の警告が出た。いずれもテンプレートや three.js・ヘッドレスの描画に由来し、作成と検証の可否には影響しない。
 

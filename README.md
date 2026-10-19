@@ -52,7 +52,7 @@ xrift-poc/
 cd "$XRIFT_POC_ROOT/worlds/my-world"
 npm run dev -- --host 0.0.0.0
 # 開発サーバーを止めてから検査する
-xrift check world --build
+xrift check --build
 ```
 
 アイテムも同じ手順です。
@@ -61,10 +61,11 @@ xrift check world --build
 (cd "$XRIFT_POC_ROOT/items" && xrift create item my-item -y)
 cd "$XRIFT_POC_ROOT/items/my-item"
 npm run dev -- --host 0.0.0.0
-xrift check item --build
+xrift check --build
 ```
 
 - `xrift create` は、テンプレートの取得から依存の導入まで行います。`npm run build`（`tsc && vite build`）と `npm run typecheck`（`tsc --noEmit`）も使えます
+- `xrift check --build` は、ワールドかアイテムかを `xrift.json` から判定し、ビルドしてから検査します。XRift CLI 0.25.0 では、種類を書く `xrift check world --build`・`xrift check item --build` はビルドしないので使いません。`dist/` の無い新規の制作物では失敗し、`dist/` があれば古い成果物を検査します（[#57](https://github.com/usaturn/xrift-poc/issues/57)）
 - プレビューはホストのブラウザで `http://localhost:5173` を開きます。2 つ目以降のプロジェクトは `npm run dev -- --host 0.0.0.0 --port 5174` のように 5174〜5179 を使います
 - コンテナ内でブラウザの描画を確かめるときは、Python Playwright を使います（`uv run --project "$XRIFT_POC_ROOT/tools/devenv" python <script>`。ブラウザが無いときは `uv run --project "$XRIFT_POC_ROOT/tools/devenv" playwright install chromium` で入れます）。制作物のディレクトリからも実行できるよう、`--project` は絶対パスで指定します
 - `xrift check` のセキュリティ検査を省略するオプション（`--ignore-warnings`・`--skip-check`）は、標準の手順に使いません
@@ -87,7 +88,7 @@ xrift check item --build
 `xrift upload world`・`xrift upload item` は、利用者が公開すると明示的に決めたときだけ手動で実行します。セットアップ・更新・通常の検証には含めません。エージェントは、利用者の指示が無い限り実行しません。
 
 1. `xrift whoami` で、ログイン済みであることを確かめます（上の「XRift へのログイン」）
-2. 制作物のディレクトリで `xrift check world --build`（アイテムは `xrift check item --build`）を実行し、ビルドとセキュリティ検査を通します
+2. 制作物のディレクトリで `xrift check --build` を実行し、ビルドとセキュリティ検査を通します
 3. 同じディレクトリで、ワールドは `xrift upload world`、アイテムは `xrift upload item` を実行します。アイテムは `xrift.json` の内容を読みます
 
 `xrift upload` はアップロードの前にセキュリティ検査を行います。検査を省略する `--skip-check` と、ワールドのバンドルの `<Item itemId>` が `xrift.json` の `world.items` に宣言されているかの確認を省略する `--skip-item-scan` は、標準の手順に使いません。
@@ -119,8 +120,9 @@ CI（`.github/workflows/ci.yml`）は、pi（`@earendil-works/pi-coding-agent`�
 2. `.devcontainer/install_beforehand.bash` の `XRIFT_CLI_VERSION` を変えます
 3. 新しい版に入れ替えます。`npm install -g @xrift/cli@<新しい版>` を実行するか、Rebuild Container します。PATH 上の `xrift` は、入れ替えるまで古い版のままです
 4. `xrift --version` が新しい版と一致することを確かめます
-5. 「ワールドとアイテム」の手順で、ワールドとアイテムの作成・`npm run build`・`xrift check world --build`・`xrift check item --build` をやり直します。警告が出たら理由を確かめます
-6. PR で取り込み、[PORTING.md](PORTING.md) の「検証の記録」に確かめた版を追記します
+5. 「ワールドとアイテム」の手順でワールドとアイテムを新しく作り、`dist/` の無い状態で `xrift check --build` を実行します。ビルド（`Running build command`）の後に検査が通ることを確かめます。警告が出たら理由を確かめます
+6. 続けて `dist/` を消し、`xrift check world --build`（アイテムは `xrift check item --build`）がビルドしてから検査するかを確かめます。0.25.0 ではビルドせずに `Dist directory not found` で失敗します（[#57](https://github.com/usaturn/xrift-poc/issues/57)）。ビルドするようになっていれば、`AGENTS.md` の「XRift の制作」の注記と、`xrift check --build` にそろえた手順を見直します
+7. PR で取り込み、[PORTING.md](PORTING.md) の「検証の記録」に確かめた版を追記します
 
 ### XRift スキルの更新
 
