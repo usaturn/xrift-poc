@@ -50,7 +50,7 @@ uv run --no-project python "$XRIFT_POC_ROOT/.agents/scripts/route_target.py" "${
 - **worktree:** 制作物のディレクトリの中（例: `worlds/<name>/.worktrees/<branch>`）に作り、`.worktrees/` を制作物の `.git/info/exclude` に加える。親の外に作ると、共通の指示とスキルを読めない。worktree でも `xrift-link` でスキルへのリンクを置く
 - **Issue と PR:** `gh --repo <repository> ...`。`repository` が null なら GitHub の操作をしない。`code` が `product_without_origin`（origin が無い）なら `git remote add origin <URL>`、`product_origin_not_github`（origin を GitHub の URL として読めない。SSH のホスト別名など）なら、GitHub で管理しているときに `git remote set-url origin https://github.com/<owner>/<repo>.git` が必要なことを説明する
 - **push:** commit の後、制作物の Git の root（main checkout か、制作物の中の worktree）で「公開前の秘密検査」の手順を実行し、検査した SHA を push する。`repository` が null の制作物では `scan_before_push` が止まる。origin を GitHub の URL にしてから実行する
-- **検証:** 制作物の `package.json` のスクリプトと `xrift check world --build`・`xrift check item --build`。`xrift upload` は利用者が明示的に指示したときだけ実行する
+- **検証:** 制作物の `package.json` のスクリプトと `xrift check --build`。`xrift upload` は利用者が明示的に指示したときだけ実行する
 - 制作物の中の `public/` は XRift のアセットディレクトリであり、特別に扱わない
 
 ## 止める（stop）

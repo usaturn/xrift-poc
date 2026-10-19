@@ -164,7 +164,7 @@ rm / rmdir の削除対象にシェル変数を使う場合は、各変数に ${
 
 - Plan に contingency 節を設ける。最初の RED で実環境の出力形式や API 挙動が前提と異なる場合は、仕様の意味を保つ最小限の修正を ledger に記録して継続する。仕様の意味を変える場合だけ Ruling を求める
 - Plan に「実行予算」節を設け、Issue 全体の能動時間の予算、phase の目安、worker の期限・予約枠・無進捗の打ち切り、失敗の種類ごとの再試行の上限、checkpoint の時点、縮小・切り出し・方法変更の候補を書く。時間の数え方と checkpoint での判断は `.agents/execution-budget.md` に定義する
-- 開発中は変更に関連するテストと静的チェック（ruff / pyright）を実行する。最終 Task では、親の変更は worktree の `./scripts/ci/verify-devenv.sh`、制作物の変更は制作物の検証（`package.json` のスクリプトと `xrift check <world|item> --build`）を1回実行する
+- 開発中は変更に関連するテストと静的チェック（ruff / pyright）を実行する。最終 Task では、親の変更は worktree の `./scripts/ci/verify-devenv.sh`、制作物の変更は制作物の検証（`package.json` のスクリプトと `xrift check --build`）を1回実行する
 - 実装サブエージェントはテスト、lint、回帰を同期実行し、完了を待ってからターンを終える。`monitoring-long-tasks` の監視ルールは controller が長時間タスクを監視するためのものであり、実装サブエージェント内部の待ちをバックグラウンド化する根拠にしない
 - controller は `monitoring-long-tasks` の終了条件が成立するまでターンを保持し、stall ポーリングを担当する。完了通知は harness の終了コード付きプロセス終了通知を指し、成果物やサブエージェントの結果通知とは区別する。これは対象停止の判定材料であり、対象の実行中にターンを終える根拠にしない。ただし `monitoring-long-tasks` の「事前宣言した打ち切り」の対象に限り、宣言した条件で止めてよく、停止確認不能のときは対象・停止状態・残存パスを報告してターンを終えてよい。`TaskOutput(block=true)` の raw dump は読まず、途中経過は出力ファイルを必要な範囲だけ読む
 - 各担当は着手から成果提出までの所要時間と主要 Task 別の内訳を作業報告に記録する
@@ -186,23 +186,24 @@ rm / rmdir の削除対象にシェル変数を使う場合は、各変数に ${
 cd "$XRIFT_POC_ROOT/worlds/my-world"
 npm run dev -- --host 0.0.0.0
 # 開発サーバーを止めてから検査する
-xrift check world --build
+xrift check --build
 ```
 
 ```bash
 (cd "$XRIFT_POC_ROOT/items" && xrift create item my-item -y)
 cd "$XRIFT_POC_ROOT/items/my-item"
 npm run dev -- --host 0.0.0.0
-xrift check item --build
+xrift check --build
 ```
 
 - `xrift create` は依存の導入まで行う。制作物の Git は利用者が必要に応じて初期化する（セットアップは制作物を作らない・clone しない）
+- 検査は `xrift check --build` で行う。ワールドかアイテムかを `xrift.json` から判定し、`buildCommand` でビルドしてから検査する。XRift CLI 0.25.0 では、`xrift check world --build`・`xrift check item --build` のように種類を書くと、`--build`（`--json`・`--ignore-warnings` も同じ）が親の `check` に渡り、`world`・`item` の処理に届かない。オプションを先に書く `xrift check --build world` も同じである。このためビルドせず、`dist/` の無い新規の制作物では `Dist directory not found` で失敗し、`dist/` があれば古い成果物を検査して成功する（usaturn/xrift-poc#57）。CLI を更新して直ったことを確かめるまで、種類を書く形を使わない
 - プレビューはホストのブラウザで `http://localhost:5173` を開く。2 つ目以降のプロジェクトは `npm run dev -- --host 0.0.0.0 --port 5174` のように 5174〜5179 を使う
 - コンテナ内でのブラウザの確認は Python Playwright（`uv run --project "$XRIFT_POC_ROOT/tools/devenv" python <script>`）で行う
 - 制作物は親の `.gitignore` で無視しているため、親のルートからパスを付けずに `rg` で検索すると、制作物の中は検索されない。親のルートからは `rg <pattern> worlds/<name>` のようにパスを明示するか、制作物のディレクトリの中から検索する
 - 認証: `xrift login` は利用者が手動で行う。エージェントはログインを求めて待たない。状態は `xrift whoami` で確かめる
 - XRift スキル: `xrift-world`（ワールド制作のガイド）、`xrift-sdk`（`@xrift/sdk` でのアップロード API のガイド。アイテムの描画実装のガイドではない）。セットアップが固定した版を取得する（`scripts/install_xrift_skills.bash`）
-- アイテム制作: 公式のアイテム開発ガイド（<https://docs.xrift.net/item/create-first-item>）と `xrift create item`・`xrift check item --build` を使う。公式の `xrift-item` スキルがあることを前提にしない
+- アイテム制作: 公式のアイテム開発ガイド（<https://docs.xrift.net/item/create-first-item>）と `xrift create item`・`xrift check --build` を使う。公式の `xrift-item` スキルがあることを前提にしない
 - 公式ドキュメント: <https://docs.xrift.net>、CLI: <https://docs.xrift.net/cli/commands>
 
 ### 制作物からエージェントを起動する

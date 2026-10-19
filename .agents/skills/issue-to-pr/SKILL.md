@@ -154,7 +154,7 @@ herdr-agent-task set "Issue #$NUMBER 実装・PR作成"
 
 - **`verification-before-completion` と `finishing-a-development-branch` 必須。** 終了方法は PR 作成を選び、改めて選択肢を尋ねない。作業対象 root と remote を確認し、AGENTS.md の正式入口で検証する。
   - 親: `./scripts/ci/verify-devenv.sh`
-  - 制作物: `package.json` の検証スクリプトと `xrift check <world|item> --build`
+  - 制作物: `package.json` の検証スクリプトと `xrift check --build`
 - `--merge` のときは commit 後に正式入口で検証し、検証した HEAD、そのときの `git status --porcelain` が空だったこと、終了コード、親の `tmp/agents/` に残したログの完全パスを記録する。ループで再利用する条件になる。
 - 長時間の検証・子・CI は `monitoring-long-tasks` 必須。同期の終了を待ち、終了コードと実ログを確認する。
 - worktree の Git root で明示パスのみ stage・commit し、**repository-ownership「公開前の秘密検査」の `scan before push` と `scanned push` の2ブロックを同じシェルで実行する**。ここでは引数なしの `scan_before_push` を使い、検査した SHA だけを自分の feature branch へ push する（関数本文を複製しない）。検査の失敗・空の SHA では push しない。`gh pr create --repo "$REPO" --base "$BASE" --head <feature branch>`（`BASE` は2章の5）で PR を作る。SHA を送り元にした push は上流 branch を設定しないので `--head` を明示する。親では `items/`・`worlds/` を stage しない。既存 PR が見つかったら重複作成しない。`--merge` のときは draft にしない（`finalize.py` は draft を拒否する）。
