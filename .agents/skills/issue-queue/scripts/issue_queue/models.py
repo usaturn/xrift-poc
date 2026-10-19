@@ -77,6 +77,8 @@ class Attempt(Record):
     marker: str
     created_at: str = Field(default_factory=now)
     version: dict[str, str]
+    # agent startへ渡す引数。旧helperのattemptには無い。
+    launch_args: list[str] | None = None
     launch: Literal["prepared", "splitting", "pane_created", "starting", "started", "submitting", "submitted"]
     pane_id: str | None = None
     pane_terminal_id: str | None = None

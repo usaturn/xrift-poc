@@ -754,3 +754,38 @@ def test_lost_start_with_mismatched_terminal_is_not_submitted(queue_env: QueueEn
     queue_env.call("reconcile", "--run", run, code=3)
     queue_env.call("submit", "--run", run, code=3)
     assert not any(c[:3] == ["herdr", "agent", "prompt"] for c in queue_env.data()["calls"])
+
+
+@pytest.mark.parametrize(
+    ("kind", "args", "expected"),
+    [
+        ("codex", [], ["--no-daemon"]),
+        ("codex", ["-m", "gpt-x", "--search"], ["--no-daemon", "-m", "gpt-x", "--search"]),
+        ("codex", ["--no-daemon", "-m", "gpt-x"], ["--no-daemon", "-m", "gpt-x"]),
+        ("claude", ["--model", "opus"], ["--model", "opus"]),
+    ],
+)
+def test_child_starts_with_saved_launch_args(
+    queue_env: QueueEnv, kind: str, args: list[str], expected: list[str]
+) -> None:
+    # Codexの共有daemonは起動時の環境でツールとフックを動かすので、子ごとにdaemonを使わずに起動する。
+    run = queue_env.init(kind=kind, args=args)
+    attempt = queue_env.launch(run)
+    assert attempt["launch_args"] == expected
+    start = next(c for c in queue_env.data()["calls"] if c[:3] == ["herdr", "agent", "start"])
+    assert start[start.index("--") + 1 :] == expected
+    assert queue_env.call("status", "--run", run)["run"]["policy"]["agent_args"] == args
+
+
+@pytest.mark.parametrize("remote", [["--remote", "unix://"], ["--remote=unix://"]])
+def test_codex_remote_is_rejected_before_side_effects(queue_env: QueueEnv, remote: list[str]) -> None:
+    queue_env.call("init", "--input", str(queue_env.init_file(kind="codex", args=remote)), code=3)
+    assert not list((queue_env.root / "tmp/agents").glob("issue-queue.*"))
+    # 旧helperが受け付けた方針のrunも、paneを作る前に止める。
+    run = queue_env.init(kind="codex")
+    state_file = Path(run) / "state.json"
+    state = json.loads(state_file.read_text())
+    state["policy"]["agent_args"] = remote
+    state_file.write_text(json.dumps(state))
+    queue_env.call("launch", "--run", run, code=3)
+    assert not any(c[:3] == ["herdr", "pane", "split"] for c in queue_env.data()["calls"])

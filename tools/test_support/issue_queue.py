@@ -61,14 +61,14 @@ class QueueEnv:
         assert result.returncode == code, (result.stdout, result.stderr)
         return json.loads(result.stdout)
 
-    def init(self, *, trial: bool = False, kind: str = "claude") -> str:
-        file = self.json_file(
+    def init_file(self, *, trial: bool = False, kind: str = "claude", args: list[str] | None = None) -> Path:
+        return self.json_file(
             "input.json",
             {
                 "issues": [11, 12],
                 "policy": {
                     "agent_kind": kind,
-                    "agent_args": [],
+                    "agent_args": args or [],
                     "trial": trial,
                     "remote_branches": "keep",
                     "additional_issues": "propose",
@@ -77,6 +77,9 @@ class QueueEnv:
                 },
             },
         )
+
+    def init(self, *, trial: bool = False, kind: str = "claude", args: list[str] | None = None) -> str:
+        file = self.init_file(trial=trial, kind=kind, args=args)
         return self.call("init", "--input", str(file))["run_dir"]
 
     def launch(self, run: str) -> dict[str, Any]:

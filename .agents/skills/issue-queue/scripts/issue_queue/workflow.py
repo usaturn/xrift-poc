@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from .external import External, identity
+from .external import External, agent_args, identity
 from .models import Attempt, Init, Result, Run, now
 from .publishing import check_followup_result, reconcile_effects
 from .storage import QueueError, Store
@@ -25,6 +25,7 @@ def timestamp(value: str) -> datetime:
 def initialize(store: Store, ext: External, request: Init) -> tuple[Path, Run]:
     if any(n <= 0 for n in request.issues) or len(set(request.issues)) != len(request.issues):
         raise QueueError("Issue番号は正の整数で、重複なく指定してください")
+    agent_args(request.policy.agent_kind, request.policy.agent_args)
     for number in request.issues:
         issue = ext.issue(number)
         if issue["state"] != "OPEN" or "<!-- planning-parallel-issues board:" in issue["body"]:

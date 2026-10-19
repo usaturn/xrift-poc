@@ -54,6 +54,19 @@ def herdr_error_code(stderr: str) -> str | None:
     return code if isinstance(code, str) else None
 
 
+def agent_args(kind: str, args: list[str]) -> list[str]:
+    """herdr agent startへ渡す子の引数。利用者のargvは順序を保ち、加えるのはCodexの--no-daemonだけ。
+
+    Codexの共有app-server daemonは、起動したpaneの環境(HERDR_PANE_IDなど)でツールとフックを動かす。
+    子ごとのpaneで識別するため、共有daemonを使わずに起動し、共有のapp-serverへ接続する--remoteは受け付けない。
+    """
+    if kind != "codex":
+        return list(args)
+    if any(arg == "--remote" or arg.startswith("--remote=") for arg in args):
+        raise QueueError("Codexの子に--remoteは指定できません。共有のapp-serverではpaneごとの環境を保てません")
+    return list(args) if "--no-daemon" in args else ["--no-daemon", *args]
+
+
 def identity(pane: dict[str, Any]) -> Identity:
     session = pane.get("agent_session")
     if not isinstance(session, dict) or not cast(dict[str, Any], session).get("value"):
