@@ -80,6 +80,7 @@ effort = "max"
 env = ["PATH", "OPENCODE_API_KEY"]
 
 # codex exec --json。実測既定モデルは gpt-6.1-sol（openai）。
+# writes=false を -s read-only で起動するので、inspect・self-review・fix-check には割り当てられない（#52）。
 [agents.codex]
 runtime = "codex"
 command = ["codex", "exec"]

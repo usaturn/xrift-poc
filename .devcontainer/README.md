@@ -299,16 +299,25 @@ PR レビュー（workflow `review` の role `inspect`）のレビュアーは�
 雛形の `[workflows.review.assignments.inspect]` は、指定が無いときの既定値であり、
 性能を評価して決めた順位ではない。
 
-- 依頼ごとに選ぶ: `run --workflow review` に `--assign inspect=claude-opus,codex` を付ける
+- 依頼ごとに選ぶ: `run --workflow review` に `--assign inspect=claude-opus,pi-gpt` を付ける
 - いつも使う構成を変える: 個人設定の同じ節の `agents` を書き換える。
   個人設定を新しく書く場合は、この節だけ書けば雛形に重なる（配列は置換）
 
 ```toml
 [workflows.review.assignments.inspect]
-agents = ["claude-opus", "codex"]
+agents = ["claude-opus", "pi-gpt"]
 ```
 
-同じ役割に、同じ `model` の agent は並べられない（例: `codex` と `pi-gpt` はどちらも `gpt-6.1-sol`）。
+同じ役割に、同じ `model` の agent は並べられない（例: `pi-deepseek` と `dsh-ccd` はどちらも `deepseek/deepseek-v4.1-flash`）。
+
+`codex` は、レビュアー（inspect）にも、レビュー修正の self-review・fix-check にも割り当てられない（#52）。
+codex の adapter は writes=false の役割を `codex exec -s read-only` で起動し、OS の sandbox がすべての書き込みを拒否する。
+PR レビューの helper は writes=false でも保存・uv のキャッシュ・Git の worktree の登録に書くので、codex では動かない。
+PR 修正ループの `check-options`・`start` と `run_roles.py` は、この割り当て（fallback を含む）を終了コード 2 で止める。
+runner も、`--write-exception` を付けた `run` を何も作らずに `invalid_input` で止める。
+`--write-exception` を付けない `run` は止まらず、レビューが失敗する。
+GPT をレビュアーにするときは `pi-gpt` を使う。codex は implement（writes=true の役割）には割り当てられる。
+理由と、書き込みを許可しない判断は `tools/agent_runner/runtimes/codex.rst` に記録した。
 雛形に無い agent は、個人設定の `[agents.<name>]` に定義してから指定する。
 雛形の既定値を変えても、既存の個人設定には反映されない。
 
