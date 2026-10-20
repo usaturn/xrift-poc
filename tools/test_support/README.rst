@@ -32,13 +32,17 @@ test_support: 実環境の形をした共有 fixture
 ``tools.test_support.uv``
     ``offline_uv_env`` は ``UV_OFFLINE=1`` ・隔離した ``UV_CACHE_DIR`` ・ ``UV_PYTHON=<テスト実行中の interpreter>`` を立てた環境変数を返す。
     テストを動かしている venv の ``bin`` と、親ディレクトリに ``pyvenv.cfg`` がある別の venv の ``bin`` は ``PATH`` から除く。残っていると、 ``uv run`` が spawn するコマンドが漏れた venv から解決され、 venv 無し worktree での失敗を再現できない。
+    ``UV_PROJECT_ENVIRONMENT`` も外す。 DSH の adapter が設定する隔離した venv が残っていると、 uv が worktree の ``.venv`` の代わりにそれを使い、同じく再現できない。
     ``run_uv_offline`` はその環境で ``uv`` を起動し、 ``CompletedProcess`` を返す。
 
 ``tools.test_support.plugin``
-    pytest fixture ``env_repo_factory`` ・ ``env_repo`` ・ ``owned_worktree`` ・ ``outside_runner`` 。制作物は ``create_product`` を直接呼んで作る。
+    pytest fixture ``env_repo_factory`` ・ ``env_repo`` ・ ``owned_worktree`` ・ ``outside_runner`` ・ ``outside_codex`` 。制作物は ``create_product`` を直接呼んで作る。
     ``outside_runner`` は、テストの中だけ ``AGENT_RUNNER_DEPTH`` を外す。
     runner の担当（ ``AGENT_RUNNER_DEPTH=1`` ）が関連テストを実行しても、偽の adapter・偽の CLI だけを起動するテストが ``nested_invocation`` で落ちないようにする。
     本物の担当を起動しうるテストには使わない。
+    ``outside_codex`` は、テストの中だけ ``CODEX_THREAD_ID`` を外す。
+    Codex の中（ツールの実行に ``CODEX_THREAD_ID`` が入る）でも、モデルを固定したテストが pr-review の helper の実行中のモデルとの照合で落ちないようにする。
+    Codex の中でモデルを読む挙動を確かめるテストは、テストの中で一時の ``CODEX_HOME`` と rollout を作って設定し直す。
     どの fixture も autouse ではない。test module で読み込んだプラグインの fixture はテスト一式から見えるため、autouse にすると読み込んだ後に収集したモジュールにも効く。
 
 .. _test_support_usage:
@@ -67,6 +71,11 @@ test module の先頭でプラグインを宣言する ::
 
     pytest_plugins = ("tools.test_support.plugin",)
     pytestmark = pytest.mark.usefixtures("outside_runner")
+
+モデルを固定してレビューの helper を動かす test module は、同じ形で ``outside_codex`` を使う ::
+
+    pytest_plugins = ("tools.test_support.plugin",)
+    pytestmark = pytest.mark.usefixtures("outside_codex")
 
 直接呼び出し
 ------------
