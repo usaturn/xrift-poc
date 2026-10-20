@@ -35,6 +35,7 @@ from tools.agent_runner.models import (
 from tools.agent_runner.process import ProcessResult
 from tools.agent_runner.runner import RunnerError, run_workflow
 from tools.agent_runner.tests.test_process import alive
+from tools.test_support.worktree_race import plant_racer
 
 pytest_plugins = ("tools.test_support.plugin",)
 # Only fake agents are launched here; drop AGENT_RUNNER_DEPTH inside each test so a runner agent can run them
@@ -1169,17 +1170,14 @@ def test_cancel_at_preparation_completion_retains_log_paths(
 def test_simultaneous_preparations_survive_a_half_written_commondir(
     repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    admin = repository / ".git" / "worktrees" / "racer"
+    commondir = repository / ".git" / "worktrees" / "racer" / "commondir"
     real_snapshot = runner.snapshot_checkouts
     real_pause = workspace._pause  # pyright: ignore[reportPrivateUsage] - the retries' own backoff
 
     def snapshot_then_race(repository: Path) -> dict[str, str | None]:
         before = real_snapshot(repository)
         # Even `git worktree list` fails on this registration, so it appears after the baseline audit.
-        admin.mkdir(parents=True)
-        (admin / "gitdir").write_text(f"{tmp_path / 'racer' / '.git'}\n")
-        (admin / "HEAD").write_text(workspace.resolve_revision(repository) + "\n")
-        (admin / "commondir").write_bytes(b"")
+        plant_racer(repository)
         return before
 
     pauses = 0
@@ -1191,7 +1189,7 @@ def test_simultaneous_preparations_survive_a_half_written_commondir(
             await real_pause(seconds, cancel)
         elif pauses == 3:
             # The last to lose finishes the write; no assignment is running git now.
-            (admin / "commondir").write_text("../..\n")
+            commondir.write_text("../..\n")
         else:
             async with asyncio.timeout(30):
                 while pauses < 3:

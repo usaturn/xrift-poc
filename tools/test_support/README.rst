@@ -29,6 +29,12 @@ test_support: 実環境の形をした共有 fixture
 ``tools.test_support.texts``
     ``FINDING_CONTENT`` と ``FINDING_REASON`` は、改行・タブ・CRLF・非 ASCII 文字を含み、識別子として解釈できない（ ``str.isidentifier()`` が ``False`` ）自由記述のサンプル。
 
+``tools.test_support.worktree_race``
+    ``plant_racer`` は、並行した ``git worktree add`` の書きかけの登録（ ``commondir`` が空）を ``<repository>/.git/worktrees/<name>`` に置き、その ``commondir`` のパスを返す。
+    書き終えるまで、同じリポジトリの ``git worktree add`` は登録の一覧を読むところで、何も作らずに終了コード 128 で止まる（#68）。
+    ``commondir`` に ``../..`` を書くと、相手が書き終えた状態になる。
+    本物の ``git worktree add`` と同じく ``locked`` を置き、別の場所で作ってから rename で一括で置くので、 ``git commit`` が切り離して起動する自動 maintenance の prune に消されない（#88）。
+
 ``tools.test_support.uv``
     ``offline_uv_env`` は ``UV_OFFLINE=1`` ・隔離した ``UV_CACHE_DIR`` ・ ``UV_PYTHON=<テスト実行中の interpreter>`` を立てた環境変数を返す。
     テストを動かしている venv の ``bin`` と、親ディレクトリに ``pyvenv.cfg`` がある別の venv の ``bin`` は ``PATH`` から除く。残っていると、 ``uv run`` が spawn するコマンドが漏れた venv から解決され、 venv 無し worktree での失敗を再現できない。
