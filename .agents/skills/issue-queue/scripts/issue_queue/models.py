@@ -100,6 +100,8 @@ class Attempt(Record):
     closed: bool = False
     # 受領前に子が消えたattemptをabandonで閉じた理由。
     abandon_reason: str | None = None
+    # 終了結果を残して止まったattemptをretryで閉じた理由。同じ工程の次のattemptへ作業を引き継ぐ。
+    retry_reason: str | None = None
     merged_at: str | None = None
     pr_url: str | None = None
     finished_at: str | None = None

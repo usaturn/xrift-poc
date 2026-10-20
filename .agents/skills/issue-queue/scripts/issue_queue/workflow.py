@@ -140,24 +140,12 @@ class Workflow:
             raise QueueError("打ち切れるattemptがありません。pane作成前の起動予定はlaunchで続けてください")
         if attempt.acknowledged or attempt.result is not None:
             raise QueueError("受領済みのattemptは打ち切れません。子の結果と作業を確認してください")
-        try:
-            self.ext.herdr("agent", "get", attempt.agent_name)
-        except CommandError as error:
-            # 不在はHerdrの構造化エラーのcodeの完全一致だけで判定する。接続失敗・別のcodeは不在にしない。
-            if herdr_error_code(error.stderr) != "agent_not_found":
-                raise
-        else:
+        named, in_pane = self.child_agents(attempt, caller)
+        if named is not None:
             raise QueueError("子のagentがまだ存在します。停止を確認してから打ち切ってください")
-        pane = self.ext.pane(attempt.pane_id)
-        if (
-            pane
-            and pane.get("terminal_id") == attempt.pane_terminal_id
-            and pane.get("agent") == self.run.policy.agent_kind
-            # paneのagentは1つなので、呼び出し元がそのpane・terminalにいれば子ではない。
-            and (caller.pane_id, caller.terminal_id) != (attempt.pane_id, attempt.pane_terminal_id)
-        ):
+        if in_pane is not None:
             raise QueueError("子のpaneで同じkindのagentが動いています。停止を確認してから打ち切ってください")
-        if any(attempt.marker in (p.get("body") or "") for p in self.ext.pages("pulls?state=all&per_page=100")):
+        if self.marked_pr(attempt):
             raise QueueError("このattemptのマーカーを持つPRがあります。打ち切らずに照合してください")
         attempt.closed = True
         attempt.abandon_reason = reason
@@ -167,6 +155,67 @@ class Workflow:
             self.run.event("stop_resolved", previous=self.run.stopped_reason, reason=reason)
             self.run.stopped_reason = None
         self.save()
+
+    def retry(self, reason: str) -> None:
+        """終了結果を残して止まった子のattemptを閉じる。同じ工程は次のlaunchで新しいattemptとして起動し、作業を引き継ぐ。
+
+        paneは閉じず、ownerも移さない。子は終了処理とバックグラウンドの停止を報告済みなので使用版は照合しない。
+        """
+        if not reason.strip():
+            raise QueueError("やり直す理由を指定してください")
+        caller = self.ext.caller()
+        if caller != self.run.owner:
+            self.check_takeover(caller)
+        attempt = self.run.current()
+        if attempt is None or not attempt.acknowledged or attempt.result is None:
+            raise QueueError("やり直せるattemptがありません。終了結果を残した受領済みのattemptだけをやり直せます")
+        result = attempt.result
+        if result.outcome == "success":
+            raise QueueError("成功した結果はadvanceで進めてください")
+        if not result.finalized or not result.background_stopped:
+            raise QueueError("子の終了処理またはバックグラウンドの停止を確認できません")
+        if attempt.effects:
+            # 新しい子が同じ投稿を重ねうる。成否不明の投稿は再送しない。
+            raise QueueError("投稿の記録があるattemptはやり直せません。投稿を照合してください")
+        # 子が残っていても、turnを終えて入力待ちなら作業は止まっている。
+        agents = [agent for agent in self.child_agents(attempt, caller) if agent is not None]
+        if any(agent.get("agent_status") not in {"idle", "done"} for agent in agents):
+            raise QueueError("子がまだ動いています。turnの終了を確認してからやり直してください")
+        if self.marked_pr(attempt):
+            raise QueueError("このattemptのマーカーを持つPRがあります。やり直さずに照合してください")
+        attempt.closed = True
+        attempt.retry_reason = reason
+        self.run.event("attempt_retried", attempt=attempt.id, reason=reason, outcome=result.outcome)
+        if self.run.stopped_reason:
+            self.run.event("stop_resolved", previous=self.run.stopped_reason, reason=reason)
+            self.run.stopped_reason = None
+        self.save()
+
+    def child_agents(self, attempt: Attempt, caller: Identity) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        """子でありうるagent。名前で見つかった子と、子のpaneに保存したterminalのまま残る同じkindのagent。
+
+        不在はHerdrの構造化エラーのcodeの完全一致だけで判定する。接続失敗・別のcodeは不在にしない。
+        """
+        try:
+            named: dict[str, Any] | None = self.ext.herdr("agent", "get", attempt.agent_name)["agent"]
+        except CommandError as error:
+            if herdr_error_code(error.stderr) != "agent_not_found":
+                raise
+            named = None
+        pane = self.ext.pane(attempt.pane_id) if attempt.pane_id else None
+        if (
+            pane
+            and pane.get("terminal_id") == attempt.pane_terminal_id
+            and pane.get("agent") == self.run.policy.agent_kind
+            # paneのagentは1つなので、呼び出し元がそのpane・terminalにいれば子ではない。
+            and (caller.pane_id, caller.terminal_id) != (attempt.pane_id, attempt.pane_terminal_id)
+        ):
+            return named, pane
+        return named, None
+
+    def marked_pr(self, attempt: Attempt) -> bool:
+        """attemptのマーカーを持つPRが（どの状態でも）あるか。"""
+        return any(attempt.marker in (p.get("body") or "") for p in self.ext.pages("pulls?state=all&per_page=100"))
 
     def resume(self, *, proceed: bool, reason: str | None = None) -> None:
         caller = self.ext.caller()
@@ -245,12 +294,22 @@ class Workflow:
         known = {str(self.ext.parent)}
         known.update(d.path for d in self.run.decisions if d.category == "retain" and d.path)
         blocking: dict[str, str] = {}
-        for attempt in self.run.attempts:
+        handed: set[str] = set()
+        for index, attempt in enumerate(self.run.attempts):
+            if attempt.retry_reason is not None:
+                # retryで同じ工程の次のattemptへ引き継いだ資源。次のattemptが結果を残すまで通す。
+                # その後は、次の子が結果に残した資源として扱う。
+                stage = (attempt.issue, attempt.phase)
+                successor = next((a for a in self.run.attempts[index + 1 :] if (a.issue, a.phase) == stage), None)
+                if attempt.result and (successor is None or successor.result is None):
+                    handed.update(kept.path for kept in attempt.result.retained)
+                continue
             for kept in attempt.result.retained if attempt.result else []:
                 if kept.blocks_next:
                     blocking.setdefault(kept.path, kept.reason)
                 else:
                     known.add(kept.path)
+        known.update(handed - blocking.keys())
         problems: list[str] = []
         ignored: list[IgnoredWorktree] = []
         for worktree in inventory["worktrees"]:
