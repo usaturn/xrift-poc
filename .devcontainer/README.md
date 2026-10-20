@@ -330,7 +330,7 @@ Ask mode では pr-review の helper を実行できないことと、Cursor の
 
 ### DSH の標準 headless
 
-DSH `0.2.0-rc.2` の `dsh --profile headless --patch <file> --json -` を使う
+DSH `0.2.1-rc.2` の `dsh --profile headless --patch <file> --json -` を使う
 `dsh` runtime を追加した。雛形の agent は `dsh-ccd`（Command Code GOAT）と
 `dsh-go`（OpenCode Go）である。個人設定に定義した workflow の
 `[workflows.<name>.assignments.<role>]` の `agents` に書くか、
@@ -1113,13 +1113,13 @@ bash .devcontainer/test-pi-openai-codex.bash
 ## DeepSeek Harness（dsh）（#282）
 
 `install_beforehand.bash` は [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
-（`dsh`）を `@deepseek-ai/dsh@0.2.0-rc.2` に固定して導入し、直後の `dsh --version` が
+（`dsh`）を `@deepseek-ai/dsh@0.2.1-rc.2` に固定して導入し、直後の `dsh --version` が
 指定版を返さなければ postCreate を失敗させる。既存の `pigo` / `pigod` /
 `piccg` / `piccd` と `~/.pi` の設定には影響しない。
 
 対話起動は terminal profile の `pi-tui` が担う。`pi-tui` profile には
-`@xmoon76/dsh-pi-tui@0.5.0` と `@mars-sea/dsh-commandcode-provider@0.12.2` を
-導入する。web profile は従来どおり Command Code provider（同じ `@0.12.2`）だけを
+`@xmoon76/dsh-pi-tui@0.5.3` と `@mars-sea/dsh-commandcode-provider@0.14.2` を
+導入する。web profile は従来どおり Command Code provider（同じ `@0.14.2`）だけを
 導入する。3 つの pin は `install_beforehand.bash` 先頭の `DSH_VERSION` /
 `DSH_PI_TUI_VERSION` / `DSH_COMMANDCODE_PROVIDER_VERSION` が単一の情報源である。
 
@@ -1414,24 +1414,122 @@ dsh --profile pi-tui --dump-config | grep -A4 'plugin-package-inventory-deepseek
 
 ### 更新と復旧
 
+#### 0.2.1-rc.2 への更新（#95）
+
+2026-10-20 に、次の組合せを隔離環境で確認した。
+
+| パッケージ | 採用版 | 選定理由 |
+| --- | --- | --- |
+| `@deepseek-ai/dsh` | `0.2.1-rc.2` | [更新対象のリリース](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.1-rc.2) |
+| `@xmoon76/dsh-pi-tui` | `0.5.3` | `engines.dsh: >=0.2.1-rc.2`。実際の両ランチャーが起動・終了できた |
+| `@mars-sea/dsh-commandcode-provider` | `0.14.2` | `engines.dsh: 0.2.0-rc.2 \|\| 0.2.1-rc.2`。公開日時は 2026-10-18 11:11 UTC で、選定時に 1 日を超えていた |
+
+provider の 0.14.3 / 0.14.4 は選定時点で公開から 1 日未満だったため採用しない。
+pi-tui 0.5.3 は公開から 1 日未満であり、pnpm 12.4.1 がその profile の
+`pnpm-workspace.yaml` に `minimumReleaseAgeExclude` を追加した。
+これは pnpm の公開後の待機時間に関する設定で、DSH の互換性検査は有効なままである。
+後日の導入では公開後の経過時間により追加されない場合がある。
+第三者 plugin のファイルや `engines.dsh` は書き換えない。
+
+profile 単体の `pnpm peers check` は DSH 側の依存を missing peer として報告する
+（終了コード 1）。今回の必須 peer は DSH 本体側に対応版があり、
+`plugin add` の互換性検査、両 profile の構成解決、TUI 起動は成功した。
+profile に DSH 本体の依存を重複導入して警告を消す操作は行わない。
+
+native script の許可は引き続き `@deepseek-ai/dsh-subprocess-local` / `koffi` /
+`node-pty` の 3 件だけとする。旧版・新版とも `@google/genai` と `protobufjs` の
+script は許可されない旨の警告が出たが、許可対象を増やさずに導入・起動できた。
+
 dsh 本体と 2 つの plugin の版を変える場合は、3 つの pin
 （`DSH_VERSION` / `DSH_PI_TUI_VERSION` / `DSH_COMMANDCODE_PROVIDER_VERSION`）を
 同時に更新し、Dev Containers: Rebuild Container で反映する。
 `dsh plugin --profile pi-tui -- update` は使わない。install script は dsh 本体の版だけを確認し、plugin は pin 指定の `plugin add` を実行し直す。手動 update は pin と実導入版をずらすため使わない。
 
-`~/.dsh` を壊したときに戻せるよう、変更前には複製を残す。
+変更前に DSH を終了し、`~/.dsh` の複製を残す。バックアップにも認証情報が入るため、
+公開・共有しない。以下は通常の `~/.dsh` を使う場合の手順である。
+Dev Container を使う場合はホストのターミナルで実行する。コンテナ内の HOME 直下に
+置いたバックアップは bind mount の対象ではなく、Rebuild 後に残らない。
+読めないファイルがあるなどで複製に失敗したときは、途中までの複製を消して 0 以外で終わり、
+パスを表示しない。原因を直してから実行し直す。
 
 ```bash
-cp -r ~/.dsh ~/.dsh.bak
+DSH_BACKUP="$(
+  set -euo pipefail
+  backup="$(mktemp -d "$HOME/.dsh-backup-XXXXXX")"
+  if ! { chmod 700 "$backup" && cp -a "$HOME/.dsh" "$backup/dsh"; }; then
+    rm -rf -- "${backup:?}"
+    exit 1
+  fi
+  printf '%s\n' "$backup"
+)" && printf 'DSH backup: %s\n' "$DSH_BACKUP"
 ```
 
+Rebuild 後は `dsh --version` と両 profile の `--dump-config` を確認する。
+更新対象はグローバルの実行ファイルと、web / pi-tui profile の依存定義・lockfile・
+`node_modules` である。home patch の管理ブロックは未登録の場合だけ追加する。
+認証情報、保存済みセッション、独自 profile、既存 patch のコメント・独自設定は保持する。
+#95 ではダミーの既存データを置き、旧版からの更新・同じ新版の再適用・旧版への復旧後に
+その内容が変わっていないことを確認した。独自に追加した第三者 plugin の互換性は
+各 plugin の対応版も確認する。
+
+新版の headless はキーが無いと認証エラーになる。runner は従来どおり試行ごとに
+キーを渡し、共有 credentials や作業ディレクトリの `.env` を参照しない。
+保存セッションの identity 取得、bash へのモデル環境変数、sandbox の制限については
+下記の隔離検証で確認した。
+
 plugin を消してしまった場合は、pin 指定で入れ直す。
+
+```bash
+npm install -g --allow-scripts=@deepseek-ai/dsh-subprocess-local,koffi,node-pty "@deepseek-ai/dsh@0.2.1-rc.2"
+dsh plugin --profile web add "@mars-sea/dsh-commandcode-provider@0.14.2"
+dsh plugin --profile pi-tui -- add "@xmoon76/dsh-pi-tui@0.5.3"
+dsh plugin --profile pi-tui -- add "@mars-sea/dsh-commandcode-provider@0.14.2"
+```
+
+#### 旧版への復旧
+
+DSH を終了してから、更新前の組合せに戻す。
+Rebuild でも旧版を維持する場合は、3 つの pin を順に `0.2.0-rc.2` / `0.5.0` /
+`0.12.2` に戻してから Rebuild する。現在のコンテナだけを戻す場合は次を実行する。
 
 ```bash
 npm install -g --allow-scripts=@deepseek-ai/dsh-subprocess-local,koffi,node-pty "@deepseek-ai/dsh@0.2.0-rc.2"
 dsh plugin --profile web add "@mars-sea/dsh-commandcode-provider@0.12.2"
 dsh plugin --profile pi-tui -- add "@xmoon76/dsh-pi-tui@0.5.0"
 dsh plugin --profile pi-tui -- add "@mars-sea/dsh-commandcode-provider@0.12.2"
+dsh --version                     # 0.2.0-rc.2
+dsh --profile web --dump-config
+dsh --profile pi-tui --dump-config
+```
+
+設定まで戻す必要がある場合は、停止したコンテナのホスト側でバックアップを復元する。
+`~/.dsh` は bind mount のため、コンテナ内でディレクトリ自体を移動しない。
+現在の設定も別名で残してから復元し、バックアップ後のセッションや設定が必要なら
+残したコピーから個別に戻す。認証情報を含むバックアップの内容をログへ出さない。
+次の block は、バックアップを HOME の下へ複製し終えてから、現在の `~/.dsh` を退避して
+入れ替える。バックアップや現在の `~/.dsh` が無いときと、複製・退避に失敗したときは、
+途中までの複製を消し、現在の `~/.dsh` をそのまま残して 0 以外で終わる。
+退避した後に入れ替えに失敗したときは、退避した設定の場所をエラー出力に表示して
+0 以外で終わる。
+
+```bash
+# ホスト側。DSH_BACKUP には先ほど表示されたバックアップの絶対パスを設定する。
+DSH_REPLACED="$(
+  set -euo pipefail
+  test -d "${DSH_BACKUP:?}/dsh"
+  test -d "$HOME/.dsh"
+  replaced="$(mktemp -d "$HOME/.dsh-before-restore-XXXXXX")"
+  if ! { cp -a "$DSH_BACKUP/dsh" "$replaced/restore" && mv "$HOME/.dsh" "$replaced/dsh"; }; then
+    rm -rf -- "${replaced:?}/restore"
+    rmdir -- "${replaced:?}"
+    exit 1
+  fi
+  if ! mv "$replaced/restore" "$HOME/.dsh"; then
+    printf 'DSH restore failed. Previous DSH settings: %s\n' "$replaced/dsh" >&2
+    exit 1
+  fi
+  printf '%s\n' "$replaced"
+)" && printf 'Previous DSH settings: %s\n' "$DSH_REPLACED"
 ```
 
 ### 検証
@@ -1445,7 +1543,8 @@ dsh plugin --profile pi-tui -- add "@mars-sea/dsh-commandcode-provider@0.12.2"
 dsh 関連だけを先に確認するときは次を実行する。
 
 ```bash
-uv run --project tools/devenv --no-sync pytest -c tools/devenv/pyproject.toml --rootdir . tools/devenv_migration/tests/test_dsh_devcontainer.py tools/devenv_migration/tests/test_dsh_launchers.py tools/devenv_migration/tests/test_dsh_model_env.py -v
+uv sync --project tools/devenv --locked
+uv run --project tools/devenv --no-sync pytest -c tools/devenv/pyproject.toml --rootdir . tools/devenv_migration/tests/test_dsh_devcontainer.py tools/devenv_migration/tests/test_dsh_launchers.py tools/devenv_migration/tests/test_dsh_model_env.py tools/agent_runner/tests/adapters/dsh/ -v
 ```
 
 `test_dsh_model_env.py` は導入済みの実 dsh と実 `@deepseek-ai/dsh-shell-env` を、
@@ -1456,7 +1555,7 @@ uv run --project tools/devenv --no-sync pytest -c tools/devenv/pyproject.toml --
 要らず、実セッションも開始しない。
 
 ```bash
-dsh --version                     # 0.2.0-rc.2 と表示される
+dsh --version                     # 0.2.1-rc.2 と表示される
 dsh --profile pi-tui --dump-config
                                   # llm-pi-ai / llm-commandcode / agent-default-model が見える
 dsh --profile web --dump-config | grep -A4 'plugin-package-inventory-deepseek'
@@ -1466,70 +1565,89 @@ dsh --profile web --dump-config | grep -A4 'plugin-package-inventory-deepseek'
 隔離環境の統合確認は次の block を使う。一時ディレクトリに dsh 本体と 2 つの
 plugin を入れ、home patch の雛形を置いて解決後の構成を確認する。現在の
 `~/.dsh/` には触れず、API key は要らず、実セッションも開始しない。
+いずれかのコマンドが失敗したときと、web / pi-tui のどちらかの構成に必要な entry が
+無いときは、block は 0 以外で終わる。
 
 ```bash
 TMP_DSH="$(mktemp -d /tmp/dsh-verify-XXXXXX)"
-npm install -g --prefix "$TMP_DSH/prefix" --no-audit --no-fund \
-  --allow-scripts=@deepseek-ai/dsh-subprocess-local,koffi,node-pty \
-  @deepseek-ai/dsh@0.2.0-rc.2
-"$TMP_DSH/prefix/bin/dsh" --version   # 0.2.0-rc.2
-mkdir -p "$TMP_DSH/home"
-env HOME="$TMP_DSH/home" DSH_HOME="$TMP_DSH/home/.dsh" PATH="$TMP_DSH/prefix/bin:$PATH" \
-  dsh plugin --profile pi-tui -- add @xmoon76/dsh-pi-tui@0.5.0
-env HOME="$TMP_DSH/home" DSH_HOME="$TMP_DSH/home/.dsh" PATH="$TMP_DSH/prefix/bin:$PATH" \
-  dsh plugin --profile pi-tui -- add @mars-sea/dsh-commandcode-provider@0.12.2
-cp .devcontainer/dsh-cordis.patch.yml "$TMP_DSH/home/.dsh/cordis.patch.yml"
-env HOME="$TMP_DSH/home" DSH_HOME="$TMP_DSH/home/.dsh" PATH="$TMP_DSH/prefix/bin:$PATH" \
-  dsh --profile pi-tui --dump-config > "$TMP_DSH/dump.yml"
 (
-  for needle in 'id: llm-pi-ai' 'opencode-go' 'id: llm-commandcode' \
-    'apiBase: https://api.commandcode.ai' 'provider: opencode-go'; do
-    if ! grep -qF -- "$needle" "$TMP_DSH/dump.yml"; then
-      printf 'Missing config entry: %s\n' "$needle" >&2
+  set -euo pipefail
+  test -d "${TMP_DSH:?}"
+  mkdir -p "$TMP_DSH/home" "$TMP_DSH/cwd" "$TMP_DSH/tmp"
+  dsh_verify() (
+    cd "$TMP_DSH/cwd"
+    env -i HOME="$TMP_DSH/home" DSH_HOME="$TMP_DSH/home/.dsh" \
+      TMPDIR="$TMP_DSH/tmp" PATH="$TMP_DSH/prefix/bin:$PATH" \
+      npm_config_cache="$TMP_DSH/npm-cache" "$@"
+  )
+  dsh_verify npm install -g --prefix "$TMP_DSH/prefix" --no-audit --no-fund \
+    --allow-scripts=@deepseek-ai/dsh-subprocess-local,koffi,node-pty \
+    @deepseek-ai/dsh@0.2.1-rc.2
+  dsh_verify dsh --version            # 0.2.1-rc.2
+  dsh_verify dsh plugin --profile web add @mars-sea/dsh-commandcode-provider@0.14.2
+  dsh_verify dsh plugin --profile pi-tui -- add @xmoon76/dsh-pi-tui@0.5.3
+  dsh_verify dsh plugin --profile pi-tui -- add @mars-sea/dsh-commandcode-provider@0.14.2
+  cp .devcontainer/dsh-cordis.patch.yml "$TMP_DSH/home/.dsh/cordis.patch.yml"
+  for profile in web pi-tui; do
+    dump="$TMP_DSH/${profile}-dump.yml"
+    dsh_verify dsh --profile "$profile" --dump-config > "$dump"
+    for needle in 'id: llm-pi-ai' 'opencode-go' 'id: llm-commandcode' \
+      'apiBase: https://api.commandcode.ai' 'provider: opencode-go'; do
+      if ! grep -qF -- "$needle" "$dump"; then
+        printf 'Missing %s config entry: %s\n' "$profile" "$needle" >&2
+        exit 1
+      fi
+    done
+    if ! awk '
+      /^- id: plugin-package-inventory-deepseek$/ { inside = 1; next }
+      inside && /^- / { inside = 0 }
+      inside && /^[[:space:]]+enabled: false$/ { found = 1 }
+      END { exit found ? 0 : 1 }
+    ' "$dump"; then
+      printf 'Missing disabled %s config for plugin-package-inventory-deepseek\n' "$profile" >&2
       exit 1
     fi
   done
-  if ! awk '
-    /^- id: plugin-package-inventory-deepseek$/ { inside = 1; next }
-    inside && /^- / { inside = 0 }
-    inside && /^[[:space:]]+enabled: false$/ { found = 1 }
-    END { exit found ? 0 : 1 }
-  ' "$TMP_DSH/dump.yml"; then
-    printf 'Missing disabled config for plugin-package-inventory-deepseek\n' >&2
-    exit 1
-  fi
 )
 ```
+
+確認後、一時ディレクトリが不要なら `rm -rf -- "${TMP_DSH:?}"` で削除する。
 
 Dev Container を使わないローカル環境では、`pnpm` を用意したうえで次の順に
 手動で導入する。既に `~/.dsh/` 側にファイルがある場合はコピーしない。
 
 ```bash
-npm install -g --allow-scripts=@deepseek-ai/dsh-subprocess-local,koffi,node-pty @deepseek-ai/dsh@0.2.0-rc.2
+npm install -g --allow-scripts=@deepseek-ai/dsh-subprocess-local,koffi,node-pty @deepseek-ai/dsh@0.2.1-rc.2
 mkdir -p ~/.dsh
 [ -f ~/.dsh/cordis.patch.yml ] || cp .devcontainer/dsh-cordis.patch.yml ~/.dsh/cordis.patch.yml
-dsh plugin --profile web add @mars-sea/dsh-commandcode-provider@0.12.2
-dsh plugin --profile pi-tui -- add @xmoon76/dsh-pi-tui@0.5.0
-dsh plugin --profile pi-tui -- add @mars-sea/dsh-commandcode-provider@0.12.2
+dsh plugin --profile web add @mars-sea/dsh-commandcode-provider@0.14.2
+dsh plugin --profile pi-tui -- add @xmoon76/dsh-pi-tui@0.5.3
+dsh plugin --profile pi-tui -- add @mars-sea/dsh-commandcode-provider@0.14.2
 ```
 
 ### ランチャーの起動確認
 
-#524 の実装時に、既存の pin 済み plugin を読み取り専用で再利用し、一時 HOME / DSH_HOME
-に配置した両ランチャーを疑似端末（PTY）から起動した。`dshccd` は
+#95 では新版を一時 HOME / DSH_HOME / prefix に導入し、外部ネットワークを遮断して
+両ランチャーを疑似端末（PTY）から起動した。`dshccd` は
 `commandcode/deepseek/deepseek-v4.1-flash @max`、`dshgo` は
 `opencode-go/deepseek-v4.1-flash @max` のフッター表示と正常終了を確認済み。
 非実用のダミーキーを使い、プロンプトは送信していない。実 API の認証・応答を
 確認したものではなく、既存の `~/.dsh` / `~/.pi` は変更していない。
 
-### 実 API キーが必要な手動確認（未確認）
+さらに両 provider の標準 headless adapter をローカルの偽 API と接続し、
+日本語・改行を含む入力、JSON 応答、保存セッションからの provider / model / effort の
+取得、bash の作業領域内への書き込みと外側への書き込み拒否を確認した。
+キー無し・HTTP 401 は `awaiting_authentication` となり、PI のモデル環境変数や
+作業ディレクトリの `.env` のキーは採用しなかった。実 model-env plugin を追加した
+別の試行でも、両 provider の bash で選択中の `DSH_PROVIDER` / `DSH_MODEL` /
+`DSH_REASONING_EFFORT` を確認した。
 
-次の項目は実 API キーと手元の確認が要るため、自動テストでは検証しない。
+### 実 API と実環境での手動確認（未確認）
+
+次の項目は実 API キーまたは手元の実環境での確認が要り、#95 では実施していない。
 未確認の項目はこの節に残し、確認が済んだら「未確認」を日付・実施者付きの
 「確認済み」に書き換えてコミットする。
 
-- [未確認] `dsh --profile pi-tui` の起動直後にフッターへ
-  `[opencode-go/deepseek-v4.1-flash @max]` と表示されること
 - [未確認] `dshccd` / `dshgo` の TUI の bash ツールで `DSH_PROVIDER` / `DSH_MODEL` が
   入り、`.agents/skills/pi-model-name/scripts/print-pi-model.sh` が provider/model を
   返すこと。`/model` で切り替えた後に値が追随すること。plugin の登録・解決と
@@ -1537,7 +1655,7 @@ dsh plugin --profile pi-tui -- add @mars-sea/dsh-commandcode-provider@0.12.2
 - [未確認] `dshccd` / `dshgo` から実 API キーで対話し、表のモデルで応答が返ること。
   キー不要の stub 検証と隔離 profile の実 `--dump-config` は自動テストで確認する。
   実際の API 認証・応答、実セッションの再開、Dev Container の実 rebuild は別途手動確認する
-- [未確認] TUI の `/model` の一覧に Command Code のモデル群（62 models）と
+- [未確認] TUI の `/model` の一覧に Command Code のモデル群と
   opencode-go が並ぶこと
 - [未確認] `dsh web --no-open` が port 3080 で待ち受けること。確認後は Ctrl-C で
   止め、API key を含むログを残さないこと

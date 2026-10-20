@@ -4,14 +4,15 @@ set -u
 
 readonly GITLEAKS_VERSION="8.30.1"
 readonly GITLEAKS_ARCHIVE_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
-# DeepSeek Harness は Developer Preview のため、Issue #282 指定の版に固定する。
-readonly DSH_VERSION="0.2.0-rc.2"
+# DeepSeek Harness は Developer Preview のため、#95 で互換性を確認した組に固定する。
+readonly DSH_VERSION="0.2.1-rc.2"
 # 2026-10-10 に npm の latest で確認した版。更新は README の手順で確かめてから変える。
 readonly XRIFT_CLI_VERSION="0.25.0"
 # 2026-10-18 に npm の latest で確認した版。更新は README の手順で確かめてから変える。
 readonly CTX7_CLI_VERSION="0.8.0"
-readonly DSH_PI_TUI_VERSION="0.5.0"
-readonly DSH_COMMANDCODE_PROVIDER_VERSION="0.12.2"
+readonly DSH_PI_TUI_VERSION="0.5.3"
+# engines.dsh が対象版を含み、公開から 1 日を超えた版を採用する。
+readonly DSH_COMMANDCODE_PROVIDER_VERSION="0.14.2"
 readonly DSH_NATIVE_SCRIPT_ALLOWLIST="@deepseek-ai/dsh-subprocess-local,koffi,node-pty"
 readonly DSH_TERMINAL_PROFILE="pi-tui"
 readonly DSH_MANAGED_BLOCK_BEGIN="# BEGIN maatlog managed provider config"

@@ -9,7 +9,7 @@
   web / pi-tui の解決後の provider 設定と terminal bundle を検証する
 - 既存 patch の利用者 entry とコメントを保持し、managed block は一度だけ追加する
 - 旧 settings.yaml は警告だけを出して保持する
-- README の移行手順と確認手順は、実際に実行して確かめる
+- README の移行手順・バックアップと復旧の手順・確認手順は、実際に実行して確かめる
 
 `install_deepseek_harness()` は fake の npm / dsh を PATH に置いて挙動を検証する。
 """
@@ -18,7 +18,11 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
+import shutil
+import stat
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -707,24 +711,372 @@ def test_readme_migration_keeps_existing_content_on_repeated_application(tmp_pat
             assert backup.read_text() == existing
 
 
-def _run_readme_dump_check(tmp_path: Path, dump_config: str) -> subprocess.CompletedProcess[str]:
-    block = _readme_bash_block("検証", 'TMP_DSH="$(mktemp')
-    script = block.split('dsh --profile pi-tui --dump-config > "$TMP_DSH/dump.yml"\n', 1)[1]
-    (tmp_path / "dump.yml").write_text(dump_config)
-    return subprocess.run(
-        ["bash", "-c", script],
-        env={**os.environ, "TMP_DSH": str(tmp_path)},
+@dataclass(frozen=True)
+class _BlockRun:
+    status: int
+    stdout: str
+    stderr: str
+    variables: dict[str, str]
+
+
+def _run_readme_block(block: str, *, env: dict[str, str], variables: tuple[str, ...] = ()) -> _BlockRun:
+    """README の block を、利用者がシェルへ貼り付けたときと同じく、そのまま続きの入力として実行する。
+
+    block の後に同じシェルで後続の行を実行し、block がシェルを終了させたり errexit・nounset・
+    pipefail を残したりしていないこと（貼り付けた端末を壊さないこと）を確かめる。
+    block の終了コードと、block の後にシェルに残った変数の値を返す。
+    """
+    report = "\n".join(
+        [
+            "block_status=$?",
+            "pipefail=off",
+            "shopt -qo pipefail && pipefail=on",
+            'printf \'\\n__after_block flags=%s pipefail=%s\\n\' "$-" "$pipefail"',
+            *(f"printf '__var {name}=%s\\n' \"${{{name}-}}\"" for name in variables),
+            'exit "$block_status"',
+        ]
+    )
+    result = subprocess.run(
+        ["bash", "-c", f"{block}\n{report}\n"],
+        cwd=DEVCONTAINER_DIR.parent,
+        env=env,
         capture_output=True,
         text=True,
     )
+    stdout, marker, after = result.stdout.partition("\n__after_block ")
+    assert marker, f"the block ended the shell:\n{result.stderr}"
+    flags_line, *variable_lines = after.splitlines()
+    shell_state = re.fullmatch(r"flags=(\S*) pipefail=(on|off)", flags_line)
+    assert shell_state is not None, flags_line
+    flags, pipefail = shell_state.groups()
+    assert "e" not in flags and "u" not in flags and pipefail == "off", f"the block changed the shell: {flags_line}"
+    values: dict[str, str] = {}
+    for line in variable_lines:
+        name, _, value = line.removeprefix("__var ").partition("=")
+        values[name] = value
+    return _BlockRun(result.returncode, stdout, result.stderr, values)
 
 
-def test_readme_dump_check_accepts_complete_config(tmp_path: Path) -> None:
-    result = _run_readme_dump_check(tmp_path, PROVIDER_DUMP_CONFIG_PI_TUI)
-    assert result.returncode == 0, result.stderr
+def _write_failing_command(bin_dir: Path, name: str, condition: str) -> None:
+    """bash の条件式 condition が真のときだけ失敗し、それ以外は本物の name を実行する fake を置く。"""
+    real = shutil.which(name)
+    assert real is not None, f"{name} is required"
+    _write_executable(
+        bin_dir / name,
+        f"""#!/bin/bash
+if {condition}; then
+    exit 1
+fi
+exec {shlex.quote(real)} "$@"
+""",
+    )
 
 
-def test_readme_dump_check_rejects_incomplete_config(tmp_path: Path) -> None:
+# --- README: 更新前のバックアップと設定の復旧 ---------------------------------
+
+
+def _backup_block() -> str:
+    return _readme_bash_block("更新と復旧", ".dsh-backup-")
+
+
+def _restore_block() -> str:
+    return _readme_bash_block("更新と復旧", ".dsh-before-restore-")
+
+
+def _make_dsh_tree(root: Path, marker: str) -> None:
+    """認証情報・非 ASCII のファイル名・相対リンク・コメント付きの patch を持つ設定を作る。"""
+    (root / "profiles/pi-tui").mkdir(parents=True)
+    credential = root / "credentials.yaml"
+    credential.write_text(f"token: {marker}\n")
+    credential.chmod(0o600)
+    (root / "認証 メモ.txt").write_text(f"{marker} の設定\n")
+    (root / "profiles/pi-tui/cordis.patch.yml").write_text(f"# {marker} のコメント\n- id: user-entry\n")
+    (root / "current-credentials").symlink_to("credentials.yaml")
+
+
+def _tree_snapshot(root: Path) -> dict[str, tuple[str, str | None, int]]:
+    snapshot: dict[str, tuple[str, str | None, int]] = {}
+    for path in sorted(root.rglob("*")):
+        mode = stat.S_IMODE(path.lstat().st_mode)
+        key = path.relative_to(root).as_posix()
+        if path.is_symlink():
+            snapshot[key] = ("link", os.readlink(path), 0)
+        elif path.is_dir():
+            snapshot[key] = ("dir", None, mode)
+        else:
+            snapshot[key] = ("file", path.read_text() if os.access(path, os.R_OK) else None, mode)
+    return snapshot
+
+
+def _home_env(home: Path, bin_dir: Path, **extra: str) -> dict[str, str]:
+    env = {key: value for key, value in os.environ.items() if key not in {"DSH_BACKUP", "DSH_REPLACED"}}
+    return {**env, "HOME": str(home), "PATH": f"{bin_dir}:{os.environ['PATH']}", **extra}
+
+
+def _setup_home(tmp_path: Path) -> tuple[Path, Path]:
+    # 空白と日本語を含む HOME で実行する。
+    home = tmp_path / "利用者 home"
+    home.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    return home, bin_dir
+
+
+_NON_ROOT_ONLY = pytest.mark.skipif(os.geteuid() == 0, reason="root can read mode 000 files")
+
+
+def test_readme_backup_and_restore_keep_the_settings(tmp_path: Path) -> None:
+    home, bin_dir = _setup_home(tmp_path)
+    _make_dsh_tree(home / ".dsh", "before")
+    before = _tree_snapshot(home / ".dsh")
+
+    backup = _run_readme_block(_backup_block(), env=_home_env(home, bin_dir), variables=("DSH_BACKUP",))
+    assert backup.status == 0, backup.stderr
+    backup_dir = Path(backup.variables["DSH_BACKUP"])
+    assert f"DSH backup: {backup_dir}\n" in backup.stdout
+    assert _tree_snapshot(backup_dir / "dsh") == before
+
+    (home / ".dsh/credentials.yaml").write_text("token: after\n")
+    (home / ".dsh/session.json").write_text("{}\n")
+    after = _tree_snapshot(home / ".dsh")
+
+    restore = _run_readme_block(
+        _restore_block(), env=_home_env(home, bin_dir, DSH_BACKUP=str(backup_dir)), variables=("DSH_REPLACED",)
+    )
+    assert restore.status == 0, restore.stderr
+    replaced_dir = Path(restore.variables["DSH_REPLACED"])
+    assert f"Previous DSH settings: {replaced_dir}\n" in restore.stdout
+    assert _tree_snapshot(home / ".dsh") == before
+    assert _tree_snapshot(replaced_dir / "dsh") == after
+    assert _tree_snapshot(backup_dir / "dsh") == before
+
+
+@pytest.mark.parametrize(
+    "failure",
+    (
+        pytest.param("unreadable", marks=_NON_ROOT_ONLY),
+        "missing",
+        "mktemp",
+        "chmod",
+        "cp",
+    ),
+)
+def test_readme_backup_fails_without_reporting_an_incomplete_copy(tmp_path: Path, failure: str) -> None:
+    home, bin_dir = _setup_home(tmp_path)
+    if failure != "missing":
+        _make_dsh_tree(home / ".dsh", "before")
+    if failure == "unreadable":
+        unreadable = home / ".dsh/unreadable.txt"
+        unreadable.write_text("secret\n")
+        unreadable.chmod(0)
+    if failure in {"mktemp", "chmod", "cp"}:
+        _write_failing_command(bin_dir, failure, '[[ "$*" == *.dsh-backup-* ]]')
+    before = _tree_snapshot(home)
+
+    result = _run_readme_block(_backup_block(), env=_home_env(home, bin_dir), variables=("DSH_BACKUP",))
+    assert result.status != 0
+    assert "DSH backup:" not in result.stdout
+    assert result.variables["DSH_BACKUP"] == ""
+    # 途中までの複製（認証情報を含む）を残さず、元の設定は変えない。
+    assert _tree_snapshot(home) == before
+
+
+@pytest.mark.parametrize(
+    "failure",
+    (
+        pytest.param("unreadable", marks=_NON_ROOT_ONLY),
+        "unset-backup",
+        "missing-backup",
+        "missing-current",
+        "mktemp",
+        "cp",
+        "mv-current",
+    ),
+)
+def test_readme_restore_keeps_current_settings_when_preparation_fails(tmp_path: Path, failure: str) -> None:
+    home, bin_dir = _setup_home(tmp_path)
+    backup_dir = tmp_path / "backup"
+    _make_dsh_tree(backup_dir / "dsh", "backup")
+    if failure != "missing-current":
+        _make_dsh_tree(home / ".dsh", "current")
+    if failure == "unreadable":
+        unreadable = backup_dir / "dsh/unreadable.txt"
+        unreadable.write_text("secret\n")
+        unreadable.chmod(0)
+    if failure == "missing-backup":
+        shutil.rmtree(backup_dir / "dsh")
+    if failure in {"mktemp", "cp"}:
+        _write_failing_command(bin_dir, failure, '[[ "$*" == *.dsh-before-restore-* ]]')
+    if failure == "mv-current":
+        _write_failing_command(bin_dir, "mv", '[ "$1" = "$HOME/.dsh" ]')
+    extra = {} if failure == "unset-backup" else {"DSH_BACKUP": str(backup_dir)}
+    current = _tree_snapshot(home / ".dsh")
+    backup = _tree_snapshot(backup_dir)
+
+    result = _run_readme_block(_restore_block(), env=_home_env(home, bin_dir, **extra), variables=("DSH_REPLACED",))
+    assert result.status != 0
+    assert "Previous DSH settings:" not in result.stdout
+    assert result.variables["DSH_REPLACED"] == ""
+    assert _tree_snapshot(home / ".dsh") == current
+    assert (home / ".dsh").exists() == (failure != "missing-current")
+    assert _tree_snapshot(backup_dir) == backup
+    # 途中までの複製（認証情報を含む）を HOME に残さない。
+    assert sorted(path.name for path in home.iterdir()) == ([] if failure == "missing-current" else [".dsh"])
+
+
+def test_readme_restore_reports_the_previous_settings_when_the_swap_fails(tmp_path: Path) -> None:
+    home, bin_dir = _setup_home(tmp_path)
+    backup_dir = tmp_path / "backup"
+    _make_dsh_tree(backup_dir / "dsh", "backup")
+    _make_dsh_tree(home / ".dsh", "current")
+    current = _tree_snapshot(home / ".dsh")
+    _write_failing_command(bin_dir, "mv", '[ "${!#}" = "$HOME/.dsh" ]')
+
+    result = _run_readme_block(
+        _restore_block(), env=_home_env(home, bin_dir, DSH_BACKUP=str(backup_dir)), variables=("DSH_REPLACED",)
+    )
+    assert result.status != 0
+    assert "Previous DSH settings:" not in result.stdout
+    assert result.variables["DSH_REPLACED"] == ""
+    # 退避した現在の設定は 1 か所に残り、その場所をエラー出力で知らせる。
+    moved = [path for path in home.glob(".dsh-before-restore-*/dsh") if _tree_snapshot(path) == current]
+    assert len(moved) == 1
+    assert str(moved[0]) in result.stderr
+
+
+# --- README: 隔離環境の統合確認 -----------------------------------------------
+
+
+COMPLETE_DUMPS = {"web": PROVIDER_DUMP_CONFIG_WEB, DSH_TERMINAL_PROFILE: PROVIDER_DUMP_CONFIG_PI_TUI}
+
+
+@dataclass(frozen=True)
+class _IsolatedCheck:
+    run: _BlockRun
+    user_home: Path
+    calls: list[list[str]]
+
+
+def _run_readme_isolated_check(
+    tmp_path: Path, *, dumps: dict[str, str] | None = None, failing_call: str | None = None
+) -> _IsolatedCheck:
+    """隔離確認の block を、fake の npm / dsh と、/tmp の代わりの一時ディレクトリで実行する。
+
+    block は `env -i` で環境変数を落として fake を起動するため、fake の設定は script に埋め込む。
+    failing_call は失敗させる呼び出しの先頭（例: "dsh --profile web --dump-config"）で、
+    fake は通常どおり出力してから終了コード 1 で終わる。
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_dir = tmp_path / "fake"
+    fake_dir.mkdir()
+    temp_root = tmp_path / "temp"
+    temp_root.mkdir()
+    user_home = tmp_path / "user home"
+    user_home.mkdir()
+    for profile, text in (COMPLETE_DUMPS | (dumps or {})).items():
+        (fake_dir / f"dump-{profile}.yml").write_text(text)
+    log = fake_dir / "calls.log"
+    fail_check = f'[[ "$call" == {shlex.quote(failing_call)}* ]] && exit 1' if failing_call else ""
+    record = (
+        'printf \'%s\\t\' "$PWD" "$HOME" "${DSH_HOME-}" "${TMPDIR-}" "${npm_config_cache-}" '
+        f">> {shlex.quote(str(log))}\nprintf '%s\\n' \"$call\" >> {shlex.quote(str(log))}"
+    )
+    _write_executable(bin_dir / "npm", f'#!/bin/bash\ncall="npm $*"\n{record}\n{fail_check}\nexit 0\n')
+    _write_executable(
+        bin_dir / "dsh",
+        f"""#!/bin/bash
+call="dsh $*"
+{record}
+if [ "${{1:-}}" = "--version" ]; then
+    printf '%s\\n' {shlex.quote(DSH_VERSION)}
+elif [ "${{1:-}}" = "plugin" ]; then
+    mkdir -p "$DSH_HOME"
+elif [ "${{1:-}}" = "--profile" ] && [ "${{3:-}}" = "--dump-config" ]; then
+    cat {shlex.quote(str(fake_dir))}/dump-"$2".yml
+fi
+{fail_check}
+exit 0
+""",
+    )
+    # block の mktemp -d /tmp/... を tmp_path の下へ向ける。
+    real_mktemp = shutil.which("mktemp")
+    assert real_mktemp is not None
+    _write_executable(
+        bin_dir / "mktemp",
+        f"""#!/bin/bash
+args=("$@")
+case "${{args[-1]}}" in
+/tmp/*) args[-1]={shlex.quote(str(temp_root))}/"${{args[-1]#/tmp/}}" ;;
+esac
+exec {shlex.quote(real_mktemp)} "${{args[@]}}"
+""",
+    )
+    env = {**os.environ, "HOME": str(user_home), "PATH": f"{bin_dir}:{os.environ['PATH']}"}
+    env.pop("TMP_DSH", None)
+    run = _run_readme_block(_readme_bash_block("検証", 'TMP_DSH="$(mktemp'), env=env, variables=("TMP_DSH",))
+    calls = [line.split("\t") for line in log.read_text().splitlines()] if log.exists() else []
+    if run.variables["TMP_DSH"]:
+        assert Path(run.variables["TMP_DSH"]).parent == temp_root
+    return _IsolatedCheck(run, user_home, calls)
+
+
+def test_readme_isolated_check_accepts_complete_configs(tmp_path: Path) -> None:
+    check = _run_readme_isolated_check(tmp_path)
+    assert check.run.status == 0, check.run.stderr
+    tmp_dsh = Path(check.run.variables["TMP_DSH"])
+    # 確認後に一時ディレクトリを調べ、消せるよう、同じシェルにパスが残る。
+    assert tmp_dsh.is_dir()
+    # 利用者の HOME には触れず、npm / dsh は隔離した HOME・cwd・cache で動く。
+    assert list(check.user_home.iterdir()) == []
+    for cwd, home, dsh_home, tmpdir, cache, _ in check.calls:
+        assert (cwd, home, dsh_home, tmpdir, cache) == (
+            str(tmp_dsh / "cwd"),
+            str(tmp_dsh / "home"),
+            str(tmp_dsh / "home/.dsh"),
+            str(tmp_dsh / "tmp"),
+            str(tmp_dsh / "npm-cache"),
+        )
+    commands = [call[-1] for call in check.calls]
+    assert any(
+        command.startswith("npm install ") and f"--allow-scripts={DSH_NATIVE_SCRIPT_ALLOWLIST} " in command
+        for command in commands
+    )
+    for profile in COMPLETE_DUMPS:
+        assert f"dsh --profile {profile} --dump-config" in commands
+
+
+@pytest.mark.parametrize(
+    "failing_call",
+    (
+        "npm install ",
+        "dsh --version",
+        "dsh plugin --profile web ",
+        f"dsh plugin --profile {DSH_TERMINAL_PROFILE} -- add @xmoon76/dsh-pi-tui@",
+        f"dsh plugin --profile {DSH_TERMINAL_PROFILE} -- add @mars-sea/dsh-commandcode-provider@",
+        "dsh --profile web --dump-config",
+        f"dsh --profile {DSH_TERMINAL_PROFILE} --dump-config",
+    ),
+)
+def test_readme_isolated_check_fails_when_a_command_fails(tmp_path: Path, failing_call: str) -> None:
+    check = _run_readme_isolated_check(tmp_path, failing_call=failing_call)
+    assert check.run.status != 0
+    assert any(call[-1].startswith(failing_call) for call in check.calls)
+
+
+def _run_readme_dump_check(tmp_path: Path, profile: str, dump_config: str) -> _BlockRun:
+    """profile の解決後の構成だけを dump_config にし、他の profile は完全な構成で隔離確認を実行する。"""
+    return _run_readme_isolated_check(tmp_path, dumps={profile: dump_config}).run
+
+
+@pytest.mark.parametrize("profile", tuple(COMPLETE_DUMPS))
+def test_readme_dump_check_accepts_complete_config(tmp_path: Path, profile: str) -> None:
+    result = _run_readme_dump_check(tmp_path, profile, COMPLETE_DUMPS[profile])
+    assert result.status == 0, result.stderr
+
+
+@pytest.mark.parametrize("profile", tuple(COMPLETE_DUMPS))
+def test_readme_dump_check_rejects_incomplete_config(tmp_path: Path, profile: str) -> None:
     needles = (
         "id: llm-pi-ai",
         "opencode-go",
@@ -735,16 +1087,17 @@ def test_readme_dump_check_rejects_incomplete_config(tmp_path: Path) -> None:
     )
     cases = ["", "opencode-go\n"]
     cases.extend(
-        "\n".join(line for line in PROVIDER_DUMP_CONFIG_PI_TUI.splitlines() if needle not in line) + "\n"
+        "\n".join(line for line in COMPLETE_DUMPS[profile].splitlines() if needle not in line) + "\n"
         for needle in needles
     )
     for index, dump_config in enumerate(cases):
         case_dir = tmp_path / f"case-{index}"
         case_dir.mkdir()
-        result = _run_readme_dump_check(case_dir, dump_config)
-        assert result.returncode != 0, f"incomplete dump was accepted: {dump_config!r}"
+        result = _run_readme_dump_check(case_dir, profile, dump_config)
+        assert result.status != 0, f"incomplete {profile} dump was accepted: {dump_config!r}"
 
 
+@pytest.mark.parametrize("profile", tuple(COMPLETE_DUMPS))
 @pytest.mark.parametrize(
     "inventory_entry",
     (
@@ -756,10 +1109,13 @@ def test_readme_dump_check_rejects_incomplete_config(tmp_path: Path) -> None:
     ids=("enabled", "no-enabled-setting", "no-config", "missing-entry"),
 )
 def test_readme_dump_check_rejects_inventory_disabled_only_in_another_entry(
-    tmp_path: Path, inventory_entry: str
+    tmp_path: Path, inventory_entry: str, profile: str
 ) -> None:
-    terminal_entries = PROVIDER_DUMP_CONFIG_PI_TUI.split("# == @xmoon76/dsh-pi-tui\n", 1)[1]
-    dump_config = inventory_entry + terminal_entries + "- id: some-other-plugin\n  config:\n    enabled: false\n"
-    result = _run_readme_dump_check(tmp_path, dump_config)
-    assert result.returncode != 0
+    other_entries = re.sub(
+        r"(?ms)^- id: plugin-package-inventory-deepseek\n.*?(?=^- |^# )", "", COMPLETE_DUMPS[profile], count=1
+    )
+    assert "plugin-package-inventory-deepseek" not in other_entries
+    dump_config = inventory_entry + other_entries + "- id: some-other-plugin\n  config:\n    enabled: false\n"
+    result = _run_readme_dump_check(tmp_path, profile, dump_config)
+    assert result.status != 0
     assert "plugin-package-inventory-deepseek" in result.stderr
