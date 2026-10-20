@@ -439,9 +439,8 @@ if ! install_pi_extensions; then
 fi
 
 step "Installing the pi extensions"
-# Context7 は ctx7 CLI と find-docs スキルで使い、npm:@upstash/context7-pi は導入しない。共有の ~/.pi に
-# 残っていても、.pi/settings.json の autoload: false の項目で xrift-poc では読み込まない（#49）。
-# ~/.pi を共有するほかのリポジトリが導入し続けるため、warn_retired_pi_extensions の一覧には加えない。
+# Context7 は ctx7 CLI と find-docs スキルで使い、npm:@upstash/context7-pi は導入しない（#49）。
+# 共有の ~/.pi からも外したので、.pi/settings.json で読み込みを止める項目も外した（#54）。
 for extension in \
     npm:@jc4649/notify \
     npm:@plannotator/pi-extension \
