@@ -219,6 +219,12 @@ runner 経由で起動した。役割はすべて ``writes = false`` の ``inspe
   exit 0 を返した（``requestedSandboxPolicy`` は無し）。helper の ``--help`` の stdout は ``usage: review_run.py`` で始まり、
   uv は runner の worktree に ``tools/devenv/.venv`` を作った。所要は ``cursor`` 36 秒・``cursor-grok47`` 38 秒。
   ``outside_changes`` は空で、runner の worktree は ``git worktree remove`` で回収できた（変更は無視したファイルだけ）。
+- PR レビュー: PR #85 の HEAD ``70b3e64`` を、その PR の版の ``loop.py``（feature worktree）から
+  ``start --assign inspect=cursor-grok47`` → ``cycle-begin`` → ``review`` で実行した（loop の run ``cf44bd116be848588e771f3ac1b5f411``）。
+  cursor-grok47 は pr-review の prepare → complete → cleanup まで完了し、loop は ``accepted`` にした。
+  レビューの所要 860.7 秒、loop の review の所要は約 950 秒、実測 model ``Grok 4.7 256K Extra High``、
+  レビューファイルに記録したモデル名は ``Grok 4.7``、指摘 1 件（Medium）。cleanup は ``success``、``outside_changes`` は空、
+  残した資源は無し。確認のための run なので、計画の前に ``finish --abort`` で終えた（GitHub には書き込んでいない）。
 
 制約・既知の限界
 ----------------

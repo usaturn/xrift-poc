@@ -65,11 +65,11 @@ def test_prepare_reads_prompt_from_stdin_and_trusts_worktree(tmp_path: Path) -> 
     assert "PROMPT-UNIQUE-TEXT" in spec.stdin.decode()
 
 
-# #75: launching writes=false roles with --mode ask (plan is the same) made Cursor CLI reject every shell command, so
-# PR review roles could not run the pr-review helpers. Cursor's sandbox denies the helpers' writes outside the worktree
-# and /tmp (their save directory, the shared Git directory, uv's cache) and the network, so the launch states
-# --sandbox disabled instead of relying on undocumented -f behavior (runtimes/cursor.rst). When changing these flags,
-# re-check them on a real CLI and update runtimes/cursor.rst together with this test
+# #75: with --mode ask, Cursor CLI rejected shell commands that did not ask for its sandbox and ran the others inside
+# it, so PR review roles could not run the pr-review helpers: the sandbox denies their writes outside the worktree and
+# /tmp (their save directory, uv's cache) and the network. -f skips a sandbox the model asks for, but that is not
+# documented, so the launch states --sandbox disabled (runtimes/cursor.rst). When changing these flags, re-check them
+# on a real CLI and update runtimes/cursor.rst together with this test
 def test_prepare_read_only_role_allows_shell_without_cursor_sandbox(tmp_path: Path) -> None:
     argv = ADAPTER.prepare(_context(tmp_path, writes=False)).argv
     assert "-f" in argv

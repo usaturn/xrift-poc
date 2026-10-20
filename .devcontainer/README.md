@@ -326,7 +326,7 @@ runtime が `cursor` の担当（雛形の `cursor`・`cursor-grok47`）は、wr
 シェルを使えるので、PR レビューの役割でも pr-review・review-verify の helper を実行できる。
 writes=false は claude-code・devin・pi と同じく runner の指示であり、sandbox ではない。
 ほかの checkout の変更は、runner が `outside_changes` として報告する。
-Ask mode でシェルが使えないことと、Cursor の sandbox の範囲・実機の確認は `tools/agent_runner/runtimes/cursor.rst` に記録した。
+Ask mode では pr-review の helper を実行できないことと、Cursor の sandbox の範囲・実機の確認は `tools/agent_runner/runtimes/cursor.rst` に記録した。
 
 ### DSH の標準 headless
 
