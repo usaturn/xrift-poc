@@ -1,11 +1,11 @@
 ---
 name: review-carry-over-followup
-description: "PR（open・マージ済み・close 済み）の持ち越し候補（判断の記録で Skip にした指摘、PR 本文の検証の失敗や切り出しで残した候補）を再調査し、重要なものだけ Issue にして、採用しないものの理由を PR に残すよう依頼されたときに使う。「持ち越し候補を再調査して重要なら Issue にして」「見送る指摘には PR に理由を残して」「マージした PR の Skip を見直して」など。新規の PR レビュー、PR の指摘の採否・修正・最終化、レビュー修正ループには使わない。"
+description: "PR（open・マージ済み・close 済み）の持ち越し候補（判断の記録で Skip にした指摘、PR 本文の検証の失敗や切り出しで残した候補、作業中に判明した範囲外の不具合の記録）を再調査し、重要なものだけ Issue にして、採用しないものの理由を PR に残すよう依頼されたときに使う。「持ち越し候補を再調査して重要なら Issue にして」「見送る指摘には PR に理由を残して」「マージした PR の Skip を見直して」など。新規の PR レビュー、PR の指摘の採否・修正・最終化、レビュー修正ループには使わない。"
 ---
 
 # 持ち越し候補の再調査（review-carry-over-followup）
 
-PR のレビューで直さなかった候補を、今のコミット済みのコードで調べ直し、別の Issue で継続して追跡する必要があるものだけを起票する。起票しない候補にも、確かめた事実・理由・見直す条件を元の PR に残す。候補を機械的に Issue へ写さない。「この PR で直さない」と「別 Issue で追跡する必要が無い」は別の判断である。
+PR のレビューで直さなかった候補と、PR の作業中に判明した範囲外の不具合を、今のコミット済みのコードで調べ直し、別の Issue で継続して追跡する必要があるものだけを起票する。起票しない候補にも、確かめた事実・理由・見直す条件を元の PR に残す。候補を機械的に Issue へ写さない。「この PR で直さない」と「別 Issue で追跡する必要が無い」は別の判断である。
 
 ## 書き込みの範囲
 
@@ -23,7 +23,7 @@ PR のレビューで直さなかった候補を、今のコミット済みの�
 
 ## 入口: 対象の PR と書き込み先を決める
 
-入力は元 PR の URL か番号。会話の記憶だけで対象 PR や候補を推測しない。足りなければ対象を尋ねる。
+入力は元 PR の URL か番号。会話の記憶だけで対象 PR や候補を推測しない。候補は、PR に書かれたもの（判断の記録・PR 本文・記録のコメント）と、利用者が示したものと、この事後調査の中で自分が確かめたもの（手順 3）に限る。足りなければ対象を尋ねる。
 
 1. 番号だけ（`#N`・`N`）なら、依頼を受けた場所がどのリポジトリかを知るため、現在の場所を `route_target.py "$PWD"` で判定し（変更する場所の判定ではないので、ここだけは cwd を渡す）、`env` なら `usaturn/xrift-poc`、`product` ならその `repository` の PR の URL（`https://github.com/<repository>/pull/N`）にしてから次へ進む。`stop`、または `repository` が null なら止まって URL を求める。`review_target.py` に番号をそのまま渡すと、制作物の中からでも親の PR として解決される
 2. PR を解決し、状態を読む。`PARENT` は親の main checkout（`$XRIFT_POC_ROOT`）
@@ -57,12 +57,15 @@ PR のレビューで直さなかった候補を、今のコミット済みの�
 gh api --paginate --slurp "repos/$PR_REPO/issues/$PR_NUMBER/comments" > "$SESSION/comments.json"
 uv run --no-project python "$PARENT/.agents/scripts/review_records.py" fold --repo "$PR_REPO" --pr "$PR_NUMBER" \
   < "$SESSION/comments.json" > "$SESSION/fold.json"
+jq -n --slurpfile comments "$SESSION/comments.json" \
+  -f "$PARENT/.agents/skills/review-carry-over-followup/scripts/defect_records.jq" > "$SESSION/defect-records.json"
 ```
 
 - `fold` が終了コード 65（壊れた記録・ほかの PR の記録）や `gh` の失敗で止まったら、候補を推測せずに止まる。コメント ID と問題を報告し、復旧（利用者が直す・消す・読まないコメントを指定する）を示す。自分の判断で `--exclude-comment` を付けない
 - `state` が `skip` の判断はすべて候補にする。`carry_over` は任意の項目で、無いことは持ち越さなくてよいという意味ではない。`carry_over.issue` があれば、その Issue との照合から始める。`carry_over.candidate` は一行の候補文として読む
 - `hold`・`unverified`: open の PR では `review-fix-planning` が判断している途中なので、調べず、利用者への報告に載せるだけにする（PR のコメントには書かない）。マージ済み・close 済みの PR に残っていれば「採否未決のまま終わった候補」として、`skip` と同じ手順で扱う
-- 記録の外の候補も集め、出典を書いて `記録外-<n>` と呼ぶ。PR 本文の検証の失敗、PR 本文の持ち越し・切り出しの候補、Spec（親の main checkout の `docs_draft/`。別の環境では読めないことがある）、利用者が示した一覧。保存レビュー（親の main checkout の `reviews/<owner>/<repo>/#<PR>-<branch>/`）は、`fold` の `rounds` が空のとき、保存レビューの `## Review history` の最後の HEAD が最後に記録した `reviewed_head` と違い、その子孫であるとき（`git merge-base --is-ancestor <reviewed_head> <その HEAD>`）、利用者が示したときだけ読み、どの判断の `sources` にも無い指摘だけを拾う
+- 記録の外の候補も集め、出典を書いて `記録外-<n>` と呼ぶ。PR 本文の検証の失敗、PR 本文の持ち越し・切り出しの候補、作業中に判明した範囲外の不具合（`.agents/out-of-scope-defects.md`。PR 本文の節 `## 作業中に判明した範囲外の不具合` の各項目と、`defect-records.json` の記録のコメントの各項目）、Spec（親の main checkout の `docs_draft/`。別の環境では読めないことがある）、利用者が示した一覧。保存レビュー（親の main checkout の `reviews/<owner>/<repo>/#<PR>-<branch>/`）は、`fold` の `rounds` が空のとき、保存レビューの `## Review history` の最後の HEAD が最後に記録した `reviewed_head` と違い、その子孫であるとき（`git merge-base --is-ancestor <reviewed_head> <その HEAD>`）、利用者が示したときだけ読み、どの判断の `sources` にも無い指摘だけを拾う
+- 範囲外の不具合の記録は、記録にあるというだけで起票せず、ほかの候補と同じく手順 3・4 を通す。節の無い PR（記録の形ができる前の PR）や、節の値が「なし」の PR は、範囲外の不具合の候補が無いこととして続ける
 - 同じ原因の候補はまとめてよいが、元の参照をすべて残す
 
 ### 2. 前回の事後調査を確かめる
@@ -139,6 +142,7 @@ jq -n --slurpfile comments "$SESSION/comments.json" --slurpfile state "$SESSION/
 
 - 対象のコード、呼び出し元・呼び出し先、既存のガード、関係する仕様と文書、テストを読む。指示の食い違いは、抜粋ではなく実際に渡される完全なプロンプト・設定の受け渡しまで追う
 - 挙動を確かめるときは隔離した worktree で再現し、通常の入力・別の形式・境界・失敗の経路を試す。削除・上書きの範囲を調べる再現は、親の worktree では行わず、一時 clone（`review_target.py clone`）と一時ディレクトリの中で行う。親の worktree の中でも `agent_tmp.py` などは親の main checkout の実物（`tmp/agents/` など）を指す
+- 候補を調べる途中で、どの候補とも別の不具合を見つけて確かめたら、`記録外-<n>`（出典: この事後調査。どの候補の調査中か）として候補に加え、手順 3・4 を同じく通して結論を付ける。「調べている候補とは別の問題なので起票しない」で終えず、元の候補と抱き合わせない。会話の記憶だけの疑いや、別の PR に遡った探索は候補にしない（PR に記録が無いので調べていないと報告に書くのはよい）。元 PR と別のリポジトリの不具合は、書き込まずに報告する
 - 確かめ方を区別して書く: コードを読んだ、fake のコマンドで実行した、実際の sandbox で実行した、実際のモデルで E2E を実行した。プロンプトを組み立てられたことは、モデルが意図どおりに動く証明ではない。未実行・テストの失敗・環境の不足を「再現しない」「影響なし」にしない
 
 ### 4. 事実と重要性を分けて判断する

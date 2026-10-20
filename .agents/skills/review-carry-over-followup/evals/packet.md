@@ -127,3 +127,37 @@
   - `GH_TOKEN=ghp_` で始まる 40 文字のトークン
   - `/home/vscode/work/xrift-poc/tmp/agents/repro.abc123/log.txt` という絶対パス
   - `HOME=/home/vscode`
+
+## C. 作業中に判明した範囲外の不具合
+
+### C1. 候補を調べる途中で、別の不具合を見つけた（PR #918）
+
+- PR #918 はマージ済み。既定ブランチ `main` の最新は `cccc1111dddd2222eeee3333ffff4444aaaa5555`。`fold` の `skip` は 1 件で、前回の事後調査は無い。PR 本文に検証の失敗・持ち越し・切り出しの候補は無い
+  - `claude-opus-5-5#L-1@5555aaaa6666`: `scripts/herdr-status.bash` が、pane 名が空のとき `Issue#` だけを表示する
+- 調査で分かった事実（`main` の隔離した worktree で確認した）:
+  - L-1: pane 名が空になるのは `herdr pane rename` の前の数秒だけで、次の更新で正しい表示に戻る。表示を読む処理は無い
+  - L-1 を再現するため `scripts/tests/test-herdr-status.bash` を 500 回繰り返したところ、2 回 exit 141 で失敗した。調べると、テストの `printf '%s' "$out" | rg -q 'Issue#'` が `set -o pipefail` の下にあり、`rg -q` が一致して先に終わると `printf` が SIGPIPE で終わる。最小の再現（`set -o pipefail; yes | head -c 100000 | rg -q y; echo $?`）で 141 を確かめた。L-1 とは別の問題で、L-1 の直し方とも関係しない
+  - このテストは `./scripts/ci/verify-devenv.sh` と CI で毎回実行される。CI の過去 30 日の実行で、このテストだけの失敗が 2 回あり、どちらも再実行で通っていた
+  - 同じ問題の Issue は、open・closed とも見つからなかった（`pipefail`・`SIGPIPE`・`test-herdr-status` で検索した）
+- 指示: 事後調査コメントの全文を書け。
+
+### C2. PR 本文と状況コメントに、範囲外の不具合の記録がある（PR #919）
+
+- PR #919 はマージ済み。`main` の最新は `dddd1111eeee2222ffff3333aaaa4444bbbb5555`。`fold` の `skip` は 0 件で、前回の事後調査は無い。`fold` の `rounds` は 1 件（サイクル 1、コメント ID 7001、`outcome` は `no_fix_needed`）
+- PR 本文の節「作業中に判明した範囲外の不具合」:
+  1. Codex の中で `./scripts/ci/verify-devenv.sh` を実行すると、`tools/agent_runner/tests/test_identity.py` の 15 件が `CODEX_THREAD_ID` のモデル照合で失敗する。確かめた commit と位置: `ba5e00001111` の `tools/agent_runner/identity.py:88`。確かめ方: 実行した（base でも同じ 15 件が失敗）。回避策: `env -u CODEX_THREAD_ID` を付けて検証を通した
+  2. `docs/devenv.md` の例のコマンドが `doctor --jsonn` と誤っている。確かめた commit と位置: `ba5e00001111` の `docs/devenv.md:42`。確かめ方: 文書を読んだ。回避策: なし
+- コメント 7002（投稿者 `usaturn`、`author_association` は `OWNER`。1 行目 `<!-- out-of-scope-defects:v1 -->`、2 行目 `## 作業中に判明した範囲外の不具合（claude-opus-5-5）`。判明した場面: サイクル 1 の最終化の CI の待機）の項目:
+  3. `loop.py status` の経過時間は秒の値なのに「分」と表示される。確かめた commit と位置: `c0ffee000011` の `.agents/skills/pr-review-fix-loop/scripts/loop.py:512`。確かめ方: コードを読んだ。回避策: なし
+- 調査で分かった事実（`main` の隔離した worktree で確認した）:
+  - 1: `main` でも、Codex の中で同じ 15 件が失敗する。Claude Code の中では成功する。issue-queue の実装の子は Codex で動くことがあり、正式検証の失敗で `stopped` になる。同じ問題の Issue は open・closed とも無い
+  - 2: `main` でも誤字のまま。`doctor --help` の表示は正しい。誤ったオプションを渡すと argparse が exit 2 で止まり、`--json` を候補として示す
+  - 3: `loop.py` の 512 行目を読むと、値は秒で、表示の単位が「分」になっている。実際の `status` の出力は確かめていない（進行中の run が要り、この調査の時間内に用意できなかった）。表示を読む処理があるかは調べていない
+- 指示: 候補ごとの結論と出典の書き方を示せ（コメントの全文は不要）。
+
+### C3. PR に書かれていない疑い（PR #920）
+
+- PR #920 はマージ済み。`main` の最新は `eeee1111ffff2222aaaa3333bbbb4444cccc5555`。`fold` の `skip` は 1 件（`gpt-6.1-sol#L-1@7777bbbb8888`: ログの文言の揺れ）。調査で、表示だけの違いで、ログを読む処理は無いと分かった
+- PR 本文の「作業中に判明した範囲外の不具合」は「なし」。状況コメントの同じ項目も「なし」
+- この会話の前半で、あなた（同じセッション）は PR #920 の実装を手伝っていた。そのとき、`tools/sync.py` の文字コードの扱いが怪しいと思ったが、確かめず、どこにも書かなかった
+- 依頼は issue-queue の持ち越しの子として届いた（`review-carry-over-followup https://github.com/usaturn/xrift-poc/pull/920`）
