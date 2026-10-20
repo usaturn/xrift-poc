@@ -234,8 +234,17 @@ class LoopEnv:
     def template(self) -> Path:
         return self.root / "agent-runner.toml"
 
-    def reviewers(self, behaviors: dict[str, str | list[str]], *, findings: int = 0) -> ReviewerAdapter:
-        """現在の HEAD を対象にした偽のレビュアー（agent_id → success・failed・crash、または起動ごとの列）。"""
+    def reviewers(
+        self,
+        behaviors: dict[str, str | list[str]],
+        *,
+        findings: int = 0,
+        errors: dict[str, str] | None = None,
+    ) -> ReviewerAdapter:
+        """現在の HEAD を対象にした偽のレビュアー（agent_id → success・failed・crash、または起動ごとの列）。
+
+        errors は crash のときに stdout へ出す error イベントの message（provider のエラー文の代わり）。
+        """
         head = self.gh.head()
         agents: dict[str, Any] = {}
         for agent, behavior in behaviors.items():
@@ -243,6 +252,7 @@ class LoopEnv:
             review = self.review_dir / f"{model}.md"
             agents[agent] = {
                 "behavior": behavior,
+                "error": (errors or {}).get(agent),
                 "review_file": str(review),
                 "findings_file": str(self.review_dir / "findings" / f"{model}-{head[:12]}.json"),
                 "document": candidates_document(head, self.base(), model, review.name, findings=findings),
@@ -399,6 +409,8 @@ if "retained" in extras:
                       "pr_ref": f"refs/pr-review/{scenario['number']}"}
     cleanup = "failed"
 if behavior == "crash":
+    if spec.get("error"):
+        print(json.dumps({"type": "error", "message": spec["error"]}, ensure_ascii=False), flush=True)
     sys.exit(3)  # receipt を書かずに異常終了する（runner の失敗）
 payload = {key: request[key] for key in ("run_id", "request_id", "agent_id", "role")}
 payload.update(schema_version=1, repository=scenario["repository"], pr_number=scenario["number"],
@@ -448,12 +460,16 @@ class ReviewerAdapter:
 
     def collect(self, context: Any, stdout_path: Path, stderr_path: Path) -> Any:
         from tools.agent_runner.adapters import AdapterOutcome
-        from tools.agent_runner.models import Identity, Receipt
+        from tools.agent_runner.models import Diagnosis, Identity, Receipt
 
-        return AdapterOutcome(
-            Receipt.model_validate_json(context.receipt_path.read_bytes()),
-            Identity(model=context.agent.model, session_id=f"fake-{context.request.agent_id}"),
-        )
+        identity = Identity(model=context.agent.model, session_id=f"fake-{context.request.agent_id}")
+        if not context.receipt_path.exists():
+            # receipt を書かずに止まった（crash）。DSH の adapter と同じく、stdout の error イベントから診断を返す
+            events = [json.loads(line) for line in stdout_path.read_text(encoding="utf-8").splitlines() if line]
+            message = next((event["message"] for event in events if event.get("type") == "error"), None)
+            ending = "error_event" if message is not None else "incomplete"
+            return AdapterOutcome(None, identity, diagnosis=Diagnosis(ending=ending, message=message))
+        return AdapterOutcome(Receipt.model_validate_json(context.receipt_path.read_bytes()), identity)
 
 
 TEST_TEMPLATE = """

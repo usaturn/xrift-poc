@@ -78,7 +78,7 @@ reviews/<owner>/<repo>/#<PR>-<ブランチ>/
 | `state` | `reviewing`・`planning`・`ended` |
 | `prior_round` | `cycle-begin` の時点で PR にあった判断の記録の最大の `round`。`cycle-end` はこれより後の記録だけをこのサイクルの記録として受け付ける（前の run の同じ HEAD の記録を拾わない） |
 | `review.mode` | `run`（レビュアーを起動した）・`reuse`（現在の HEAD の成果を使った） |
-| `review.reviewers[]` | `requested_agent`・`actual_agent`、runner の state、`verdict`（`accepted`・`rejected`）と `reason`、runner が観測した `identity`、payload の `reviewer`・`timing`、成果 2 件のパスと SHA-256、`active_findings`、pr-review の `cleanup`・`warnings`・`retained_paths`。却下したときは `rejected_stage`（`runner`: 停止未確認・runner の失敗、`payload`: payload の形・pr-review の失敗、`binding`: request・担当・PR の不一致、`head`: レビューした HEAD の不一致、`artifacts`: 成果 2 件の欠落・不整合）と、その試行の `request.json` の写しの `request_file`・`request_sha256`（写せないときは null） |
+| `review.reviewers[]` | `requested_agent`・`actual_agent`、runner の state、`verdict`（`accepted`・`rejected`）と `reason`、runner が観測した `identity`、payload の `reviewer`・`timing`、成果 2 件のパスと SHA-256、`active_findings`、pr-review の `cleanup`・`warnings`・`retained_paths`。却下したときは `rejected_stage`（`runner`: 停止未確認・runner の失敗、`payload`: payload の形・pr-review の失敗、`binding`: request・担当・PR の不一致、`head`: レビューした HEAD の不一致、`artifacts`: 成果 2 件の欠落・不整合）と、その試行の `request.json` の写しの `request_file`・`request_sha256`（写せないときは null）。`rejected_stage` が `runner` のときだけ `attempts`（fallback を含む全試行の `agent_id`・`state`・`exit_code`・`elapsed_seconds`・`stop_confirmed`・`diagnosis`。ほかは空の配列） |
 | `review.rerun` | 再実行したときだけ。`agents`（起動し直した実担当）、`replaced`（置き換えた 1 回目の `reviewers[]` の記録）、再実行の `output_dir`・`started_at`・`ended_at`・`seconds`・`batch`・`after_run`・`cleanup`。`review.reviewers` は再実行の結果で置き換えた後の記録 |
 | `review.reused[]` | 再利用した成果 2 件のパスと SHA-256、`model`・`runtime`・`reviewed_head`・`active_findings` |
 | `review.batch` | runner の run ID・state・assignments・`result_file`（写し）・`outside_changes` |
@@ -86,6 +86,15 @@ reviews/<owner>/<repo>/#<PR>-<ブランチ>/
 | `planning` | `round`・`comment_id`・`posted`、`outcome`・`commit`・`stop_reason`・`merged`、判断の件数（`state` 別・`change` 別）、`planning_file`・`verified_file` とその SHA-256、`finalize`（結果の内容・`result_file`・`round_dir`）、`role_runs[]`（`run_roles.py` の出力ごとの実際の担当と状態）、`ended_at` |
 
 レビュー・確認・判断の中身は写さない。参考データ（`.agents/review-findings.md` の識別情報・時間）は、パスで参照する成果の側にある。
+
+`attempts[].diagnosis` は runner の試行の結果の `diagnosis`（`tools/agent_runner/interfaces.rst` の「診断の要約」）の写しで、runner が伏せ字にしてから文字列を 200 文字に切ったものである。終わり方（`ending`）・provider の code と HTTP status・message の先頭・ステップとツールの呼び出しの数・最後のイベント・最後の入力 token の数・ランタイムの記録の最後の記録の種類と時刻・stderr が認証や承認の語に当たったか、だけを持つ。stdout・stderr の本文は写さない。DSH 以外のランタイム、停止を確認できない試行、起動の前に終わった試行では null。記録だけで見分けたい型と、記録に出る形の目安は次のとおり。
+
+| 型 | 記録に出る形 |
+| --- | --- |
+| 認証・接続 | `steps` 0、短い `elapsed_seconds`、`stderr_authentication` が true |
+| provider の一時的なエラー | 途中のステップで、`turn_end` か `error_event` の 5xx・429・切断などの `code`・`status` |
+| context の上限 | `last_input_tokens` が大きいところで、上限に関する `code`・`message` |
+| 長い作業に固有の問題 | 途中のステップで、`ending` が `incomplete`（エラーのイベントの無い途切れ） |
 
 再実行の対象は、runner は成功（停止確認済み・終了コード 0）したのに loop が受け付けなかったレビュアー（`rejected_stage` が `runner` 以外）だけで、1 サイクルに 1 回まで。1 回目の runner の結果に、別の担当でも停止を確かめられない試行があれば再実行しない（資源を残し、`finish` と `recover` の停止確認の経路に返す）。最初の `review` はサイクルを `reviewing` のまま `review.rerun` を保存し、`next` に `review` を返す。2 回目の `review` は PR の HEAD を確かめてから、その実担当だけを fallback 無し・同じ role の期限で起動し、同じ検査を行う。却下した試行の `request.json` は runner の仕様で環境の値を含まない（`tools/agent_runner/interfaces.rst`）。停止を確かめられない試行の `request.json` は読まない。秘密が残りうる stdout・stderr は写さない。
 

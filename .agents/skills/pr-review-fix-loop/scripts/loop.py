@@ -40,6 +40,7 @@ sys.path.insert(0, str(ROOT))
 
 from tools.agent_runner import (  # noqa: E402
     Assignment,
+    Attempt,
     BatchResult,
     Config,
     ConfigError,
@@ -216,6 +217,17 @@ class RunRecord(StrictModel):
 RejectedStage = Literal["runner", "payload", "binding", "head", "artifacts"]
 
 
+class AttemptSummary(StrictModel):
+    """runner の 1 回の試行の要約。diagnosis は runner が伏せ字にした診断の要約（本文を持たない。#96）。"""
+
+    agent_id: str
+    state: str
+    exit_code: int | None
+    elapsed_seconds: float
+    stop_confirmed: bool
+    diagnosis: dict[str, Any] | None = None
+
+
 class ReviewerEntry(StrictModel):
     requested_agent: str
     actual_agent: str
@@ -237,6 +249,8 @@ class ReviewerEntry(StrictModel):
     rejected_stage: RejectedStage | None = None
     request_file: str | None = None
     request_sha256: str | None = None
+    # runner の段階で却下したときだけ。fallback を含む全試行の所要時間・終了コード・診断の要約（#96）
+    attempts: list[AttemptSummary] = Field(default_factory=list[AttemptSummary])
 
 
 class ReusedReview(StrictModel):
@@ -983,6 +997,17 @@ def _artifact(review_dir: Path, value: object) -> Path | None:
     return path
 
 
+def summarize_attempt(attempt: Attempt) -> AttemptSummary:
+    return AttemptSummary(
+        agent_id=attempt.agent_id,
+        state=attempt.state,
+        exit_code=attempt.exit_code,
+        elapsed_seconds=attempt.elapsed_seconds,
+        stop_confirmed=attempt.stop_confirmed,
+        diagnosis=attempt.diagnosis.model_dump(mode="json") if attempt.diagnosis is not None else None,
+    )
+
+
 def verify_reviewer(
     result: Result, *, pr: PrRef, head: str, review_dir: Path, expected_runtime: str | None = None
 ) -> ReviewerEntry:
@@ -1002,8 +1027,10 @@ def verify_reviewer(
         return entry
 
     if attempt is None or not all(item.stop_confirmed for item in result.attempts):
+        entry.attempts = [summarize_attempt(item) for item in result.attempts]
         return reject("runner", "runner が試行の停止を確認できていない")
     if result.state != "success" or attempt.state != "success" or attempt.exit_code != 0:
+        entry.attempts = [summarize_attempt(item) for item in result.attempts]
         return reject("runner", f"runner の結果が success ではない（{result.state}、終了コード {attempt.exit_code}）")
     if not isinstance(attempt.payload, dict):
         return reject("payload", "payload が JSON object ではない")
@@ -1574,6 +1601,7 @@ def _reviewer_summary(entry: ReviewerEntry) -> dict[str, Any]:
         "active_findings": entry.active_findings,
         "review_file": entry.review_file,
         "warnings": entry.warnings,
+        "attempts": [attempt.model_dump(mode="json") for attempt in entry.attempts],
     }
 
 
@@ -2029,7 +2057,13 @@ def _cycle_summary(cycle: CycleRecord) -> dict[str, Any]:
         "state": cycle.state,
         "review_mode": cycle.review.mode,
         "reviewers": [
-            {"agent": item.actual_agent, "verdict": item.verdict, "reason": item.reason}
+            {
+                "agent": item.actual_agent,
+                "verdict": item.verdict,
+                "reason": item.reason,
+                "rejected_stage": item.rejected_stage,
+                "attempts": [attempt.model_dump(mode="json") for attempt in item.attempts],
+            }
             for item in cycle.review.reviewers
         ],
         "outside_changes": _review_outside_changes(cycle.review),
