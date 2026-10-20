@@ -136,7 +136,7 @@ Spec: `YYYY-MM-DD-<topic>-review-fixes-design.md`。全指摘と出典→判断�
 `references/round-records.md` と `.agents/review-records.md` に従い、**新規はreview-records/v2**、planning/確認済み一覧もv2で実測provenanceを残す。不明はunknown、selfを他担当の成功にしない。識別情報の測定は既存runner/helperの観測を使う。
 
 - 全結果で状況投稿が必要。fixes_pushedはpush後、no_fix_neededは最終化前の採否/検証状況、stoppedは判明内容と未実施を記す。PRがopenでない等helperが拒否する場合は投稿済みとせず、ローカル記録/失敗理由を報告する。
-- 本文は日本語の3見出し、Skip全件のID・理由・見直す条件を省略しない。「今回の方針で追加修正する項目はない」と書き、Skipまで解消済みにしない。次欄にはレビュー/マージ/Issue等の実状態を記す。
+- 本文は日本語の3見出し、Skip全件のID・理由・見直す条件を省略しない。回避策で通した検証を正式入口の成功と書かず、回避策と回避した失敗を書く。このサイクルで範囲外の不具合（`.agents/out-of-scope-defects.md`）が判明したら、状況コメントとは別に記録のコメントを1件投稿する（状況コメントの形式は変えない）。「今回の方針で追加修正する項目はない」と書き、Skipまで解消済みにしない。次欄にはレビュー/マージ/Issue等の実状態を記す。
 - `MODEL_NAME` はruntimeの正確な識別子。Piではpi-model-nameでPI_PROVIDER/PI_MODELを両方確認。片方でも無ければpermission障害として確認を求め、猜測で投稿しない。
 
 ```bash
