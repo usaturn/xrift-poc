@@ -64,7 +64,7 @@ jq -n --slurpfile comments "$SESSION/comments.json" \
 - `fold` が終了コード 65（壊れた記録・ほかの PR の記録）や `gh` の失敗で止まったら、候補を推測せずに止まる。コメント ID と問題を報告し、復旧（利用者が直す・消す・読まないコメントを指定する）を示す。自分の判断で `--exclude-comment` を付けない
 - `state` が `skip` の判断はすべて候補にする。`carry_over` は任意の項目で、無いことは持ち越さなくてよいという意味ではない。`carry_over.issue` があれば、その Issue との照合から始める。`carry_over.candidate` は一行の候補文として読む
 - `hold`・`unverified`: open の PR では `review-fix-planning` が判断している途中なので、調べず、利用者への報告に載せるだけにする（PR のコメントには書かない）。マージ済み・close 済みの PR に残っていれば「採否未決のまま終わった候補」として、`skip` と同じ手順で扱う
-- 記録の外の候補も集め、出典を書いて `記録外-<n>` と呼ぶ。PR 本文の検証の失敗、PR 本文の持ち越し・切り出しの候補、作業中に判明した範囲外の不具合（`.agents/out-of-scope-defects.md`。PR 本文の節 `## 作業中に判明した範囲外の不具合` の各項目と、`defect-records.json` の記録のコメントの各項目）、Spec（親の main checkout の `docs_draft/`。別の環境では読めないことがある）、利用者が示した一覧。保存レビュー（親の main checkout の `reviews/<owner>/<repo>/#<PR>-<branch>/`）は、`fold` の `rounds` が空のとき、保存レビューの `## Review history` の最後の HEAD が最後に記録した `reviewed_head` と違い、その子孫であるとき（`git merge-base --is-ancestor <reviewed_head> <その HEAD>`）、利用者が示したときだけ読み、どの判断の `sources` にも無い指摘だけを拾う
+- 記録の外の候補も集め、出典を書いて `記録外-<n>` と呼ぶ。PR 本文の検証の失敗、PR 本文の持ち越し・切り出しの候補、作業中に判明した範囲外の不具合（`.agents/out-of-scope-defects.md`。PR 本文の節 `## 作業中に判明した範囲外の不具合` の各項目と、`defect-records.json` の記録のコメントの各項目。状況コメントの本文は出典にしない）、Spec（親の main checkout の `docs_draft/`。別の環境では読めないことがある）、利用者が示した一覧。保存レビュー（親の main checkout の `reviews/<owner>/<repo>/#<PR>-<branch>/`）は、`fold` の `rounds` が空のとき、保存レビューの `## Review history` の最後の HEAD が最後に記録した `reviewed_head` と違い、その子孫であるとき（`git merge-base --is-ancestor <reviewed_head> <その HEAD>`）、利用者が示したときだけ読み、どの判断の `sources` にも無い指摘だけを拾う
 - 範囲外の不具合の記録は、記録にあるというだけで起票せず、ほかの候補と同じく手順 3・4 を通す。節の無い PR（記録の形ができる前の PR）や、節の値が「なし」の PR は、範囲外の不具合の候補が無いこととして続ける
 - 同じ原因の候補はまとめてよいが、元の参照をすべて残す
 
@@ -129,7 +129,7 @@ jq -n --slurpfile comments "$SESSION/comments.json" --slurpfile state "$SESSION/
     PR_HEAD_SHA "$PR_HEAD_SHA" INVESTIGATED_SHA "$INVESTIGATED_SHA" MERGED_INTO_DEFAULT "$MERGED_INTO_DEFAULT"
   ```
 
-  元のレビューの HEAD との差分は `git -C "$TARGET_ROOT" diff --stat <元のレビューの HEAD> "$INVESTIGATED_SHA" -- <対象のパス>` で確かめる。元のレビューの HEAD は、その判断の `history` の最後の `reviewed_head`（`fold` の出力）にする。手元に無ければ `git fetch --no-tags origin <完全な SHA>` で取る。取れなければ、差分の確認ができなかったことを「確かめていないこと」に書く。調査済みの候補の前提が変わったかは、前回の事後調査で調べた commit と比べ、対象のパスに加えて文書（README・`docs/`）と呼び出し元も含める
+  元のレビューの HEAD との差分は `git -C "$TARGET_ROOT" diff --stat <元のレビューの HEAD> "$INVESTIGATED_SHA" -- <対象のパス>` で確かめる。元のレビューの HEAD は、その判断の `history` の最後の `reviewed_head`（`fold` の出力）にする。判断の無い記録外の候補は、記録の「確かめた commit」（先頭 12 桁は `git -C "$TARGET_ROOT" rev-parse --verify <12 桁>^{commit}` で完全な SHA にする）を起点にし、無ければ `rounds` の最後の `reviewed_head` にする。手元に無ければ `git fetch --no-tags origin <完全な SHA>` で取る。取れなければ、差分の確認ができなかったことを「確かめていないこと」に書く。調査済みの候補の前提が変わったかは、前回の事後調査で調べた commit と比べ、対象のパスに加えて文書（README・`docs/`）と呼び出し元も含める
 
   調べ終わったら（手順 7）、次で片付ける。別の Bash の呼び出しで実行するときは、上のブロックが表示した `REPRO_ROOT`・`TARGET_ROOT` と `PR_NUMBER` を先に代入する。ほかに worktree を作ったら（close された PR の head など）、それも `worktree remove` する。一時 clone は `REPRO_ROOT` の下にあるので、最後の行で一緒に消える
 
@@ -142,7 +142,7 @@ jq -n --slurpfile comments "$SESSION/comments.json" --slurpfile state "$SESSION/
 
 - 対象のコード、呼び出し元・呼び出し先、既存のガード、関係する仕様と文書、テストを読む。指示の食い違いは、抜粋ではなく実際に渡される完全なプロンプト・設定の受け渡しまで追う
 - 挙動を確かめるときは隔離した worktree で再現し、通常の入力・別の形式・境界・失敗の経路を試す。削除・上書きの範囲を調べる再現は、親の worktree では行わず、一時 clone（`review_target.py clone`）と一時ディレクトリの中で行う。親の worktree の中でも `agent_tmp.py` などは親の main checkout の実物（`tmp/agents/` など）を指す
-- 候補を調べる途中で、どの候補とも別の不具合を見つけて確かめたら、`記録外-<n>`（出典: この事後調査。どの候補の調査中か）として候補に加え、手順 3・4 を同じく通して結論を付ける。「調べている候補とは別の問題なので起票しない」で終えず、元の候補と抱き合わせない。会話の記憶だけの疑いや、別の PR に遡った探索は候補にしない（PR に記録が無いので調べていないと報告に書くのはよい）。元 PR と別のリポジトリの不具合は、書き込まずに報告する
+- 候補を調べる途中で、どの候補とも別の不具合を見つけて確かめたら、`記録外-<n>`（出典: この事後調査。どの候補の調査中か）として候補に加え、手順 3・4 を同じく通して結論を付ける。「調べている候補とは別の問題なので起票しない」で終えず、元の候補と抱き合わせない。会話の記憶だけの疑いは、候補にも、確かめに行く対象にもしない。別の PR に遡って探さない（記憶の疑いは、PR に記録が無いので調べていないと利用者への報告に書くのはよい）。元 PR と別のリポジトリの不具合は、書き込まずに報告する
 - 確かめ方を区別して書く: コードを読んだ、fake のコマンドで実行した、実際の sandbox で実行した、実際のモデルで E2E を実行した。プロンプトを組み立てられたことは、モデルが意図どおりに動く証明ではない。未実行・テストの失敗・環境の不足を「再現しない」「影響なし」にしない
 
 ### 4. 事実と重要性を分けて判断する

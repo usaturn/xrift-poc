@@ -191,7 +191,7 @@ herdr-agent-task set "Issue #$NUMBER 実装・PR作成"
    ```
 
 5. サイクルは pr-review-fix-loop の「サイクル」「終わり方」「止まったとき」「監視」に従う。
-6. **検証記録の再利用:** 初回で修正不要、HEAD が PR 作成時から不変なら、PR 前の正式検証を `finalize.py --checks-file` に使ってよい。同じ HEAD、検証時に未 commit の変更なし、exit 0、回避策を使っていない（`.agents/out-of-scope-defects.md`）、親の `tmp/agents/` にログあり、のすべてを確認する。確認できなければループ内で再実行する。
+6. **検証記録の再利用:** 初回で修正不要、HEAD が PR 作成時から不変なら、PR 前の正式検証を `finalize.py --checks-file` に使ってよい。同じ HEAD、検証時に未 commit の変更なし、exit 0、コマンド・環境・対象を変えた回避策を使っていない（`.agents/out-of-scope-defects.md`）、親の `tmp/agents/` にログあり、のすべてを確認する。確認できなければループ内で再実行する。
 7. **終了:** run ID、`<review_dir>/loop/<run_id>/` の完全パス、サイクルごとの結果、ループ段階の所要時間を報告に加える。
 
    | ループの結果 | 報告 | マージ |
@@ -203,7 +203,7 @@ herdr-agent-task set "Issue #$NUMBER 実装・PR作成"
 
 ## 停止時の報告
 
-不正入力（`resolve_issue.py`・`check-options`・`implement_task.py check` の exit 2 を含む）、Task の依頼の `failed`、再試行の上限に達した `retry`・`rejected`、ループの停止・エラー、route 確認失敗、競合、未完了依存、Issue の明示承認要求、禁止・取り消せない操作、想定外の外部送信、必要なツール/API の失敗、解消できない検証失敗では停止する。停止条件は「途中で止めずに」の例外であり、省略・成功扱い・別 repo への切替で回避しない。
+不正入力（`resolve_issue.py`・`check-options`・`implement_task.py check` の exit 2 を含む）、Task の依頼の `failed`、再試行の上限に達した `retry`・`rejected`、ループの停止・エラー、route 確認失敗、競合、未完了依存、Issue の明示承認要求、禁止・取り消せない操作、想定外の外部送信、必要なツール/API の失敗、解消できない検証失敗（`.agents/out-of-scope-defects.md` の条件を満たし、回避策で PR の作成まで続けるものを除く）では停止する。停止条件は「途中で止めずに」の例外であり、省略・成功扱い・別 repo への切替で回避しない。
 
 **理由 / 現在の状態 / 実施済み検証と終了コード / 存在する worktree・branch・Spec・Plan・ログ / 次の操作** を報告する。Task を runner の担当に依頼した run では、`cleanup` が残したもの（`retained`）と、`cleanup` を使えなかった `RUN_DIR` の完全パスも書く。ループで止まったときは `stage`・`reason`・`next`・run のディレクトリ・残した資源の完全パスも書く。作っていないパスは「未作成」と書く。通常の工程区切り、推奨案の選択、実装方式の選択は停止理由にしない。
 
