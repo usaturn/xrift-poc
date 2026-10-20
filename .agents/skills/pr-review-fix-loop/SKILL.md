@@ -57,7 +57,7 @@ uv run --project "$TOOL_ROOT/tools/devenv" --locked python \
 1. **`cycle-begin`**: 返った `review.mode` を見る。
    - `run`: `next`（`review`）を実行する。
    - `reuse`: 現在の HEAD のレビューの成果が、すでにレビューディレクトリにある（前のサイクルの push 前の PR 全体レビューなど）。レビュアーを起動せずに 3 へ進む。
-2. **`review`**: 全レビュアーが終わるまで同期で待つ（「監視」）。`accepted` と `rejected` を確かめる。`rejected` は失敗したレビュアーで、指摘 0 件ではない。`rejected_stage` は却下した段階（`runner`・`payload`・`binding`・`head`・`artifacts`）である。返った `next` が `review` のとき（再実行待ち。対象は `rerun.agents`）は、runner は成功したが結果を受け付けられなかったレビュアーを、同じサイクルで 1 回だけ起動し直す。次に何を実行するかは `next` だけで決める（`rerun` は再実行を終えた後の出力にも残る）。計画に進まず、その `next` を同じように同期で待って実行する。runner の失敗（期限切れ・認証待ち・起動失敗）は再実行しない。保存の後に失敗した（後片付けの失敗、期限切れなど）レビュアーの成果は、このサイクルの HEAD のままレビューディレクトリに残ることがあり、review-fix-planning はそれも読む。状況コメントには、loop の判定（`rejected` と理由）と、そのレビュアーの成果を計画の入力にしたかを書く。出力の `retained`（回収で残した runner の出力、残した `parent-pr-data` と、レビュアーが報告した残存パス）と `outside_changes`（runner の監査が観測した、作業場所の外の変更）は、再実行の後の出力でも、同じサイクルの 1 回目と再実行を合わせた値である。`retained` のパスは最終報告に書く。終了コード 6 は全員の失敗である（「終わり方」）。
+2. **`review`**: 全レビュアーが終わるまで同期で待つ（「監視」）。`accepted` と `rejected` を確かめる。`rejected` は失敗したレビュアーで、指摘 0 件ではない。`rejected_stage` は却下した段階（`runner`・`payload`・`binding`・`head`・`artifacts`）である。返った `next` が `review` のとき（再実行待ち。対象は `rerun.agents`）は、runner は成功したが結果を受け付けられなかったレビュアーを、同じサイクルで 1 回だけ起動し直す。次に何を実行するかは `next` だけで決める（`rerun` は再実行を終えた後の出力にも残る）。計画に進まず、その `next` を同じように同期で待って実行する。runner の失敗（期限切れ・認証待ち・起動失敗）は再実行しない。代わりに helper が、runner の段階で失敗したレビュアー（`rejected_stage: runner`）ごとに、同じ担当で短い確認（固定の小さな依頼。期限 300 秒）を 1 回だけ起動し、結果をそのレビュアーの `probe` に、失敗した試行の所要時間と診断の要約を `attempts` に記録する。確認はレビューではなく、`verdict` を変えず、失敗してもループは止まらない（`references/records.md` の 4 章）。保存の後に失敗した（後片付けの失敗、期限切れなど）レビュアーの成果は、このサイクルの HEAD のままレビューディレクトリに残ることがあり、review-fix-planning はそれも読む。状況コメントには、loop の判定（`rejected` と理由）と、そのレビュアーの成果を計画の入力にしたかを書く。出力の `retained`（回収で残した runner の出力、残した `parent-pr-data` と、レビュアーが報告した残存パス）と `outside_changes`（runner の監査が観測した、作業場所の外の変更）は、再実行の後の出力でも、同じサイクルの 1 回目と再実行を合わせた値である。`retained` のパスは最終報告に書く。終了コード 6 は全員の失敗である（「終わり方」）。
 3. **計画**: review-fix-planning の SKILL.md を読み、`planning.review_dir`（レビューディレクトリの完全パス）を第 1 引数にして、その手順を最後まで行う。
    - `planning.hold_action` をこの run の Hold 方針として渡す。新規 run は未指定時の既定 `skip` または利用者の明示 `skip`・`fix` であり、既定の適用を利用者の明示選択と書かない。このループの既定 `skip` は Hold にだけ適用し、理由付き `Skip` として判断を残す（`Resolved` にしない）。必須修正や `Unverified` は、review-fix-planning の既存規則で扱う。
    - 旧 run の `planning.hold_action` が null なら未選択のまま扱い、Hold が残れば review-fix-planning の認可不足で `stopped` にする。単独の review-fix-planning の未指定時の規則は変えない。
@@ -106,11 +106,11 @@ uv run --project "$TOOL_ROOT/tools/devenv" --locked python \
 
 ## 監視
 
-`review` は、全レビュアーの終了と停止の確認まで戻らない（役割の期限に停止の猶予を足した時間。雛形の `inspect` は 2700 秒（45 分））。`monitoring-long-tasks` に従う。
+`review` は、全レビュアーの終了と停止の確認まで戻らない（役割の期限に停止の猶予を足した時間。雛形の `inspect` は 2700 秒（45 分））。runner の段階で失敗したレビュアーがいると、その後に短い確認（期限 300 秒）も待つ。`monitoring-long-tasks` に従う。
 
 - 完了通知のあるランタイム（Claude Code の `run_in_background` など）は、`review` をバックグラウンドで実行し、終了コード付きの通知を待つ。
 - 完了通知の無いランタイム（Pi など）は、前景で実行する。期限は runner が守る。
-- stall は、`cycle-<n>.json` の `review.output_dir` の下のログの更新時刻で判定する。再実行の間（`review.rerun` があり、その `batch` が無い）は `review.rerun.output_dir` の下を見る（1 回目の出力は回収済み）。10 分間隔の確認で 2 回続けて変わらなければ stall を疑い、プロセスを止めずに利用者へ報告する。
+- stall は、`cycle-<n>.json` の `review.output_dir` の下のログの更新時刻で判定する。再実行の間（`review.rerun` があり、その `batch` が無い）は `review.rerun.output_dir` の下を見る（1 回目の出力は回収済み）。短い確認の間（`review.probe` か `review.rerun.probe` があり、その `ended_at` が無い）は、その `output_dir` の下を見る。10 分間隔の確認で 2 回続けて変わらなければ stall を疑い、プロセスを止めずに利用者へ報告する。
 - 計画の工程はあなた自身の作業である。その中で起動する `run_roles.py` の待ち方は review-fix-planning に従う。
 
 ## 最終報告
@@ -118,6 +118,7 @@ uv run --project "$TOOL_ROOT/tools/devenv" --locked python \
 - PR の URL、run ID、`<review_dir>/loop/<run_id>/` の完全パス
 - 現在の Herdr ペインの名前を変えた結果（`run.json` の `herdr_pane` の `state`。`skipped`・`failed` は `reason` も）
 - サイクルごとに: HEAD、レビューの `mode`、レビュアーごとの状態・実際の担当・モデル、判断の記録（round とコメントの URL）、結果、push した commit、`outside_changes`（runner の監査が観測した、作業場所の外の変更。1 回目と再実行を合わせた値）
+- runner の段階で失敗したレビュアーごとに（`finish` の `cycles[].reviewers[]` の `rejected_stage` が `runner` のもの）: 試行の所要時間（`attempts[].elapsed_seconds`）、診断の要約（`attempts[].diagnosis` の `ending`・`code`・`status`・`message`・`steps`・`last_event`・`last_record_at`）、短い確認の結果（`probe` の `state`・`reason`・`after_failure_seconds`）。確認の読み方と限界は `references/records.md` の 4 章
 - 最終の結果、`ended_by`、マージしたか、`stop_reason`
 - 関連 Issue は、finalize の結果に含まれる、更新後に観測した state を書く。GitHub 側の自動 close を含め、Issue が閉じたことを要件が完了したことの証明として扱わない（要件の評価は review-fix-planning の記録に従う）
 - loop が残した runner の出力と、残っている `parent-pr-data`・`rerun-parent-pr-data`（どちらも `finish` の `retained`）の完全パスと、回収の操作（「止まったとき」の `recover`）。`parent-pr-data`・`rerun-parent-pr-data` は `recover` では消えない。AGENTS.md の「コミットしないファイルの置き場所」に従い、利用者が原因を確かめてから消す

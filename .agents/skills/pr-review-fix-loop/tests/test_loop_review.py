@@ -1612,15 +1612,20 @@ def test_cycle_record_without_the_rerun_fields_loads(loop: Any, env: Any) -> Non
     record = read(path)
     # この変更より前の helper が書いた記録には、再実行と調査用の欄（試行の要約を含む）が無い
     record["review"].pop("rerun")
+    record["review"].pop("probe")
     for entry in record["review"]["reviewers"]:
-        for key in ("rejected_stage", "request_file", "request_sha256", "attempts"):
+        for key in ("rejected_stage", "request_file", "request_sha256", "attempts", "probe"):
             entry.pop(key)
     path.write_text(json.dumps(record), encoding="utf-8")
 
     cycle = loop.load_cycles(run_dir)[-1]
 
     assert cycle.review.rerun is None
-    assert all(entry.rejected_stage is None and entry.attempts == [] for entry in cycle.review.reviewers)
+    assert cycle.review.probe is None
+    assert all(
+        entry.rejected_stage is None and entry.attempts == [] and entry.probe is None
+        for entry in cycle.review.reviewers
+    )
     finished = loop.finish(run_dir, abort="external: テストの終了")
     assert finished["reviewer_retained"] == [] and finished["cycles"][0]["outside_changes"] == []
 
