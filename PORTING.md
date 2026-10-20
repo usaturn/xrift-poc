@@ -202,10 +202,17 @@
 
 ## 範囲の後の移植元の修正の取り込み（2026-10、Issue #48）
 
-- 移植元: `usaturn/agent-workspace` の PR #712（Issue #710）、commit `98159dd9484f0053a57c8b1fe11058c29c5601ac`（2026-10-17）。ボード #18 の範囲の終点 `3bc4769` の後にマージされたので、上の first parent 44 件には入っていない（表は範囲の記録として変えていない）。PR #47 の持ち越し候補の再調査で見つけた
+- 移植元: `usaturn/agent-workspace` の PR #712（Issue #710）、commit `98159dd9484f0053a57c8b1fe11058c29c5601ac`（2026-10-17）と `5c316cc`、merge `41cbca6`。ボード #18 の範囲の終点 `3bc4769` の後にマージされたので、上の first parent 44 件には入っていない（表は範囲の記録として変えていない）。PR #47 の持ち越し候補の再調査で見つけた
 - 取り込んだ差分: issue-to-pr の `SKILL.md` の 2 章 4。既存の open PR で止まるときは、PR の URL と base を報告に書き、base が既定 branch のときだけ `/pr-review-fix-loop <PR の URL>` を、それ以外（統合用の branch など）では `/pr-review <PR の URL>`（マージしない）を案内する
 - xrift-poc に合わせた点: 既定 branch を、2 章 5 の `BASE` と同じく「対象 repository の既定 branch（親は `main`、制作物は `repository-ownership` で確認した既定 branch）」にした。移植元が番号のまま残した 1 章と 5 章の表の `/pr-review-fix-loop <PR>` も PR の URL にした。xrift-poc の issue-to-pr は制作物の PR も案内し、番号だけではループが親の origin の PR として解決するため
-- 取り込まなかったもの: ループ・`finalize.py` に base の検査を足すこと（移植元にも無い。Issue #48 の対象外）
+- 取り込まなかったもの: PR #712 の 2 つ目の commit `5c316cc`（`issue-to-pr/evals/` の `scenarios.json`・`validation.md`。xrift-poc には `issue-to-pr/evals/` が無く、#27・#28 と同じく「範囲と取り込み方」の評価記録の方針で取り込んでいない）。ループ・`finalize.py` に base の検査を足すこと（移植元にも無い。Issue #48 の対象外）
+
+## 範囲の後の移植元の修正の取り込み（2026-10、Issue #75）
+
+- 移植元: `usaturn/agent-workspace` の PR #753（Issue #752）。commit `abd0547`（adapter とテスト）・`c75aeb4`（`.devcontainer/README.md` と、`runtimes/cursor.rst` の sandbox の観測）・`b58d209`（`runtimes/cursor.rst` の実機の PR レビューの記録）、merge `6e7b16e`（2026-10-19）。ボード #18 の範囲の終点 `3bc4769` の後にマージされた
+- 取り込んだ差分: cursor の adapter が `writes = false` の役割を `--mode ask` の代わりに `-f --sandbox disabled` で起動する変更（`tools/agent_runner/adapters/cursor.py`）と、そのテスト（`tests/adapters/cursor/test_cursor.py`）。`runtimes/cursor.rst` の起動と制約の説明。`.devcontainer/README.md`「レビュアーの選び方」の段落
+- xrift-poc に合わせた点: `runtimes/cursor.rst` の観測は、xrift-poc で確かめ直した結果（Cursor CLI `2026.10.19-6bbf2c4`）で書いた。Issue #75 の受け入れ条件に合わせて、Ask mode のシェルの観測（モデルが sandbox を求めなかったコマンドは拒否され、求めたコマンドは sandbox の中で実行される）と、`--sandbox` が利用者の設定に残らないことの観測を足した。この版の sandbox は共有 `.git` だけへの書き込みを許したので、移植元の「共有 `.git` は拒否」は写さず、版を付けて分けて書いた。テストのコメントには CLI の版を書かず、`runtimes/cursor.rst` を参照した（移植元の PR #753 の持ち越し候補の直し方）。雛形 `.devcontainer/agent-runner.toml` の `cursor`・`cursor-grok47` のコメントも直した（移植元は雛形を変えていない）。番号は xrift-poc の #75 を書いた
+- 取り込まなかったもの: 移植元の実機の記録（`2026.10.16-e3cb207`・`2026.10.18-ea085cb` での確認と、移植元の PR #753 の PR レビューの run）。xrift-poc での確認で置き換えた
 
 ## 更新の方法
 

@@ -91,6 +91,7 @@ skill_sources = [".agents/skills", ".codex/skills"]
 env = ["HOME", "PATH"]
 
 # Cursor Agent（agent/cursor-agent は同一バイナリへの symlink）。model は slug、auto は実測の既定。
+# writes=false の役割も -f --sandbox disabled で起動するので、inspect・self-review・fix-check に割り当てられる（#75）。
 [agents.cursor]
 runtime = "cursor"
 command = ["agent"]
@@ -99,7 +100,7 @@ approval = "noninteractive"
 skill_sources = [".cursor/skills", ".claude/skills", ".agents/skills", ".codex/skills"]
 env = ["HOME", "PATH"]
 
-# Grok-4.7 を Cursor CLI 側で明示する agent。grok-4.7-xhigh は --list-models の実在 slug。
+# Grok-4.7 を Cursor CLI 側で明示する agent。grok-4.7-xhigh は --list-models の実在 slug。起動は上の cursor と同じ。
 [agents.cursor-grok47]
 runtime = "cursor"
 command = ["agent"]

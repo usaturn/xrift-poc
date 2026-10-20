@@ -321,6 +321,13 @@ GPT をレビュアーにするときは `pi-gpt` を使う。codex は implemen
 雛形に無い agent は、個人設定の `[agents.<name>]` に定義してから指定する。
 雛形の既定値を変えても、既存の個人設定には反映されない。
 
+runtime が `cursor` の担当（雛形の `cursor`・`cursor-grok47`）は、writes=false の役割
+（`inspect`・`self-review`・`fix-check`）も `-f --sandbox disabled` で起動する（#75。writes=true の役割は今までどおり `-f` だけ）。
+シェルを使えるので、PR レビューの役割でも pr-review・review-verify の helper を実行できる。
+writes=false は claude-code・devin・pi と同じく runner の指示であり、sandbox ではない。
+ほかの checkout の変更は、runner が `outside_changes` として報告する。
+Ask mode でシェルが使えないことと、Cursor の sandbox の範囲・実機の確認は `tools/agent_runner/runtimes/cursor.rst` に記録した。
+
 ### DSH の標準 headless
 
 DSH `0.2.0-rc.2` の `dsh --profile headless --patch <file> --json -` を使う
