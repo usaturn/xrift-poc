@@ -332,6 +332,9 @@ class RerunPart(StrictModel):
     ended_at: str | None = None
     seconds: float | None = None
     batch: BatchInfo | None = None
+    # runner が結果を返した直後に記録する runner の run ID（batch.run_id と同じ値）。後処理の失敗や中断で batch を
+    # 記録できなくても、.staging/<run>/ に残ったセッションを報告できるように残す（#71）。この欄より前の記録には無い
+    runner_run_id: str | None = None
     after_run_started: bool = False
     after_run: list[dict[str, Any]] | None = None
     cleanup: CleanupInfo | None = None
@@ -346,6 +349,9 @@ class ReviewPart(StrictModel):
     ended_at: str | None = None
     seconds: float | None = None
     batch: BatchInfo | None = None
+    # runner が結果を返した直後に記録する runner の run ID（batch.run_id と同じ値）。後処理の失敗や中断で batch を
+    # 記録できなくても、.staging/<run>/ に残ったセッションを報告できるように残す（#71）。この欄より前の記録には無い
+    runner_run_id: str | None = None
     after_run_started: bool = False
     after_run: list[dict[str, Any]] | None = None
     reviewers: list[ReviewerEntry] = Field(default_factory=list[ReviewerEntry])
@@ -1711,11 +1717,21 @@ _RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 
 
 def _review_run_ids(review: ReviewPart) -> list[tuple[Literal["first", "rerun"], str]]:
-    """サイクルの 1 回目と再実行の runner の run ID。短い確認は保存先に書けず、セッションを作らないので含めない。"""
+    """サイクルの 1 回目と再実行の runner の run ID。短い確認は保存先に書けず、セッションを作らないので含めない。
+
+    runner が結果を返した直後の記録（runner_run_id）と、検査の後の batch の両方を見る（どちらも同じ値。
+    runner_run_id より前の記録には batch しか無く、後処理の失敗や中断では batch が無い）。
+    """
     parts: list[tuple[Literal["first", "rerun"], ReviewPart | RerunPart]] = [("first", review)]
     if review.rerun is not None:
         parts.append(("rerun", review.rerun))
-    return list(dict.fromkeys((attempt, part.batch.run_id) for attempt, part in parts if part.batch is not None))
+    found: list[tuple[Literal["first", "rerun"], str]] = [
+        (attempt, run_id)
+        for attempt, part in parts
+        for run_id in (part.runner_run_id, part.batch.run_id if part.batch is not None else None)
+        if run_id is not None
+    ]
+    return list(dict.fromkeys(found))
 
 
 def _staging_sessions(review_dir: Path, run_id: str) -> list[tuple[str | None, Path]]:
@@ -1980,6 +1996,11 @@ def _review_batch(
             ) from error
         # 親の確定より前に runner の結果を残す。途中で止まっても、再開が同じ親の確定から続ける
         write_json(output_dir / "result.json", batch)
+    if part.runner_run_id is None:
+        # 回収は runner の出力（result.json）を消すので、batch を記録する前に止まっても
+        # .staging/<run>/ を引けるように残す
+        part.runner_run_id = batch.run_id
+        save_cycle(run_dir, cycle)
     config = load_review_config(run)
     if part.after_run is None:
         if part.after_run_started:

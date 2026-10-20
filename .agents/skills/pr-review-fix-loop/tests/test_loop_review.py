@@ -679,19 +679,23 @@ def test_parent_input_is_removed_only_after_an_accepted_dsh_review(
         assert (path / "snapshot.json").is_file()
 
 
-def test_finish_reports_parent_input_left_by_failed_after_run(
-    loop: Any, env: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """後処理の失敗で settle_parent_input に届かなかった親入力も、finish の retained に出る。"""
-    dsh_parent_env(loop, env, monkeypatch)
-    staged_reviewer(loop, env, monkeypatch, case=None)
-    log = tmp_path / "after-run.log"
+def fail_after_run(loop: Any, monkeypatch: pytest.MonkeyPatch, log: Path) -> None:
+    """レビューの後処理（after_run）が、停止を確認した失敗を返すようにする。"""
     log.write_text("after_run failed\n", encoding="utf-8")
 
     def failed_after_run(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
         return [{"state": "failed", "stop_confirmed": True, "stdout_path": str(log), "stderr_path": str(log)}]
 
     monkeypatch.setattr(loop, "run_after_run", failed_after_run)
+
+
+def test_finish_reports_parent_input_left_by_failed_after_run(
+    loop: Any, env: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """後処理の失敗で settle_parent_input に届かなかった親入力も、finish の retained に出る。"""
+    dsh_parent_env(loop, env, monkeypatch)
+    staged_reviewer(loop, env, monkeypatch, case=None)
+    fail_after_run(loop, monkeypatch, tmp_path / "after-run.log")
     run_dir = Path(env.start()["run_dir"])
     loop.cycle_begin(run_dir, github=env.github)
     with pytest.raises(loop.LoopError) as error:
@@ -1656,9 +1660,10 @@ def test_cycle_record_without_the_rerun_fields_loads(loop: Any, env: Any) -> Non
     )
     path = run_dir / "cycle-1.json"
     record = read(path)
-    # この変更より前の helper が書いた記録には、再実行と調査用の欄（試行の要約を含む）が無い
+    # この変更より前の helper が書いた記録には、再実行と調査用の欄（試行の要約を含む）と、runner の run ID の欄が無い
     record["review"].pop("rerun")
     record["review"].pop("probe")
+    record["review"].pop("runner_run_id")
     for entry in record["review"]["reviewers"]:
         for key in ("rejected_stage", "request_file", "request_sha256", "attempts", "probe"):
             entry.pop(key)
@@ -2012,3 +2017,26 @@ def test_staging_walk_reports_a_directory_it_cannot_list(loop: Any, tmp_path: Pa
         assert loop._staging_sessions(review_dir, "run-1") == [("dsh-ccd", agent)]
     finally:
         agent.chmod(0o700)
+
+
+def test_session_left_by_a_review_whose_after_run_failed_is_reported(
+    loop: Any, env: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # 後処理の失敗（終了コード 5）では batch を記録できず、finish の回収が runner の出力（result.json）を消す。
+    # runner が結果を返した直後に記録した run ID で、.staging/<run>/ に残ったセッションを引く
+    run_dir = staged_cycle(loop, env, monkeypatch, "abandoned")
+    fail_after_run(loop, monkeypatch, tmp_path / "after-run.log")
+    with pytest.raises(loop.LoopError) as error:
+        loop.review(run_dir, github=env.github, tmp_root=env.tmp_root)
+    assert (error.value.code, error.value.stage) == (5, "after_run")
+    [abandoned] = staged_sessions(env)
+    review = read(run_dir / "cycle-1.json")["review"]
+    assert review["batch"] is None
+    assert review["runner_run_id"] == Path(abandoned).parents[2].name
+    monkeypatch.chdir(env.root)
+
+    finished = loop.finish(run_dir, abort="external: fixture after_run failed")
+
+    assert retained_item(finished, abandoned)["observed"] == [
+        {"cycle": 1, "agent": "alpha", "attempt": "first", "source": "staging"}
+    ]
