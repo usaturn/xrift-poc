@@ -72,6 +72,7 @@ Plan の Task を実装する担当は、agent-runner の `workflows.issue` の 
    - 他セッションの `refs/heads/agent-claims/issue-N`、コメントに記録された未解放の担当
    - 対象 repository の既存 worktree、ローカル・remote branch（`issue-N` は番号の境界で照合し、N=58 と N=580 を混同しない）
    - 未完了の先行 Issue・必要な未マージ PR
+   issue-queue の子への依頼文に、前の attempt から引き継ぐ資源（helper が `queue retry` の後に書く）としてこの Issue の worktree があれば、その worktree とその branch だけはここで止めず、3 章の「issue-queue の引き継ぎ」で照合して続ける。他の項目は同じく検査する。
    既存の open PR で止まるときは、その PR の URL と base（`gh pr view <PR> --repo "$REPO" --json url,baseRefName`）を報告に書き、再開の案内を base で分ける。案内には PR の URL を使う（番号だけでは、ループも pr-review も親の origin の PR として解決する）。base が対象 repository の既定 branch（親は `main`、制作物は `repository-ownership` で確認した既定 branch）なら、再開は利用者の `/pr-review-fix-loop <PR の URL>`（Pi は `/skill:pr-review-fix-loop <PR の URL>`）。それ以外（統合用の branch など）なら、ループでの再開を案内せず（1 章と同じく、ループと `finalize.py` は既定 branch へのマージを前提にする）、レビューだけなら `/pr-review <PR の URL>`（Pi は `/skill:pr-review <PR の URL>`。マージしない）で行えることを伝える。
    worktree 作成直前と、編集・push・PR 作成前に最新の Issue 状態と競合を再確認する。新規競合や closed 化があれば停止し、自分がこの run で作った worktree/branch と他者の作業を区別する。
 5. `<!-- planning-parallel-issues board:... -->` がある子は **`planning-parallel-issues` 必須**。claim・先行条件・成果公開・所有権の再確認・解放はそちらに従う。このスキルにプロトコルを写さない。親からの子の選択は担当外。`--merge` の claim 解放の時点は 5 章。
@@ -94,6 +95,17 @@ herdr-agent-task set "Issue #$NUMBER 実装・PR作成"
 **必須:** `superpowers:using-git-worktrees` と `repository-ownership` に従い、status・worktree 一覧・ignore を確認して、**対象 repository の最新の既定ブランチ（親は `origin/main`）** から新しい worktree を作る。名前は `issue-N-<要約>`、branch は `feat/issue-N-<要約>` または `fix/issue-N-<要約>`。URL と #番号で作成方法を分けない。制作物の worktree は制作物のディレクトリの中に作る。親の detached HEAD 直下では編集しない。
 
 `BASE`（2 章の 5）が統合用の branch なら、worktree を作った直後（Spec・Plan・実装・テストの前）に対象 repository で `git fetch origin <BASE>` を実行し、`origin/<BASE>` を feature branch に merge する。競合などで取り込めなければ停止して報告する。
+
+### issue-queue の引き継ぎ
+
+2 章の 4 で前の attempt の worktree を引き継いだときは、新しい worktree を作らず、次の順に行う。どれかが合わなければ停止して報告する。
+
+1. 引き継いだ worktree が `git -C "$TARGET_ROOT" worktree list` にあり、`route_target.py` がこの Issue の担当と同じ判定（親なら `env`）を返し、その branch がこの Issue の番号を番号の境界で含む
+2. その worktree の `git status --porcelain` が空。remote に同名の branch があれば、その commit が worktree の HEAD の祖先である
+3. `git fetch origin <既定 branch>` の後に `origin/<既定 branch>` を merge する（`BASE` が統合用の branch なら、上の段落のとおり `origin/<BASE>` も）。競合したら解消せずに止まる
+4. 依頼文の資源に前の attempt の Spec・Plan があれば読み、Spec の決定記録に引き継ぎ（前の attempt の ID、引き継ぎの理由、引き継いだ HEAD、merge した commit）を追記する。Plan の commit 済みの Task はそのテストを再実行して確かめ、残りの Task と 5 章から続ける。Spec・Plan が無ければ 4 章から始める
+
+引き継いだ worktree・branch は、この run で作ったものとして扱う（再確認・報告・後片付け）。前の attempt の記録（ログ・ledger）は読むだけにし、消さない。
 
 ## 4. 推奨案 → Spec → Plan → 実装
 

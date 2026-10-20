@@ -55,12 +55,15 @@ checkoutの衝突、fetch・ghの失敗で更新できなければ、`--force`�
 queue status --run <run>
 queue resume --run <run>
 queue abandon --run <run> --reason <理由>
+queue retry --run <run> --reason <理由>
 queue stop --run <run> --after followup
 ```
 
 `resume` は旧ownerの生存と子・GitHub・worktreeを照合する。呼び出し元の会話自身は旧ownerと数えないので、元の会話を別のpaneや新しいterminalで復旧しても引き継げる。呼び出し元以外に旧ownerと同じnative sessionのagentが残っていれば横取りしない。動いている子は監視に戻し、新しい子を作らない。起動・送信のtimeoutは未実行の証拠ではない。pane作成の応答が失われて所有を証明できない場合は手動調査で止める。
 
 子がackの前に終わった場合（子のpaneが閉じられた、別のagentに使われた、起動直後に止まった）は、子が動いていないことと、attemptのマーカーを持つPRが無いことを確かめてから `abandon` でattemptを閉じ、理由を残す。helperも同じ条件を照合し、使用版が変わった後でも閉じられる。この会話や別のkindのagentが子のpaneを使っていても閉じられる。子のpaneの保存したterminalに、この会話以外の同じkindのagentがいれば、名前の消えた子と区別できないので閉じない。paneは閉じず、ownerと判断待ちは変えない。旧ownerが不在なら続けて `resume` で引き継ぎ、判断待ちを解決してから `reconcile` → `launch` で同じ工程を新しいattemptとして起動する。ack済みの子は打ち切れない。失敗した子を自動で作り直す機能ではない。
+
+ack済みの子が `stopped`・`failed` の結果を残して止まり、利用者の続行指示があって原因を取り除いた後は、子の停止・残した資源・PRの有無を確かめてから `retry` でattemptを閉じ、理由を残す。helperは、呼び出し元がownerか旧ownerが不在であること、結果の終了処理とバックグラウンドの停止が確認済みであること、投稿の記録が無いこと、子と子のpaneに残る同じkindのagentが不在かidle・doneであること、attemptのマーカーを持つPRが無いことを照合する。使用版は照合しないので、helperやmainが更新された後でも閉じられる。paneは閉じず、ownerと判断待ちは変えない。続けて `resume`（旧ownerが不在なら引き継ぐ）→ 判断待ちの解決 → `reconcile` → `launch` で同じ工程を新しいattemptとして起動する。新しい子への依頼文には前の結果と残した資源が入り、実装の子はissue-to-prの「issue-queueの引き継ぎ」で前のworktreeを引き継ぐ。前のattemptが残した資源は、次のattemptが結果を残すまで起動の前の検査で通す。止まった子の作業を消すかは利用者が決める。
 
 `--after followup` は持ち越しの調査後、片付けの前で止める。未実施のcleanupを保存し、再開はそこから始める。片付け後に止める場合だけ `--after cleanup` を使う。試運転は最初のcleanup後に止まる。利用者が子のblockedを解消した後は、事実を `resume --continue --reason <理由>` に記録できる。失敗した子を自動再起動する機能ではない。
 
