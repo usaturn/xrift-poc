@@ -1270,3 +1270,36 @@ def test_handover_ends_when_the_next_attempt_reports(queue_env: QueueEnv) -> Non
     queue_env.call("advance", "--run", run)
     blocked = queue_env.call("launch", "--run", run, code=3)
     assert str(work) in blocked["reason"] and "Issue #11" in blocked["reason"]
+
+
+@pytest.mark.parametrize("abandons", [1, 2])
+def test_retry_handover_survives_abandoned_relaunch(queue_env: QueueEnv, abandons: int) -> None:
+    # retryの後に起動した子がackの前に終わり、abandonで閉じてから起動し直した(#79の状況)。
+    # 結果の無いattemptを挟んでも引き継ぎは次の子に渡り、引き継いだ子が結果を残した後は通さない。
+    run = queue_env.init(kind="codex")
+    attempt = queue_env.launch(run)
+    queue_env.ack(run, attempt)
+    work = stopped_with_worktree(queue_env, run, attempt)
+    reason = "テストの不具合を修正済み。\n#11の作業を引き継ぐ"
+    queue_env.call("retry", "--run", run, "--reason", reason)
+    for _ in range(abandons):
+        lost = queue_env.launch(run)
+        data = queue_env.data()
+        del data["panes"][lost["pane_id"]]
+        queue_env.save(data)
+        queue_env.call("abandon", "--run", run, "--reason", "最初のackの前に子が終了")
+    relaunched = queue_env.launch(run)
+    for handed in (attempt["id"], reason, str(work)):
+        assert handed in relaunched["prompt"]
+    queue_env.ack(run, relaunched)
+    queue_env.merge(relaunched)
+    queue_env.report(run, relaunched)
+    queue_env.child(relaunched, "done")
+    queue_env.call("advance", "--run", run)
+    followup = queue_env.launch(run)
+    queue_env.ack(run, followup)
+    queue_env.report(run, followup)
+    queue_env.child(followup, "done")
+    queue_env.call("advance", "--run", run)
+    blocked = queue_env.call("launch", "--run", run, code=3)
+    assert str(work) in blocked["reason"] and "Issue #11" in blocked["reason"]

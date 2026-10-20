@@ -100,7 +100,7 @@ class Attempt(Record):
     closed: bool = False
     # 受領前に子が消えたattemptをabandonで閉じた理由。
     abandon_reason: str | None = None
-    # 終了結果を残して止まったattemptをretryで閉じた理由。同じ工程の次のattemptへ作業を引き継ぐ。
+    # 終了結果を残して止まったattemptをretryで閉じた理由。同じ工程で次に結果を残すattemptへ作業を引き継ぐ。
     retry_reason: str | None = None
     merged_at: str | None = None
     pr_url: str | None = None
@@ -149,6 +149,13 @@ class Run(Record):
             ),
             None,
         )
+
+    def stage_results(self, issue: int, phase: Phase) -> list[Attempt]:
+        """同じIssue・工程で結果を残したattemptを起動の順に返す。
+
+        ackの前にabandonで閉じたattemptは結果も作業も持たないので、引き継ぎの前後関係に数えない。
+        """
+        return [a for a in self.attempts if (a.issue, a.phase) == (issue, phase) and a.result is not None]
 
     def event(self, action: str, **values: Any) -> None:
         self.events.append({"at": now(), "action": action, **values})

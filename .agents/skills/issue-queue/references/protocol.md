@@ -74,7 +74,7 @@ helperは毎回、親main checkoutをcwdとする新しいHerdr paneを作り、
 
 ## 確認していないworktree
 
-実装の工程の起動・片付けの工程の起動・片付けの工程の終了の照合で、親main checkout、retainで登録したパス、結果に `blocks_next=false` で残されたパス、`retry` で引き継いだ資源（次のattemptが結果を残すまで）以外のworktreeを判定する。処理中のIssueの番号Nについて、worktreeのパスか、`refs/heads/` を除いたbranch名に `issue-N` が番号の境界（直前が英数字でなく、直後が数字でない。大文字と小文字を区別しない）で現れるもの、結果に `blocks_next=true` で残されたものがあれば、`次工程を妨げるworktreeがあります` にパスと理由を並べて止まる。それ以外は中身を検査せずに無視し、runのイベントに残す。直前の `worktrees_ignored` と同じ内容なら重ねない。
+実装の工程の起動・片付けの工程の起動・片付けの工程の終了の照合で、親main checkout、retainで登録したパス、結果に `blocks_next=false` で残されたパス、`retry` で引き継いだ資源（引き継いだattemptが結果を残すまで）以外のworktreeを判定する。処理中のIssueの番号Nについて、worktreeのパスか、`refs/heads/` を除いたbranch名に `issue-N` が番号の境界（直前が英数字でなく、直後が数字でない。大文字と小文字を区別しない）で現れるもの、結果に `blocks_next=true` で残されたものがあれば、`次工程を妨げるworktreeがあります` にパスと理由を並べて止まる。それ以外は中身を検査せずに無視し、runのイベントに残す。直前の `worktrees_ignored` と同じ内容なら重ねない。
 
 ```json
 {
@@ -95,7 +95,7 @@ ackの前に子が消えたattemptは `abandon --run ... --reason <理由>` で�
 
 ack済みで `stopped`・`failed` の結果を残したattemptは `retry --run ... --reason <理由>` で閉じる。helperは、呼び出し元がownerか、resumeと同じ照合で旧ownerが不在であること、結果の `finalized` と `background_stopped` が真であること、attemptに投稿の記録（`effects`）が無いこと、agent名の `get` がstderrの構造化エラー `agent_not_found` で終わるか、見つかったagentの `agent_status` がidle・doneであること、paneが保存したterminalのまま残り呼び出し元以外の同じkindのagentがいれば、その `agent_status` もidle・doneであること、attemptのマーカーを持つPR（全状態）が無いことを確かめる。成功の結果は `advance` で進める。閉じたattemptは `retry_reason` に理由を残し、イベント `attempt_retried` を記録して `stopped_reason` を解除する。paneは閉じず、ownerと判断待ちは変えず、使用版は照合しない。古い子の `ack`・`report`・`publish` は、attemptが今回の工程のものでなくなるので拒否される。
 
-`retry` の後の `launch` は同じIssue・工程を新しいattemptとして起動し、依頼文に前のattemptのID・outcome・理由・結果の要約・`retained` を書く。前のattemptが残した資源は、次のattemptが結果を残すまで、起動の前の検査で次工程を妨げる資源として数えない。ほかのattemptが `blocks_next=true` で残したパスは止める。次のattemptが結果を残した後は、その結果に残された資源として扱う。
+`retry` の後の `launch` は同じIssue・工程を新しいattemptとして起動し、依頼文に前のattemptのID・outcome・理由・結果の要約・`retained` を書く。前後関係は、同じIssue・工程で結果を残したattemptの順に辿る。ackの前に `abandon` で閉じたattemptは結果も作業も持たないので数えず、その後の `launch` の依頼文にも同じ引き継ぎを書く。前のattemptが残した資源は、作業を引き継いだattempt（結果を残す次のattempt）が結果を残すまで、起動の前の検査で次工程を妨げる資源として数えない。ほかのattemptが `blocks_next=true` で残したパスは止める。引き継いだattemptが結果を残した後は、その結果に残された資源として扱う。
 
 `prepared` はsplit、`pane_created` はstartの意図をまだ保存していない。`launch` は保存したattemptを再利用して、その未実行部分だけを続ける。pane_createdではpaneのterminal IDと、別のagentが起動していないことも確認する。`splitting` / `starting` / `submitting` を未実行に戻さない。起動・送信とも、保存されたblocking判断や停止要求を副作用の前に検査する。
 

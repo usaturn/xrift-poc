@@ -295,13 +295,12 @@ class Workflow:
         known.update(d.path for d in self.run.decisions if d.category == "retain" and d.path)
         blocking: dict[str, str] = {}
         handed: set[str] = set()
-        for index, attempt in enumerate(self.run.attempts):
+        for attempt in self.run.attempts:
             if attempt.retry_reason is not None:
-                # retryで同じ工程の次のattemptへ引き継いだ資源。次のattemptが結果を残すまで通す。
-                # その後は、次の子が結果に残した資源として扱う。
-                stage = (attempt.issue, attempt.phase)
-                successor = next((a for a in self.run.attempts[index + 1 :] if (a.issue, a.phase) == stage), None)
-                if attempt.result and (successor is None or successor.result is None):
+                # retryで同じ工程の次の子へ引き継いだ資源。引き継いだ子が結果を残すまで通す。
+                # ackの前にabandonで閉じたattemptは結果を残さないので数えない。
+                # 引き継いだ子が結果を残した後は、その子が結果に残した資源として扱う。
+                if attempt.result and self.run.stage_results(attempt.issue, attempt.phase)[-1].id == attempt.id:
                     handed.update(kept.path for kept in attempt.result.retained)
                 continue
             for kept in attempt.result.retained if attempt.result else []:

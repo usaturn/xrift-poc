@@ -11,15 +11,8 @@ from .models import Attempt, Run
 
 
 def handover(run: Run, attempt: Attempt) -> str:
-    """同じIssue・工程の直前のattemptをretryで閉じていれば、その結果と残した資源を新しい子へ引き継ぐ文。"""
-    previous = next(
-        (
-            a
-            for a in reversed(run.attempts)
-            if a.id != attempt.id and (a.issue, a.phase) == (attempt.issue, attempt.phase)
-        ),
-        None,
-    )
+    """同じIssue・工程で直前に結果を残したattemptをretryで閉じていれば、その結果と残した資源を新しい子へ引き継ぐ文。"""
+    previous = next((a for a in reversed(run.stage_results(attempt.issue, attempt.phase)) if a.id != attempt.id), None)
     if previous is None or previous.retry_reason is None or previous.result is None:
         return ""
     result = previous.result
