@@ -1449,12 +1449,19 @@ dsh 本体と 2 つの plugin の版を変える場合は、3 つの pin
 公開・共有しない。以下は通常の `~/.dsh` を使う場合の手順である。
 Dev Container を使う場合はホストのターミナルで実行する。コンテナ内の HOME 直下に
 置いたバックアップは bind mount の対象ではなく、Rebuild 後に残らない。
+読めないファイルがあるなどで複製に失敗したときは、途中までの複製を消して 0 以外で終わり、
+パスを表示しない。原因を直してから実行し直す。
 
 ```bash
-DSH_BACKUP="$(mktemp -d "$HOME/.dsh-backup-XXXXXX")"
-chmod 700 "$DSH_BACKUP"
-cp -a "$HOME/.dsh" "$DSH_BACKUP/dsh"
-printf 'DSH backup: %s\n' "$DSH_BACKUP"
+DSH_BACKUP="$(
+  set -euo pipefail
+  backup="$(mktemp -d "$HOME/.dsh-backup-XXXXXX")"
+  if ! { chmod 700 "$backup" && cp -a "$HOME/.dsh" "$backup/dsh"; }; then
+    rm -rf -- "${backup:?}"
+    exit 1
+  fi
+  printf '%s\n' "$backup"
+)" && printf 'DSH backup: %s\n' "$DSH_BACKUP"
 ```
 
 Rebuild 後は `dsh --version` と両 profile の `--dump-config` を確認する。
@@ -1499,14 +1506,30 @@ dsh --profile pi-tui --dump-config
 `~/.dsh` は bind mount のため、コンテナ内でディレクトリ自体を移動しない。
 現在の設定も別名で残してから復元し、バックアップ後のセッションや設定が必要なら
 残したコピーから個別に戻す。認証情報を含むバックアップの内容をログへ出さない。
+次の block は、バックアップを HOME の下へ複製し終えてから、現在の `~/.dsh` を退避して
+入れ替える。バックアップや現在の `~/.dsh` が無いときと、複製・退避に失敗したときは、
+途中までの複製を消し、現在の `~/.dsh` をそのまま残して 0 以外で終わる。
+退避した後に入れ替えに失敗したときは、退避した設定の場所をエラー出力に表示して
+0 以外で終わる。
 
 ```bash
 # ホスト側。DSH_BACKUP には先ほど表示されたバックアップの絶対パスを設定する。
-test -d "${DSH_BACKUP:?}/dsh" || exit 1
-DSH_REPLACED="$(mktemp -d "$HOME/.dsh-before-restore-XXXXXX")"
-mv "$HOME/.dsh" "$DSH_REPLACED/dsh" &&
-  cp -a "$DSH_BACKUP/dsh" "$HOME/.dsh"
-printf 'Previous DSH settings: %s\n' "$DSH_REPLACED"
+DSH_REPLACED="$(
+  set -euo pipefail
+  test -d "${DSH_BACKUP:?}/dsh"
+  test -d "$HOME/.dsh"
+  replaced="$(mktemp -d "$HOME/.dsh-before-restore-XXXXXX")"
+  if ! { cp -a "$DSH_BACKUP/dsh" "$replaced/restore" && mv "$HOME/.dsh" "$replaced/dsh"; }; then
+    rm -rf -- "${replaced:?}/restore"
+    rmdir -- "${replaced:?}"
+    exit 1
+  fi
+  if ! mv "$replaced/restore" "$HOME/.dsh"; then
+    printf 'DSH restore failed. Previous DSH settings: %s\n' "$replaced/dsh" >&2
+    exit 1
+  fi
+  printf '%s\n' "$replaced"
+)" && printf 'Previous DSH settings: %s\n' "$DSH_REPLACED"
 ```
 
 ### 検証
@@ -1542,43 +1565,49 @@ dsh --profile web --dump-config | grep -A4 'plugin-package-inventory-deepseek'
 隔離環境の統合確認は次の block を使う。一時ディレクトリに dsh 本体と 2 つの
 plugin を入れ、home patch の雛形を置いて解決後の構成を確認する。現在の
 `~/.dsh/` には触れず、API key は要らず、実セッションも開始しない。
+いずれかのコマンドが失敗したときと、web / pi-tui のどちらかの構成に必要な entry が
+無いときは、block は 0 以外で終わる。
 
 ```bash
 TMP_DSH="$(mktemp -d /tmp/dsh-verify-XXXXXX)"
-mkdir -p "$TMP_DSH/home" "$TMP_DSH/cwd" "$TMP_DSH/tmp"
-dsh_verify() (
-  cd "$TMP_DSH/cwd" || exit 1
-  env -i HOME="$TMP_DSH/home" DSH_HOME="$TMP_DSH/home/.dsh" \
-    TMPDIR="$TMP_DSH/tmp" PATH="$TMP_DSH/prefix/bin:$PATH" \
-    npm_config_cache="$TMP_DSH/npm-cache" "$@"
-)
-dsh_verify npm install -g --prefix "$TMP_DSH/prefix" --no-audit --no-fund \
-  --allow-scripts=@deepseek-ai/dsh-subprocess-local,koffi,node-pty \
-  @deepseek-ai/dsh@0.2.1-rc.2
-dsh_verify dsh --version            # 0.2.1-rc.2
-dsh_verify dsh plugin --profile web add @mars-sea/dsh-commandcode-provider@0.14.2
-dsh_verify dsh plugin --profile pi-tui -- add @xmoon76/dsh-pi-tui@0.5.3
-dsh_verify dsh plugin --profile pi-tui -- add @mars-sea/dsh-commandcode-provider@0.14.2
-cp .devcontainer/dsh-cordis.patch.yml "$TMP_DSH/home/.dsh/cordis.patch.yml"
-dsh_verify dsh --profile web --dump-config > "$TMP_DSH/web-dump.yml"
-dsh_verify dsh --profile pi-tui --dump-config > "$TMP_DSH/dump.yml"
 (
-  for needle in 'id: llm-pi-ai' 'opencode-go' 'id: llm-commandcode' \
-    'apiBase: https://api.commandcode.ai' 'provider: opencode-go'; do
-    if ! grep -qF -- "$needle" "$TMP_DSH/dump.yml"; then
-      printf 'Missing config entry: %s\n' "$needle" >&2
+  set -euo pipefail
+  test -d "${TMP_DSH:?}"
+  mkdir -p "$TMP_DSH/home" "$TMP_DSH/cwd" "$TMP_DSH/tmp"
+  dsh_verify() (
+    cd "$TMP_DSH/cwd"
+    env -i HOME="$TMP_DSH/home" DSH_HOME="$TMP_DSH/home/.dsh" \
+      TMPDIR="$TMP_DSH/tmp" PATH="$TMP_DSH/prefix/bin:$PATH" \
+      npm_config_cache="$TMP_DSH/npm-cache" "$@"
+  )
+  dsh_verify npm install -g --prefix "$TMP_DSH/prefix" --no-audit --no-fund \
+    --allow-scripts=@deepseek-ai/dsh-subprocess-local,koffi,node-pty \
+    @deepseek-ai/dsh@0.2.1-rc.2
+  dsh_verify dsh --version            # 0.2.1-rc.2
+  dsh_verify dsh plugin --profile web add @mars-sea/dsh-commandcode-provider@0.14.2
+  dsh_verify dsh plugin --profile pi-tui -- add @xmoon76/dsh-pi-tui@0.5.3
+  dsh_verify dsh plugin --profile pi-tui -- add @mars-sea/dsh-commandcode-provider@0.14.2
+  cp .devcontainer/dsh-cordis.patch.yml "$TMP_DSH/home/.dsh/cordis.patch.yml"
+  for profile in web pi-tui; do
+    dump="$TMP_DSH/${profile}-dump.yml"
+    dsh_verify dsh --profile "$profile" --dump-config > "$dump"
+    for needle in 'id: llm-pi-ai' 'opencode-go' 'id: llm-commandcode' \
+      'apiBase: https://api.commandcode.ai' 'provider: opencode-go'; do
+      if ! grep -qF -- "$needle" "$dump"; then
+        printf 'Missing %s config entry: %s\n' "$profile" "$needle" >&2
+        exit 1
+      fi
+    done
+    if ! awk '
+      /^- id: plugin-package-inventory-deepseek$/ { inside = 1; next }
+      inside && /^- / { inside = 0 }
+      inside && /^[[:space:]]+enabled: false$/ { found = 1 }
+      END { exit found ? 0 : 1 }
+    ' "$dump"; then
+      printf 'Missing disabled %s config for plugin-package-inventory-deepseek\n' "$profile" >&2
       exit 1
     fi
   done
-  if ! awk '
-    /^- id: plugin-package-inventory-deepseek$/ { inside = 1; next }
-    inside && /^- / { inside = 0 }
-    inside && /^[[:space:]]+enabled: false$/ { found = 1 }
-    END { exit found ? 0 : 1 }
-  ' "$TMP_DSH/dump.yml"; then
-    printf 'Missing disabled config for plugin-package-inventory-deepseek\n' >&2
-    exit 1
-  fi
 )
 ```
 
