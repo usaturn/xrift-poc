@@ -2006,6 +2006,21 @@ def test_staging_walk_returns_leftovers_without_following_links(loop: Any, tmp_p
         assert loop._staging_sessions(review_dir, broken) == []
 
 
+def test_staging_walk_reports_the_directory_of_a_name_it_cannot_print(loop: Any, tmp_path: Path) -> None:
+    # UTF-8 で表せない名前（os.scandir はサロゲートで返す）は JSON の出力に書けず、finish・status・recover の
+    # 出力が UnicodeEncodeError で落ちる。名前の代わりに、それを含むディレクトリを返す
+    review_dir = tmp_path / "review"
+    agent = review_dir / ".staging" / "run-1" / "request-1" / "dsh-ccd"
+    session = agent / "pr-review-900-abcd1234"
+    session.mkdir(parents=True)
+    (agent / os.fsdecode(b"pr-review-900-\xff")).mkdir()
+
+    found = loop._staging_sessions(review_dir, "run-1")
+
+    assert found == [("dsh-ccd", session), ("dsh-ccd", agent)]
+    json.dumps([[name, str(path)] for name, path in found], ensure_ascii=False).encode("utf-8")
+
+
 @pytest.mark.skipif(os.geteuid() == 0, reason="root は権限によらず一覧を読める")
 def test_staging_walk_reports_a_directory_it_cannot_list(loop: Any, tmp_path: Path) -> None:
     # 一覧を読めないディレクトリは、中に残ったものがありうるので、そのディレクトリ自体を返す

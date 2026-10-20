@@ -1738,8 +1738,9 @@ def _staging_sessions(review_dir: Path, run_id: str) -> list[tuple[str | None, P
     """DSH のレビュアーの pr-review が ``.staging/<run_id>/<request>/<agent>/`` に残したものと、その <agent> の名前。
 
     セッションは <agent>/ の直下に作られる（pr-review の pr_review_parent.staging_root）。名前と種類だけを見て、
-    中身は読まず、リンクはたどらない。たどらない項目（<agent>/ の直下の項目と、上の階層のディレクトリでない項目）と、
-    一覧を読めないディレクトリは、中に残ったものがありうるので、そのパスで返す。無いディレクトリと空の
+    中身は読まず、リンクはたどらない。たどらない項目（<agent>/ の直下の項目と、上の階層のディレクトリでない項目）は
+    そのパスで返す。一覧を読めないディレクトリと、UTF-8 で表せない名前（出力の JSON に書けない）の項目を含む
+    ディレクトリは、中に残ったものがありうるので、そのディレクトリのパスで返す。無いディレクトリと空の
     ディレクトリからは何も返さない。<agent> より上の階層のものの名前は None。並びは名前の順。
     """
     found: list[tuple[str | None, Path]] = []
@@ -1753,7 +1754,13 @@ def _staging_sessions(review_dir: Path, run_id: str) -> list[tuple[str | None, P
         except OSError:
             found.append((agent, directory))
             return
+        unprintable = False
         for entry in entries:
+            try:
+                entry.name.encode("utf-8")
+            except UnicodeEncodeError:
+                unprintable = True
+                continue
             try:
                 descend = depth < 2 and entry.is_dir(follow_symlinks=False)
             except OSError:
@@ -1762,6 +1769,8 @@ def _staging_sessions(review_dir: Path, run_id: str) -> list[tuple[str | None, P
                 walk(Path(entry.path), entry.name if depth == 1 else None, depth + 1)
             else:
                 found.append((agent, Path(entry.path)))
+        if unprintable:
+            found.append((agent, directory))
 
     if _RUN_ID.fullmatch(run_id):
         walk(review_dir / ".staging" / run_id, None, 0)
