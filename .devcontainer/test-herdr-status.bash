@@ -123,12 +123,12 @@ test_updater_dry_run() {
     local snap="${TEST_ROOT}/snapshot.json"
     write_focused_snap "$snap" "w1" "$repo"
     out="$(run_updater_dry "$snap")"
-    printf '%s\n' "$out" | rg -q $'w1\tclock\t' || fail "dry-run missing clock: $out"
+    rg -q $'w1\tclock\t' <<<"$out" || fail "dry-run missing clock: $out"
     # 状態行は clean|staged|dirty、ブランチ名は git_name に分離
-    printf '%s\n' "$out" | rg -q $'w1\tgit_clean\tclean' || fail "dry-run missing git_clean text: $out"
-    printf '%s\n' "$out" | rg -q $'w1\tgit_name\tmain' || fail "dry-run missing git_name: $out"
-    printf '%s\n' "$out" | rg -q $'w1\tclear_token\tgit_staged' || fail "dry-run missing clear staged"
-    printf '%s\n' "$out" | rg -q $'w1\tclear_token\tgit_dirty' || fail "dry-run missing clear dirty"
+    rg -q $'w1\tgit_clean\tclean' <<<"$out" || fail "dry-run missing git_clean text: $out"
+    rg -q $'w1\tgit_name\tmain' <<<"$out" || fail "dry-run missing git_name: $out"
+    rg -q $'w1\tclear_token\tgit_staged' <<<"$out" || fail "dry-run missing clear staged"
+    rg -q $'w1\tclear_token\tgit_dirty' <<<"$out" || fail "dry-run missing clear dirty"
 }
 
 test_updater_dry_run_nongit() {
@@ -138,12 +138,12 @@ test_updater_dry_run_nongit() {
     local snap="${TEST_ROOT}/snapshot-nongit.json"
     write_focused_snap "$snap" "w2" "$nongit"
     out="$(run_updater_dry "$snap")"
-    printf '%s\n' "$out" | rg -q $'w2\tclock\t' || fail "nongit dry-run missing clock: $out"
-    printf '%s\n' "$out" | rg -q $'w2\tclear_token\tgit_clean' || fail "nongit missing clear git_clean: $out"
-    printf '%s\n' "$out" | rg -q $'w2\tclear_token\tgit_staged' || fail "nongit missing clear git_staged: $out"
-    printf '%s\n' "$out" | rg -q $'w2\tclear_token\tgit_dirty' || fail "nongit missing clear git_dirty: $out"
-    printf '%s\n' "$out" | rg -q $'w2\tclear_token\tgit_name' || fail "nongit missing clear git_name: $out"
-    printf '%s\n' "$out" | rg -q $'w2\tgit_' && fail "nongit should not set git tokens: $out" || true
+    rg -q $'w2\tclock\t' <<<"$out" || fail "nongit dry-run missing clock: $out"
+    rg -q $'w2\tclear_token\tgit_clean' <<<"$out" || fail "nongit missing clear git_clean: $out"
+    rg -q $'w2\tclear_token\tgit_staged' <<<"$out" || fail "nongit missing clear git_staged: $out"
+    rg -q $'w2\tclear_token\tgit_dirty' <<<"$out" || fail "nongit missing clear git_dirty: $out"
+    rg -q $'w2\tclear_token\tgit_name' <<<"$out" || fail "nongit missing clear git_name: $out"
+    rg -q $'w2\tgit_' <<<"$out" && fail "nongit should not set git tokens: $out" || true
 }
 
 test_updater_dry_run_staged() {
@@ -155,11 +155,11 @@ test_updater_dry_run_staged() {
     local snap="${TEST_ROOT}/snapshot-staged.json"
     write_focused_snap "$snap" "w3" "$repo"
     out="$(run_updater_dry "$snap")"
-    printf '%s\n' "$out" | rg -q $'w3\tgit_staged\tstaged' || fail "staged missing git_staged text: $out"
-    printf '%s\n' "$out" | rg -q $'w3\tgit_name\tmain' || fail "staged missing git_name: $out"
-    printf '%s\n' "$out" | rg -q $'w3\tclear_token\tgit_clean' || fail "staged missing clear clean: $out"
-    printf '%s\n' "$out" | rg -q $'w3\tclear_token\tgit_dirty' || fail "staged missing clear dirty: $out"
-    printf '%s\n' "$out" | rg -q $'w3\tgit_clean\t' && fail "staged should not set git_clean: $out" || true
+    rg -q $'w3\tgit_staged\tstaged' <<<"$out" || fail "staged missing git_staged text: $out"
+    rg -q $'w3\tgit_name\tmain' <<<"$out" || fail "staged missing git_name: $out"
+    rg -q $'w3\tclear_token\tgit_clean' <<<"$out" || fail "staged missing clear clean: $out"
+    rg -q $'w3\tclear_token\tgit_dirty' <<<"$out" || fail "staged missing clear dirty: $out"
+    rg -q $'w3\tgit_clean\t' <<<"$out" && fail "staged should not set git_clean: $out" || true
 }
 
 test_updater_dry_run_dirty() {
@@ -170,11 +170,11 @@ test_updater_dry_run_dirty() {
     local snap="${TEST_ROOT}/snapshot-dirty.json"
     write_focused_snap "$snap" "w4" "$repo"
     out="$(run_updater_dry "$snap")"
-    printf '%s\n' "$out" | rg -q $'w4\tgit_dirty\tdirty' || fail "dirty missing git_dirty text: $out"
-    printf '%s\n' "$out" | rg -q $'w4\tgit_name\tmain' || fail "dirty missing git_name: $out"
-    printf '%s\n' "$out" | rg -q $'w4\tclear_token\tgit_clean' || fail "dirty missing clear clean: $out"
-    printf '%s\n' "$out" | rg -q $'w4\tclear_token\tgit_staged' || fail "dirty missing clear staged: $out"
-    printf '%s\n' "$out" | rg -q $'w4\tgit_clean\t' && fail "dirty should not set git_clean: $out" || true
+    rg -q $'w4\tgit_dirty\tdirty' <<<"$out" || fail "dirty missing git_dirty text: $out"
+    rg -q $'w4\tgit_name\tmain' <<<"$out" || fail "dirty missing git_name: $out"
+    rg -q $'w4\tclear_token\tgit_clean' <<<"$out" || fail "dirty missing clear clean: $out"
+    rg -q $'w4\tclear_token\tgit_staged' <<<"$out" || fail "dirty missing clear staged: $out"
+    rg -q $'w4\tgit_clean\t' <<<"$out" && fail "dirty should not set git_clean: $out" || true
 }
 
 test_shorten_branch_label() {
@@ -187,9 +187,9 @@ test_shorten_branch_label() {
     git -C "$repo" checkout -q -b "feat/herdr-status-datetime-git"
     write_focused_snap "$snap" "w6" "$repo"
     out="$(run_updater_dry "$snap")"
-    printf '%s\n' "$out" | rg -q $'w6\tgit_name\therdr-status-datetime-git' \
+    rg -q $'w6\tgit_name\therdr-status-datetime-git' <<<"$out" \
         || fail "feat/ prefix should be stripped: $out"
-    printf '%s\n' "$out" | rg -q $'w6\tgit_name\tfeat/' \
+    rg -q $'w6\tgit_name\tfeat/' <<<"$out" \
         && fail "feat/ must not remain in git_name: $out" || true
 
     # 強制的に短い上限では …suffix
@@ -197,18 +197,18 @@ test_shorten_branch_label() {
         HERDR_STATUS_BRANCH_MAX_LEN=18 \
         run_updater_dry "$snap"
     )"
-    name_line="$(printf '%s\n' "$out" | rg $'w6\tgit_name\t' | head -1)"
+    name_line="$(rg -m1 $'w6\tgit_name\t' <<<"$out")"
     [ -n "$name_line" ] || fail "long branch missing git_name: $out"
     value="${name_line#*$'\tgit_name\t'}"
     [ "${#value}" -le 18 ] || fail "git_name too long under max 18 (${#value}): '$value'"
-    printf '%s\n' "$value" | rg -q 'datetime-git|status-datetime' \
+    rg -q 'datetime-git|status-datetime' <<<"$value" \
         || fail "git_name lost distinctive suffix: '$value'"
 
     # 短いブランチはそのまま
     git -C "$repo" checkout -q -b "main-short"
     write_focused_snap "$snap" "w6" "$repo"
     out="$(run_updater_dry "$snap")"
-    printf '%s\n' "$out" | rg -q $'w6\tgit_name\tmain-short' \
+    rg -q $'w6\tgit_name\tmain-short' <<<"$out" \
         || fail "short branch should be untruncated: $out"
 }
 
@@ -240,11 +240,11 @@ test_updater_dry_run_cwd_fallback() {
 }
 EOF
     out="$(run_updater_dry "$snap")"
-    printf '%s\n' "$out" | rg -q $'w5\tclock\t' || fail "fallback missing clock: $out"
-    printf '%s\n' "$out" | rg -q $'w5\tgit_clean\tclean' || fail "fallback missing git_clean text: $out"
-    printf '%s\n' "$out" | rg -q $'w5\tgit_name\tmain' || fail "fallback missing git_name: $out"
-    printf '%s\n' "$out" | rg -q $'w5\tclear_token\tgit_staged' || fail "fallback missing clear staged"
-    printf '%s\n' "$out" | rg -q $'w5\tclear_token\tgit_dirty' || fail "fallback missing clear dirty"
+    rg -q $'w5\tclock\t' <<<"$out" || fail "fallback missing clock: $out"
+    rg -q $'w5\tgit_clean\tclean' <<<"$out" || fail "fallback missing git_clean text: $out"
+    rg -q $'w5\tgit_name\tmain' <<<"$out" || fail "fallback missing git_name: $out"
+    rg -q $'w5\tclear_token\tgit_staged' <<<"$out" || fail "fallback missing clear staged"
+    rg -q $'w5\tclear_token\tgit_dirty' <<<"$out" || fail "fallback missing clear dirty"
 }
 
 # Spaces 行のカスタム token（$ で始まるもの）と、updater が投稿・消去する token が一致する。

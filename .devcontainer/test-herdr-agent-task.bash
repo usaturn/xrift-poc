@@ -20,11 +20,11 @@ run_dry() {
 
 test_set_emits_token_and_ttl() {
     out="$(run_dry set "Implement page transition")"
-    printf '%s\n' "$out" | rg -q $'w1:pA\ttoken\ttask\tImplement page transition' \
+    rg -q $'w1:pA\ttoken\ttask\tImplement page transition' <<<"$out" \
         || fail "set missing task token: $out"
-    printf '%s\n' "$out" | rg -q $'w1:pA\tsource\therdr-agent-task' \
+    rg -q $'w1:pA\tsource\therdr-agent-task' <<<"$out" \
         || fail "set missing source: $out"
-    printf '%s\n' "$out" | rg -q $'w1:pA\tttl_ms\t86400000' \
+    rg -q $'w1:pA\tttl_ms\t86400000' <<<"$out" \
         || fail "set missing default ttl: $out"
 }
 
@@ -36,7 +36,7 @@ HERDR_AGENT_STATUSES=(idle working blocked done unknown)
 assert_label_on_every_status() {
     local out="$1" label="$2" status
     for status in "${HERDR_AGENT_STATUSES[@]}"; do
-        printf '%s\n' "$out" | rg -q $'w1:pA\tstate_label\t'"${status}=${label}"'$' \
+        rg -q $'w1:pA\tstate_label\t'"${status}=${label}"'$' <<<"$out" \
             || fail "${label}: missing ${status} key: $out"
     done
 }
@@ -48,15 +48,15 @@ test_state_mapping() {
     assert_label_on_every_status "$(run_dry set "t" --state completed)" "Completed"
 
     out="$(run_dry set "t" --state idle)"
-    printf '%s\n' "$out" | rg -q $'w1:pA\tclear_state_labels' || fail "idle: $out"
-    if printf '%s\n' "$out" | rg -q $'\tstate_label\t'; then
+    rg -q $'w1:pA\tclear_state_labels' <<<"$out" || fail "idle: $out"
+    if rg -q $'\tstate_label\t' <<<"$out"; then
         fail "idle must clear labels instead of setting them: $out"
     fi
 }
 
 test_state_default_is_working() {
     out="$(run_dry set "t")"
-    printf '%s\n' "$out" | rg -q $'w1:pA\tstate_label\tworking=Working' \
+    rg -q $'w1:pA\tstate_label\tworking=Working' <<<"$out" \
         || fail "default state must be working: $out"
 }
 
@@ -76,7 +76,7 @@ test_title_truncation_ascii() {
     local long="0123456789012345678901234567890123456789"   # 40 文字
     out="$(run_dry set "$long")"
     local line value
-    line="$(printf '%s\n' "$out" | rg -m1 $'\ttoken\ttask\t')"
+    line="$(rg -m1 $'\ttoken\ttask\t' <<<"$out")"
     value="${line##*$'\t'}"
     assert_eq "${#value}" "36" "ascii title must be 36 chars"
     case "$value" in
@@ -91,7 +91,7 @@ test_title_truncation_japanese() {
     long="${long}らりるれ"
     out="$(run_dry set "$long")"
     local line value
-    line="$(printf '%s\n' "$out" | rg -m1 $'\ttoken\ttask\t')"
+    line="$(rg -m1 $'\ttoken\ttask\t' <<<"$out")"
     value="${line##*$'\t'}"
     LC_ALL=C.UTF-8 bash -c '[ "${#1}" = "36" ]' _ "$value" \
         || fail "japanese title must be truncated to 36 chars: $value"
@@ -100,9 +100,10 @@ test_title_truncation_japanese() {
 test_title_truncation_under_c_locale() {
     # 素の C ロケールで呼ばれてもバイト数で切らない（ensure_utf8_locale の回帰）
     local long="あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやらりるれ"
-    local line value
-    line="$(LC_ALL=C HERDR_AGENT_TASK_DRY_RUN=1 HERDR_PANE_ID="w1:pA" \
-        "$CLI" set "$long" | rg -m1 $'\ttoken\ttask\t')"
+    local out line value
+    out="$(LC_ALL=C HERDR_AGENT_TASK_DRY_RUN=1 HERDR_PANE_ID="w1:pA" \
+        "$CLI" set "$long")"
+    line="$(rg -m1 $'\ttoken\ttask\t' <<<"$out")"
     value="${line##*$'\t'}"
     LC_ALL=C.UTF-8 bash -c '[ "${#1}" = "36" ]' _ "$value" \
         || fail "C locale でも 36 文字で truncate する必要がある: $value"
@@ -110,26 +111,26 @@ test_title_truncation_under_c_locale() {
 
 test_short_title_is_not_truncated() {
     out="$(run_dry set "short")"
-    printf '%s\n' "$out" | rg -q $'\ttoken\ttask\tshort$' || fail "short title altered: $out"
+    rg -q $'\ttoken\ttask\tshort$' <<<"$out" || fail "short title altered: $out"
 }
 
 test_newline_title_is_flattened() {
     out="$(run_dry set "$(printf 'line1\nline2')")"
     assert_eq "$(printf '%s\n' "$out" | wc -l)" "8" \
         "newline title must not split the TSV record: $out"
-    printf '%s\n' "$out" | rg -q $'w1:pA\ttoken\ttask\tline1 line2$' \
+    rg -q $'w1:pA\ttoken\ttask\tline1 line2$' <<<"$out" \
         || fail "newline must be flattened to a space: $out"
 }
 
 test_tab_title_is_flattened() {
     out="$(run_dry set "$(printf 'colA\tcolB')")"
-    printf '%s\n' "$out" | rg -q $'w1:pA\ttoken\ttask\tcolA colB$' \
+    rg -q $'w1:pA\ttoken\ttask\tcolA colB$' <<<"$out" \
         || fail "tab must be flattened to a space: $out"
 }
 
 test_title_whitespace_is_squeezed_and_trimmed() {
     out="$(run_dry set "  spaced   out  ")"
-    printf '%s\n' "$out" | rg -q $'w1:pA\ttoken\ttask\tspaced out$' \
+    rg -q $'w1:pA\ttoken\ttask\tspaced out$' <<<"$out" \
         || fail "surrounding and repeated whitespace must be squeezed: $out"
 }
 
@@ -175,13 +176,13 @@ test_invalid_ttl_ms_is_error() {
 
 test_clear_emits_clears() {
     out="$(run_dry clear)"
-    printf '%s\n' "$out" | rg -q $'w1:pA\tclear_token\ttask' || fail "clear missing token clear: $out"
-    printf '%s\n' "$out" | rg -q $'w1:pA\tclear_state_labels' || fail "clear missing state clear: $out"
+    rg -q $'w1:pA\tclear_token\ttask' <<<"$out" || fail "clear missing token clear: $out"
+    rg -q $'w1:pA\tclear_state_labels' <<<"$out" || fail "clear missing state clear: $out"
 }
 
 test_explicit_pane_wins() {
     out="$(run_dry set "t" --pane "w9:pZ")"
-    printf '%s\n' "$out" | rg -q $'w9:pZ\ttoken\ttask\tt' || fail "--pane ignored: $out"
+    rg -q $'w9:pZ\ttoken\ttask\tt' <<<"$out" || fail "--pane ignored: $out"
 }
 
 test_missing_pane_id_is_error() {
@@ -212,7 +213,7 @@ test_missing_herdr_binary_is_noop() {
 test_ttl_override() {
     out="$(HERDR_AGENT_TASK_DRY_RUN=1 HERDR_PANE_ID="w1:pA" \
         HERDR_AGENT_TASK_TTL_MS=600000 "$CLI" set "t")"
-    printf '%s\n' "$out" | rg -q $'w1:pA\tttl_ms\t600000' || fail "ttl override ignored: $out"
+    rg -q $'w1:pA\tttl_ms\t600000' <<<"$out" || fail "ttl override ignored: $out"
 }
 
 # herdr.toml の指定した table の rows が参照するカスタム token（$ で始まるもの）を 1 行ずつ出す。
