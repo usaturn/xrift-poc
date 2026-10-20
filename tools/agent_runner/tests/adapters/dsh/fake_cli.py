@@ -174,10 +174,29 @@ def main() -> int:
         reason = {"kind": "error", "error": {"code": "MISSING_CREDENTIAL", "message": "missing"}}
         text = ""
         _write_unanswered_session(state)
-    events: list[dict[str, object]] = [
-        {"type": "session", "sessionId": "fake-observed", "cwd": str(Path.cwd())},
-        {"type": "status", "phase": "turn_start", "turn": 1},
-    ]
+    session_event: dict[str, object] = {"type": "session", "sessionId": "fake-observed", "cwd": str(Path.cwd())}
+    # The provider echoes the attempt's key in a long diagnostic (#96).
+    failure = f"provider rejected the request made with {key} " + "詳細" * 125
+    if mode == "error-event":
+        # A failure outside a turn: an error event, no final, and the same line on stderr.
+        print(json.dumps(session_event), flush=True)
+        print(json.dumps({"type": "error", "message": failure}, ensure_ascii=False), flush=True)
+        print(f"dsh: {failure}", file=sys.stderr)
+        return 1
+    if mode == "cut":
+        # The stream stops inside a step, as when the process dies mid-call.
+        for event in (
+            session_event,
+            {"type": "status", "phase": "turn_start", "turn": 1},
+            {"type": "status", "phase": "step_start", "turn": 1, "step": 1},
+            {"type": "tool_call", "callId": "call", "tool": "read", "input": {"path": "README.md"}},
+        ):
+            print(json.dumps(event), flush=True)
+        return 1
+    if mode == "turn-error":
+        reason = {"kind": "error", "error": {"code": "PROVIDER_ERROR", "message": failure, "status": 503}}
+        text = ""
+    events: list[dict[str, object]] = [session_event, {"type": "status", "phase": "turn_start", "turn": 1}]
     if mode == "approval":
         events.append({"type": "tool_result", "callId": "call", "status": "error", "result": "APPROVAL_REQUIRED"})
     events.extend(
@@ -190,7 +209,7 @@ def main() -> int:
         print(json.dumps(event, ensure_ascii=False), flush=True)
     if mode == "malformed":
         print("broken {")
-    return 1 if mode in {"auth", "nonzero"} else 0
+    return 1 if mode in {"auth", "nonzero", "turn-error"} else 0
 
 
 if __name__ == "__main__":

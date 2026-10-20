@@ -524,3 +524,100 @@ def test_documented_truncated_tool_input_and_reasoning_are_accepted(context: Ada
         },
     ]
     assert _status(context, events) == "success"
+
+
+def _step(phase: str, usage: dict[str, int] | None = None) -> dict[str, Any]:
+    event: dict[str, Any] = {"type": "status", "phase": phase, "turn": 1, "step": 1}
+    if usage is not None:
+        event["usage"] = usage
+    return event
+
+
+def _stream_with_a_step() -> list[dict[str, Any]]:
+    events = _stream()
+    events[2:2] = [
+        _step("step_start"),
+        {"type": "tool_call", "callId": "call", "tool": "read", "input": {"path": "README.md"}},
+        {"type": "tool_result", "callId": "call", "status": "completed", "result": "# fixture"},
+        _step("step_end", {"inputTokens": 1234, "outputTokens": 56}),
+    ]
+    return events
+
+
+_PROVIDER_FAILURE = {"code": "PROVIDER_ERROR", "message": "upstream 503", "status": 503}
+_CUT_IN_A_STEP: list[dict[str, Any]] = [
+    *_stream()[:2],
+    _step("step_start"),
+    {"type": "tool_call", "callId": "call", "tool": "read", "input": {}},
+]
+# (stdout events, expected diagnosis fields) for each way a DSH stream can end.
+_STREAM_ENDINGS: list[tuple[list[object], dict[str, object]]] = [
+    (
+        [*_stream_with_a_step()],
+        {"ending": "completed", "steps": 1, "tool_calls": 1, "last_input_tokens": 1234, "last_event": "final"},
+    ),
+    (
+        [_stream()[0], {"type": "error", "message": "接続が切れた\n詳細"}],
+        {"ending": "error_event", "message": "接続が切れた\n詳細", "code": None, "steps": 0, "last_event": "error"},
+    ),
+    (
+        [*_stream("", {"kind": "error", "error": _PROVIDER_FAILURE})],
+        {"ending": "turn_end", "reason": "error", "code": "PROVIDER_ERROR", "status": 503, "message": "upstream 503"},
+    ),
+    (
+        [*_stream("", {"kind": "aborted", "reason": {"kind": "user"}})],
+        {"ending": "turn_end", "reason": "aborted", "code": None, "message": None},
+    ),
+    ([*_stream('{"ok":true}', {"kind": "max-tokens"})], {"ending": "turn_end", "reason": "max-tokens"}),
+    (
+        [*_CUT_IN_A_STEP],
+        {"ending": "incomplete", "steps": 1, "tool_calls": 1, "last_input_tokens": None, "last_event": "tool_call"},
+    ),
+    ([*_stream(), "broken {\n"], {"ending": "unreadable", "last_event": "final"}),
+    ([], {"ending": "incomplete", "steps": 0, "last_event": None}),
+]
+
+
+@pytest.mark.parametrize("events,expected", _STREAM_ENDINGS)
+def test_diagnosis_summarizes_how_the_stream_ended(
+    context: AdapterContext, events: list[object], expected: dict[str, object]
+) -> None:
+    outcome = _collect(context, events)
+    assert outcome.diagnosis is not None
+    assert {key: getattr(outcome.diagnosis, key) for key in expected} == expected
+
+
+def test_diagnosis_never_copies_bodies(context: AdapterContext) -> None:
+    context.role.result_shape = "text"
+    events = _stream("final-body")
+    events[2:2] = [
+        {"type": "thinking", "text": "thinking-body"},
+        {"type": "text", "text": "text-body"},
+        {"type": "tool_call", "callId": "call", "tool": "read", "input": {"path": "input-body"}},
+        {"type": "tool_result", "callId": "call", "status": "error", "result": "result-body"},
+    ]
+    outcome = _collect(context, events, "dsh: MISSING_CREDENTIAL: stderr-body\n")
+    assert outcome.diagnosis is not None
+    dumped = outcome.diagnosis.model_dump_json()
+    for marker in ("final-body", "thinking-body", "text-body", "input-body", "result-body", "stderr-body"):
+        assert marker not in dumped
+    assert (outcome.diagnosis.stderr_authentication, outcome.diagnosis.stderr_approval) == (True, False)
+
+
+def test_diagnosis_reads_the_last_complete_session_record(context: AdapterContext) -> None:
+    state = context.receipt_path.parent / "dsh" / "state"
+    path = write_session(state, context.work_dir, session_id="observed-session")
+    with path.open("a") as stream:
+        stream.write('{"type": "tool/call", "seq": 2, "time": 9')  # a stopped writer's unfinished tail
+    outcome = _collect(context, _stream())
+    assert outcome.diagnosis is not None
+    assert (outcome.diagnosis.last_record, outcome.diagnosis.last_record_at) == (
+        "assistant/message",
+        "1970-01-01T00:00:00.002Z",
+    )
+
+
+def test_diagnosis_without_a_session_record(context: AdapterContext) -> None:
+    outcome = _collect(context, _stream())
+    assert outcome.diagnosis is not None
+    assert (outcome.diagnosis.last_record, outcome.diagnosis.last_record_at) == (None, None)

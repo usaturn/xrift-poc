@@ -351,3 +351,32 @@ def test_unconfirmed_stop_reports_runtime_root(
     # Without stop evidence a live writer may still use HOME and TMPDIR; neither is removed nor read.
     assert (root / "home").is_dir()
     assert (root / "tmp" / "live-link").is_symlink()
+
+
+@pytest.mark.parametrize(
+    "mode,expected",
+    [
+        ("success", {"ending": "completed", "steps": 0, "tool_calls": 0, "last_event": "final"}),
+        ("error-event", {"ending": "error_event", "code": None, "steps": 0, "last_event": "error"}),
+        (
+            "turn-error",
+            {"ending": "turn_end", "reason": "error", "code": "PROVIDER_ERROR", "status": 503, "last_event": "final"},
+        ),
+        ("cut", {"ending": "incomplete", "steps": 1, "tool_calls": 1, "message": None, "last_event": "tool_call"}),
+    ],
+)
+def test_runner_failure_diagnosis_from_the_fake_cli(
+    config: Config, repository: Path, tmp_path: Path, mode: str, expected: dict[str, object]
+) -> None:
+    config.agents["a"].command[-1] = mode
+    result = run_workflow(config, "test", "respond", repository, output_dir=tmp_path / "run")
+    attempt = result.results[0].attempts[0]
+    assert attempt.state == ("success" if mode == "success" else "response_failed")
+    assert attempt.diagnosis is not None
+    assert {key: getattr(attempt.diagnosis, key) for key in expected} == expected
+    assert "private-test-credential" not in attempt.diagnosis.model_dump_json()
+    if mode in {"error-event", "turn-error"}:
+        # The provider echoed the attempt's key: only the redacted head of the message is kept.
+        message = attempt.diagnosis.message
+        assert message is not None and "[REDACTED]" in message and len(message) == 200
+        assert attempt.diagnosis.stderr_authentication is False

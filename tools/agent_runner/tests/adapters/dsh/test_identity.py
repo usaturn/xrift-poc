@@ -94,3 +94,36 @@ def test_rejects_route_change_after_last_response(tmp_path: Path, live: bool, fi
     # match pins the rejecting branch; a ValueError from another check (seq, binding) must not pass here.
     with pytest.raises(ValueError, match="route changed without an observed response"):
         dsh_identity.read_session_identity(home, cwd, "session-test", live=live)
+
+
+def test_session_tail_is_the_last_complete_record_before_a_broken_line(tmp_path: Path) -> None:
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    path = write_session(tmp_path / "state", cwd)
+    with path.open("a") as stream:
+        stream.write(json.dumps({"type": "tool/call", "seq": 2, "time": 1760000000123}) + "\n")
+        stream.write("broken {\n")
+        stream.write(json.dumps({"type": "turn/end", "seq": 3, "time": 1760000000999}) + "\n")
+    assert dsh_identity.read_session_tail(tmp_path / "state", cwd, "session-test") == (
+        "tool/call",
+        "2025-10-09T08:53:20.123Z",
+    )
+
+
+@pytest.mark.parametrize("case", ["cwd", "symlink", "missing"])
+def test_session_tail_of_an_unbound_log_is_none(tmp_path: Path, case: str) -> None:
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    home = tmp_path / "state"
+    path = write_session(home, cwd)
+    if case == "cwd":
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        rows[0]["cwd"] = str(tmp_path)
+        path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    elif case == "symlink":
+        target = tmp_path / "foreign.jsonl"
+        path.rename(target)
+        path.symlink_to(target)
+    else:
+        path.unlink()
+    assert dsh_identity.read_session_tail(home, cwd, "session-test") is None
