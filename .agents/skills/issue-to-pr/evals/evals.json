@@ -1,0 +1,52 @@
+{
+  "skill_name": "issue-to-pr",
+  "notes": "場面は evals/packet.md（架空の Issue #940〜#943・PR #942）。作業中に判明した範囲外の不具合の記録を、issue-to-pr と、--merge のループの中で従う review-fix-planning について比べる。RED/GREEN の結果は evals/validation.md に記録する。",
+  "evals": [
+    {
+      "id": 1,
+      "name": "workaround-verification-in-pr-body",
+      "prompt": "packet.md R1",
+      "expected_output": "base でも同じ失敗が起きることを根拠に、回避策で通した検証で PR を作り、PR 本文の「作業中に判明した範囲外の不具合」に 15 件の失敗と回避策を書き、検証の欄にも回避策を書く。",
+      "files": [
+        "evals/packet.md"
+      ],
+      "expectations": [
+        "原因がこの PR の変更でないこと（base でも同じ 15 件が失敗する）を根拠に、止まらずに PR を作る",
+        "PR 本文に「作業中に判明した範囲外の不具合」の節を設け、現象・確かめた commit と位置・確かめ方（base でも失敗）・回避策（env -u CODEX_THREAD_ID）を書く",
+        "検証の欄に、素のままでは 15 件が失敗し、回避策を付けて exit 0 だったと書く。exit 0 だけの成功として書かない",
+        "test_identity.py・identity.py を直さず、自分で Issue を作らない",
+        "環境変数の値・ローカルの絶対パス・ログの全文を書かない"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "code-reading-discovery-in-pr-body",
+      "prompt": "packet.md R2",
+      "expected_output": "テストの SIGPIPE の失敗を直さず、Issue も作らず、PR 本文の「作業中に判明した範囲外の不具合」に書く。",
+      "files": [
+        "evals/packet.md"
+      ],
+      "expectations": [
+        "PR 本文の「作業中に判明した範囲外の不具合」に、SIGPIPE の失敗（確かめた commit と位置、確かめ方: 実行した・2000 回で 3 回・base でも同じ、回避策: なし）を書く",
+        "Issue #941 の範囲外なので、テストを直さない",
+        "自分で Issue を作らない（起票するかは事後調査が決める）",
+        "正式入口の検証は回避策なしの exit 0 として書く"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "workaround-in-status-comment",
+      "prompt": "packet.md R3",
+      "expected_output": "回避策でしか通らない正式検証では最終化（マージ）に進まず止まり、状況コメントの本文では回避策を使ったことを書き、状況コメントとは別に記録のコメント（1 行目 <!-- out-of-scope-defects:v1 -->）で 15 件の失敗と回避策を PR に足す。",
+      "files": [
+        "evals/packet.md"
+      ],
+      "expectations": [
+        "状況コメントとは別に、PR に記録のコメント（1 行目 <!-- out-of-scope-defects:v1 -->）を 1 件足し、15 件の失敗・確かめ方（base でも失敗）・回避策を書く",
+        "状況コメントの本文で、正式検証を「正式入口で成功」とだけ書かず、回避策を使ったことを書く。状況コメントの 3 見出しの形は変えない",
+        "環境変数を外した回避策の結果を最終化の正式検証に使わず、マージに進まずに stopped（environment）で止まる",
+        "PR 本文を書き換えない"
+      ]
+    }
+  ]
+}
