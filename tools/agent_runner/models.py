@@ -208,10 +208,39 @@ class Identity(StrictModel):
     skill_versions: dict[str, str] = Field(default_factory=dict)
 
 
+DiagnosisEnding = Literal["completed", "error_event", "turn_end", "incomplete", "unreadable"]
+NonNegativeInt = Annotated[int, Field(ge=0)]
+# The runner cuts every Diagnosis string to this many characters after redaction (#96).
+DIAGNOSIS_TEXT_CHARS = 200
+
+
+class Diagnosis(StrictModel):
+    """How an attempt ended, for failures nobody watched (#96).
+
+    Counts, fixed labels and the provider's code/status/message head only: never
+    answer text, tool input or results, stdout/stderr bodies or environment values.
+    """
+
+    ending: DiagnosisEnding
+    reason: str | None = None
+    code: str | None = None
+    status: int | None = None
+    message: str | None = None
+    steps: NonNegativeInt = 0
+    tool_calls: NonNegativeInt = 0
+    last_event: str | None = None
+    last_input_tokens: NonNegativeInt | None = None
+    last_record: str | None = None
+    last_record_at: str | None = None
+    stderr_authentication: bool = False
+    stderr_approval: bool = False
+
+
 class Attempt(StrictModel):
     agent_id: Identifier
     state: State
     identity: Identity = Field(default_factory=Identity)
+    diagnosis: Diagnosis | None = None
     exit_code: int | None = None
     elapsed_seconds: ElapsedSeconds
     stop_confirmed: bool

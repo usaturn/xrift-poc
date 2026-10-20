@@ -20,7 +20,18 @@ import pytest
 from tools.agent_runner import environ, runner, workspace
 from tools.agent_runner.adapters import AdapterContext, AdapterOutcome, Capabilities, LaunchSpec
 from tools.agent_runner.config import ConfigError
-from tools.agent_runner.models import Agent, Assignment, Config, Identity, Receipt, Role, Runtime, State, Workflow
+from tools.agent_runner.models import (
+    Agent,
+    Assignment,
+    Config,
+    Diagnosis,
+    Identity,
+    Receipt,
+    Role,
+    Runtime,
+    State,
+    Workflow,
+)
 from tools.agent_runner.process import ProcessResult
 from tools.agent_runner.runner import RunnerError, run_workflow
 from tools.agent_runner.tests.test_process import alive
@@ -73,11 +84,13 @@ class FakeAdapter:
         env: dict[str, str] | None = None,
         outcome_state: State | None = None,
         identity: Identity | None = None,
+        diagnosis: Diagnosis | None = None,
     ) -> None:
         self.options = options or {}
         self.env = env or {}
         self.outcome_state: State | None = outcome_state
         self.identity = identity or Identity()
+        self.diagnosis = diagnosis
 
     def prepare(self, context: AdapterContext) -> LaunchSpec:
         return LaunchSpec(
@@ -97,7 +110,7 @@ class FakeAdapter:
         receipt = (
             Receipt.model_validate_json(context.receipt_path.read_bytes()) if context.receipt_path.exists() else None
         )
-        return AdapterOutcome(receipt, self.identity, self.outcome_state)
+        return AdapterOutcome(receipt, self.identity, self.outcome_state, self.diagnosis)
 
 
 @contextlib.contextmanager
@@ -658,6 +671,45 @@ def test_only_allowlisted_environment_and_redacted_results(
     )
     payload = cast(dict[str, object], environment.results[0].attempts[0].payload)
     assert payload["depth"] == "1" and payload["ambient"] is None and payload["git"] is None
+
+
+def test_diagnosis_is_redacted_before_it_is_cut(repository: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SERVICE_TOKEN", "token-value")
+    message = "x" * 195 + "token-value の後\n2 行目"
+    fake = FakeAdapter(
+        {"a": {"exit": 1}},
+        diagnosis=Diagnosis(
+            ending="turn_end", reason="error", code="token-value", status=503, message=message, steps=2
+        ),
+    )
+    batch = run_workflow(configuration(), "audit", "prompt", repository, adapter_loader=lambda _: fake)
+    attempt = batch.results[0].attempts[0]
+    assert attempt.state == "response_failed"
+    assert attempt.diagnosis is not None
+    # Cutting before redaction would keep "token", the head of the secret, at the boundary.
+    assert attempt.diagnosis.message == "x" * 195 + "[REDA"
+    assert (attempt.diagnosis.code, attempt.diagnosis.status, attempt.diagnosis.steps) == ("[REDACTED]", 503, 2)
+    assert "token-value" not in attempt.diagnosis.model_dump_json()
+
+
+class RaisingCollectAdapter(FakeAdapter):
+    def collect(self, context: AdapterContext, stdout_path: Path, stderr_path: Path) -> AdapterOutcome:
+        raise ValueError("collector failure")
+
+
+def test_attempts_without_an_adapter_diagnosis_have_none(repository: Path) -> None:
+    failing = run_workflow(
+        configuration(),
+        "audit",
+        "prompt",
+        repository,
+        adapter_loader=lambda _: RaisingCollectAdapter(diagnosis=Diagnosis(ending="completed")),
+    )
+    assert failing.results[0].state == "invalid_result"
+    assert failing.results[0].attempts[0].diagnosis is None
+    plain = run_workflow(configuration(), "audit", "prompt", repository, adapter_loader=lambda _: FakeAdapter())
+    assert plain.results[0].state == "success"
+    assert plain.results[0].attempts[0].diagnosis is None
 
 
 def test_invalid_direct_config_is_rejected_before_execution(repository: Path) -> None:
