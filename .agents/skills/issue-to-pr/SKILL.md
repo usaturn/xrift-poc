@@ -121,7 +121,7 @@ herdr-agent-task set "Issue #$NUMBER 実装・PR作成"
    | `self` が true で、同じファイルの逐次変更、1–2 Task、委譲不可 | `superpowers:executing-plans` |
 
    Pi の `/sp-implement` は直列実行、`/sp-implement-parallel` は依存を満たした独立 Task を別 worktree で並列実行する入口。SDD なら常に parallel という対応ではない。同じファイルを同時に書かせない。run 中は選んだスキルで続け、コマンド再入力待ちにしない。
-5. 選んだスキルの実装・TDD・レビューに従う。スキルを作る場合は `superpowers:writing-skills` の無し/ありの振る舞い比較を行う。固定文言の検査テストで代用しない。検証の失敗は `systematic-debugging` で調べ、解消できなければ停止する。実装・検証の途中で範囲外の不具合（runner の担当が `result.concerns` で返したものを含む）が判明したら、`.agents/out-of-scope-defects.md` に従い、この run では直さずに ledger に書き、PR 本文に載せる。回避策で検証を通して続けてよい条件も同じ文書に従う。テストの要否は AGENTS.md の「テストの採用基準」で判断し、守る挙動が無い変更に文言の照合テストを追加しない。
+5. 選んだスキルの実装・TDD・レビューに従う。スキルを作る場合は `superpowers:writing-skills` の無し/ありの振る舞い比較を行う。固定文言の検査テストで代用しない。検証の失敗は `systematic-debugging` で調べ、解消できなければ停止する。実装・検証の途中で範囲外の不具合（runner の担当が `result.concerns` で返したものを含む）が判明したら、`.agents/out-of-scope-defects.md` に従い、この run では直さずに ledger に書き、PR 本文に載せる。回避策で検証を通して続けてよい条件も同じ文書に従う。テストの要否は AGENTS.md の「テストの採用基準」で判断し、守る挙動が無い変更に文言の照合テストを追加しない。executing-plans・subagent-driven-development の作業領域（ledger・brief・review の差分）は、AGENTS.md の「コミットしないファイルの置き場所」に従い、`.agents/sdd-workspace.md` の手順で feature worktree の外に置く。
 
 6. **`--merge` のときは、実装スキルの最終の全体レビュー（全 Task 後のブランチ全体レビュー）だけをループの 1 サイクル目で代える。**Task ごとのレビューは残す。最終レビューへ回す予定の minor（ledger の `deferred`）は PR 本文に一覧で書く。`--merge` が無ければ最終全体レビューを省かない。
 
