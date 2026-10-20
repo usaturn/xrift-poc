@@ -18,6 +18,10 @@ from pathlib import Path
 
 import pytest
 
+# Codex の中でもモデルを固定したテストが通るように、実行環境の CODEX_THREAD_ID を外す（#81）。
+pytest_plugins = ("tools.test_support.plugin",)
+pytestmark = pytest.mark.usefixtures("outside_codex")
+
 ROOT = Path(__file__).resolve().parents[3]
 CLEANUP_SCRIPT = ROOT / ".devcontainer/cleanup-workspace.bash"
 ZSHRC = ROOT / ".devcontainer/zshrc.txt"

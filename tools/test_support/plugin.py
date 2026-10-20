@@ -59,3 +59,22 @@ def outside_runner(monkeypatch: pytest.MonkeyPatch) -> None:
     テストの中で ``AGENT_RUNNER_DEPTH`` を設定し直すので、この fixture を使うモジュールでも通る。
     """
     monkeypatch.delenv("AGENT_RUNNER_DEPTH", raising=False)
+
+
+@pytest.fixture
+def outside_codex(monkeypatch: pytest.MonkeyPatch) -> None:
+    """テストの中だけ ``CODEX_THREAD_ID`` を外し、Codex の中でもモデルを固定したテストを実行できるようにする。
+
+    Codex はツールの実行に ``CODEX_THREAD_ID`` を付ける。pr-review の helper はこれがあると、
+    その thread の rollout から実行中のモデルを読み、引数のモデルと照合する。モデルを固定したテストは、
+    Codex の中では固定値と違うモデルで ``explicit model does not match Codex runtime model`` になる（#81）。
+
+    モデルを固定するテストの module が、モジュール単位で明示して使う::
+
+        pytest_plugins = ("tools.test_support.plugin",)
+        pytestmark = pytest.mark.usefixtures("outside_codex")
+
+    Codex の中でモデルを読む挙動を確かめるテストは、テストの中で一時の ``CODEX_HOME`` と rollout を作り、
+    ``CODEX_THREAD_ID`` を設定し直すので、この fixture を使うモジュールでも通る。
+    """
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
