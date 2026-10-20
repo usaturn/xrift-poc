@@ -12,6 +12,8 @@ from typing import Any
 
 import pytest
 
+from tools.test_support.worktree_race import plant_racer
+
 # Codex の中でもモデルを固定したテストが通るように、実行環境の CODEX_THREAD_ID を外す（#81）。
 pytest_plugins = ("tools.test_support.plugin",)
 pytestmark = pytest.mark.usefixtures("outside_codex")
@@ -2374,20 +2376,6 @@ def test_parser_accepts_pinned_commit_and_source_root() -> None:
 
 
 # --- Issue #68: 同じリポジトリへの並行した git worktree add の commondir の競合 --------------------------------------
-
-
-def plant_racer(repo: Path) -> Path:
-    """並行した git worktree add が書きかけの登録（空の commondir）を置き、その commondir を返す。
-
-    書き終えるまで、このリポジトリの git worktree add は登録の一覧を読むところで、何も作らずに止まる。
-    """
-    admin = repo / ".git" / "worktrees" / "racer"
-    admin.mkdir(parents=True)
-    (admin / "gitdir").write_text(f"{repo.parent / 'racer' / '.git'}\n", encoding="utf-8")
-    (admin / "HEAD").write_text(git(repo, "rev-parse", "HEAD") + "\n", encoding="utf-8")
-    commondir = admin / "commondir"
-    commondir.write_bytes(b"")
-    return commondir
 
 
 def replace_wait(monkeypatch: pytest.MonkeyPatch, action: Any = lambda: None) -> list[float]:

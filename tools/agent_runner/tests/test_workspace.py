@@ -25,6 +25,7 @@ from tools.agent_runner.workspace import (
     resolve_revision,
     snapshot_checkouts,
 )
+from tools.test_support.worktree_race import plant_racer
 
 
 def git(repository: Path, *args: str) -> str:
@@ -529,21 +530,6 @@ def test_git_common_dir_of_a_non_repository_is_a_workspace_error(tmp_path: Path)
         workspace.git_common_dir(plain)
 
 
-def plant_racer(repository: Path, name: str = "racer") -> Path:
-    """Register a worktree whose commondir is still empty, as a concurrent `git worktree add` leaves it mid-write.
-
-    Until it is written, any `git worktree add` in the repository dies listing the worktrees,
-    before creating anything (#68). Returns the commondir to write.
-    """
-    admin = repository / ".git" / "worktrees" / name
-    admin.mkdir(parents=True)
-    (admin / "gitdir").write_text(f"{repository.parent / name / '.git'}\n")
-    (admin / "HEAD").write_text(git(repository, "rev-parse", "HEAD") + "\n")
-    commondir = admin / "commondir"
-    commondir.write_bytes(b"")
-    return commondir
-
-
 def replace_pause(
     monkeypatch: pytest.MonkeyPatch, action: Callable[[threading.Event], object] = lambda _: None
 ) -> list[float]:
@@ -654,6 +640,7 @@ def test_preparation_never_retries_an_unconfirmed_stop(
     assert (result.exit_code, result.stop_confirmed) == (128, False)
     assert pauses == []
     assert retained_logs(tmp_path) == []
+    assert "commondir: " in (tmp_path / "worktree.stderr.log").read_text()
     assert not destination.exists()
 
 
