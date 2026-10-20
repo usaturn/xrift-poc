@@ -121,12 +121,13 @@ nested_invocation / invalid_config。原文・値・Git 診断は返さない。
   シェルは使用しない。env は明示的な追加だけ。
   入れ子防止の AGENT_RUNNER_DEPTH=1 と Git routing の除外は runner が強制する。
 
-``AdapterOutcome(receipt=None, identity=Identity(), state=None)``
+``AdapterOutcome(receipt=None, identity=Identity(), state=None, diagnosis=None)``
   collect は CLI イベント・終了情報を解釈し、receipt と実測の identity を返す。
   receipt ファイルを使わず、CLI 出力から抽出した Receipt を返すことも可能。
   状態だけの success は受け入れない。
   認証・承認待ちを state として返せるため、receipt が無い失敗も分類できる。
   receipt ファイルがある場合は、その内容も runner が独立に検証する。
+  diagnosis は試行の終わり方の要約（「診断の要約」の節）。返せない adapter は null のままでよい。
 
 ``Identity``
   model / provider / effort / session_id / cli_version は実測値または null。
@@ -186,8 +187,10 @@ Result
   attempts には明示 fallback を含む実際の起動順が残る。
 
 Attempt
-  agent_id / state / identity / exit_code / elapsed_seconds / stop_confirmed /
+  agent_id / state / identity / diagnosis / exit_code / elapsed_seconds / stop_confirmed /
   work_dir / stdout_path / stderr_path / request_path / sensitive_paths / payload。
+  diagnosis は collect が返した診断の要約（「診断の要約」の節）。collect が例外を出した試行、停止未確認の試行、
+  起動の前に終わった試行、診断を返さない adapter の試行では null。
   sensitive_paths は、停止未確認または安全な redact ができず、秘密が残る可能性のある
   receipt やランタイムの既知保持物（Devin の ``export.json`` など）のパス。
   プロセス作成前の unsupported などでは path が null の場合がある。
@@ -197,6 +200,47 @@ awaiting_authentication / awaiting_approval / response_failed / missing_result /
 invalid_result / timed_out / interrupted。
 ``stop_confirmed = false`` は停止未確認を示す。成功にせず、fallback も開始しない。
 ログ・worktree は残し、パスを報告する。
+
+診断の要約
+----------
+
+``Diagnosis`` は、誰も見ていなかった失敗の原因の型（認証・接続、provider の一時的なエラー、context の上限、
+長い作業に固有の問題）を、後から記録だけで見分けるための要約である（#96）。数・固定の語・provider の code と
+HTTP status・伏せ字の後の message の先頭だけを持ち、回答の本文・ツールの入力と結果・stdout/stderr の本文・
+環境の値は持たない。成功した試行にも付く（adapter は runner の最終の state を知らない）。
+
+.. list-table::
+   :header-rows: 1
+
+   * - キー
+     - 値
+   * - ending
+     - completed（ターンが completed で終わり、最後まで出た）/ error_event（エラーのイベント）/
+       turn_end（completed 以外のターンの終わり方）/ incomplete（イベント列が最後まで出なかった）/
+       unreadable（読めない行があった）
+   * - reason
+     - turn_end のときの理由の種類（error / aborted / max-tokens など）。ほかは null
+   * - code / status / message
+     - provider の失敗の code（文字列）、HTTP status（整数）、message の先頭。取れなければ null
+   * - steps / tool_calls
+     - 始まったステップの数とツールの呼び出しの数
+   * - last_event
+     - 最後のイベントの種類
+   * - last_input_tokens
+     - 最後に終わったステップの入力 token の数（context の大きさ）。取れなければ null
+   * - last_record / last_record_at
+     - ランタイムの記録の最後の記録の種類と時刻（UTC）。取れなければ null
+   * - stderr_authentication / stderr_approval
+     - stderr が認証・承認の語に当たったか。本文は持たない
+
+runner はバッチの終わりに、identity・payload と同じ秘密の値で diagnosis を伏せ字にし、その後で文字列の値を
+すべて先頭 200 文字（``tools.agent_runner.models.DIAGNOSIS_TEXT_CHARS``）に切る。切ってから伏せ字にすると、
+境界で切れた秘密の先頭が残りうるのでこの順にする。stdout/stderr は実行中にも伏せ字にされている。
+
+dsh の adapter は、stdout のイベント列（``error`` イベント、``status`` の ``step_start`` / ``step_end`` の
+``usage.inputTokens`` / ``turn_end`` の ``reason``（``LlmFailure`` の code / message / status））と、
+試行のセッションの記録（``session.v4.jsonl``）の最後の完全な記録の type と time から作る。判定（state）は
+診断と独立で、診断を作れなければ null にして判定はそのまま返す。ほかの adapter は今は null を返す。
 
 期限と保持
 ----------

@@ -6,7 +6,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from tools.agent_runner.models import Agent, Identity, Receipt, Request, Role, State
+from tools.agent_runner.models import Agent, Diagnosis, Identity, Receipt, Request, Role, State
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +41,7 @@ class AdapterOutcome:
     receipt: Receipt | None = None
     identity: Identity = field(default_factory=Identity)
     state: State | None = None
+    diagnosis: Diagnosis | None = None
 
 
 @runtime_checkable

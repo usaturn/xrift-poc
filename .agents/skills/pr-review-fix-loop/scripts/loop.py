@@ -27,7 +27,7 @@ import sys
 import tempfile
 import threading
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
@@ -40,12 +40,15 @@ sys.path.insert(0, str(ROOT))
 
 from tools.agent_runner import (  # noqa: E402
     Assignment,
+    Attempt,
     BatchResult,
     Config,
     ConfigError,
     Request,
     Result,
+    Role,
     RunnerError,
+    Workflow,
     load_config,
     read_only_assignments,
     resolve_config_path,
@@ -67,6 +70,17 @@ MAX_CYCLES_LIMIT = 10
 TMP_PREFIX = "xrift-poc-pr-loop-"
 # start が現在の Herdr ペインの名前を変えるときの herdr の期限（秒）。応答が無くても start を待たせ続けない
 HERDR_TIMEOUT_SECONDS: float = 10
+# runner の段階で失敗したレビュアーに、同じ担当で 1 回だけ行う短い確認（#96）。レビューではない。
+# 役割と workflow は helper がレビューの設定の写しに足す（雛形・個人設定のファイルは変えない）
+PROBE_ROLE = PROBE_WORKFLOW = "probe"
+PROBE_DEADLINE_SECONDS: float = 300
+PROBE_PROMPT = (
+    "これは PR 修正ループの短い確認で、レビューではない。次のことだけを行う。\n"
+    "1. 起動した cwd（runner の worktree）の README.md を読み、1 行目を取り出す。\n"
+    '2. {"probe": "ok", "first_line": "<README.md の 1 行目>"} の形の JSON object を 1 つだけ返す。'
+    "説明文を付けない（```json のコードフェンスで囲んでもよい）。\n"
+    "ほかのファイルを読まない。ファイルを変更しない。別のエージェントを起動しない。\n"
+)
 _HISTORY_ROW = re.compile(
     r"^\|[^|\n]*\|\s*`?(?P<head>[0-9a-f]{12})`?\s*\|\s*(?:Initial|Update)\s*\|\s*$", re.MULTILINE
 )
@@ -169,7 +183,8 @@ class Options(StrictModel):
 
 class Resource(StrictModel):
     path: str
-    kind: Literal["runner_output"] = "runner_output"
+    # runner_output はレビュー（1 回目か再実行）、probe_output は短い確認の runner の出力
+    kind: Literal["runner_output", "probe_output"] = "runner_output"
     cycle: int
     state: Literal["created", "removed", "retained"]
     reason: str | None = None
@@ -216,6 +231,33 @@ class RunRecord(StrictModel):
 RejectedStage = Literal["runner", "payload", "binding", "head", "artifacts"]
 
 
+class AttemptSummary(StrictModel):
+    """runner の 1 回の試行の要約。diagnosis は runner が伏せ字にした診断の要約（本文を持たない。#96）。"""
+
+    agent_id: str
+    state: str
+    exit_code: int | None
+    elapsed_seconds: float
+    stop_confirmed: bool
+    diagnosis: dict[str, Any] | None = None
+
+
+class ProbeOutcome(StrictModel):
+    """runner の段階で却下したレビュアーの担当で 1 回だけ行った短い確認の結果（#96）。verdict は変えない。
+
+    passed: runner が success で決まった形の答え。failed: runner の失敗（期限切れを含む）か形の違い。
+    skipped: 起動しなかった。unknown: 起動したが結果を得られない（中断、停止を確認できない試行）。
+    """
+
+    state: Literal["passed", "failed", "skipped", "unknown"]
+    reason: str | None = None
+    # README.md の 1 行目が tool_commit のものと一致したか。passed の条件ではない（答え方の誤差で型を誤らない）
+    first_line_matched: bool | None = None
+    # 失敗から確認の開始までの秒数の目安（レビューの開始時刻＋試行の所要時間の合計から求める）
+    after_failure_seconds: float | None = None
+    attempt: AttemptSummary | None = None
+
+
 class ReviewerEntry(StrictModel):
     requested_agent: str
     actual_agent: str
@@ -237,6 +279,10 @@ class ReviewerEntry(StrictModel):
     rejected_stage: RejectedStage | None = None
     request_file: str | None = None
     request_sha256: str | None = None
+    # runner の段階で却下したときだけ。fallback を含む全試行の所要時間・終了コード・診断の要約（#96）
+    attempts: list[AttemptSummary] = Field(default_factory=list[AttemptSummary])
+    # runner の段階で却下したときだけ。同じ担当での短い確認の結果（#96）
+    probe: ProbeOutcome | None = None
 
 
 class ReusedReview(StrictModel):
@@ -263,6 +309,18 @@ class CleanupInfo(StrictModel):
     retained: list[str]
 
 
+class ProbeRun(StrictModel):
+    """1 回の runner の実行（1 回目か再実行）の後に起動した短い確認。ended_at が null の間は未完了。"""
+
+    agents: list[str]
+    output_dir: str | None = None
+    started_at: str | None = None
+    ended_at: str | None = None
+    seconds: float | None = None
+    batch: BatchInfo | None = None
+    cleanup: CleanupInfo | None = None
+
+
 class RerunPart(StrictModel):
     """runner は成功したが loop が受け付けなかったレビュアーの、同じサイクルでの 1 回だけの再実行。"""
 
@@ -277,6 +335,7 @@ class RerunPart(StrictModel):
     after_run_started: bool = False
     after_run: list[dict[str, Any]] | None = None
     cleanup: CleanupInfo | None = None
+    probe: ProbeRun | None = None
 
 
 class ReviewPart(StrictModel):
@@ -293,6 +352,7 @@ class ReviewPart(StrictModel):
     reused: list[ReusedReview] = Field(default_factory=list[ReusedReview])
     cleanup: CleanupInfo | None = None
     rerun: RerunPart | None = None
+    probe: ProbeRun | None = None
 
 
 class RoleRun(StrictModel):
@@ -983,6 +1043,17 @@ def _artifact(review_dir: Path, value: object) -> Path | None:
     return path
 
 
+def summarize_attempt(attempt: Attempt) -> AttemptSummary:
+    return AttemptSummary(
+        agent_id=attempt.agent_id,
+        state=attempt.state,
+        exit_code=attempt.exit_code,
+        elapsed_seconds=attempt.elapsed_seconds,
+        stop_confirmed=attempt.stop_confirmed,
+        diagnosis=attempt.diagnosis.model_dump(mode="json") if attempt.diagnosis is not None else None,
+    )
+
+
 def verify_reviewer(
     result: Result, *, pr: PrRef, head: str, review_dir: Path, expected_runtime: str | None = None
 ) -> ReviewerEntry:
@@ -1002,8 +1073,10 @@ def verify_reviewer(
         return entry
 
     if attempt is None or not all(item.stop_confirmed for item in result.attempts):
+        entry.attempts = [summarize_attempt(item) for item in result.attempts]
         return reject("runner", "runner が試行の停止を確認できていない")
     if result.state != "success" or attempt.state != "success" or attempt.exit_code != 0:
+        entry.attempts = [summarize_attempt(item) for item in result.attempts]
         return reject("runner", f"runner の結果が success ではない（{result.state}、終了コード {attempt.exit_code}）")
     if not isinstance(attempt.payload, dict):
         return reject("payload", "payload が JSON object ではない")
@@ -1116,7 +1189,8 @@ def verify_reviewer(
 
 
 def _output_dir(resource: Resource) -> Path:
-    return Path(resource.path) / f"cycle-{resource.cycle}-review"
+    stage = "probe" if resource.kind == "probe_output" else "review"
+    return Path(resource.path) / f"cycle-{resource.cycle}-{stage}"
 
 
 def _read_batch(path: Path) -> BatchResult | None:
@@ -1574,6 +1648,8 @@ def _reviewer_summary(entry: ReviewerEntry) -> dict[str, Any]:
         "active_findings": entry.active_findings,
         "review_file": entry.review_file,
         "warnings": entry.warnings,
+        "attempts": [attempt.model_dump(mode="json") for attempt in entry.attempts],
+        "probe": entry.probe.model_dump(mode="json") if entry.probe is not None else None,
     }
 
 
@@ -1593,9 +1669,17 @@ def _review_attempts(review: ReviewPart) -> list[tuple[Literal["first", "rerun"]
     return attempts
 
 
+def _review_runs(review: ReviewPart) -> list[ReviewPart | RerunPart | ProbeRun]:
+    """サイクルの runner の実行の記録（1 回目、その確認、再実行、その確認）。"""
+    parts: list[ReviewPart | RerunPart | ProbeRun] = [review]
+    if review.rerun is not None:
+        parts.append(review.rerun)
+    return [*parts, *(part.probe for part in parts if isinstance(part, ReviewPart | RerunPart) and part.probe)]
+
+
 def _review_retained(review: ReviewPart) -> list[str]:
-    """サイクルの 1 回目と再実行の、回収で残した runner の出力・親入力と、レビュアーが報告した残存パス。"""
-    parts = (review, review.rerun) if review.rerun is not None else (review,)
+    """サイクルの 1 回目と再実行（と各確認）の、回収で残した runner の出力・親入力と、レビュアーが報告した残存パス。"""
+    parts = _review_runs(review)
     paths = [path for part in parts if part.cleanup is not None for path in part.cleanup.retained]
     paths += [path for _, entry in _review_attempts(review) for path in entry.retained_paths]
     return list(dict.fromkeys(paths))
@@ -1617,8 +1701,8 @@ def _kept_parent_inputs(run_dir: Path, cycles: Sequence[CycleRecord]) -> list[st
 
 
 def _review_outside_changes(review: ReviewPart) -> list[str]:
-    """サイクルの 1 回目と再実行の runner の監査が観測した、作業場所の外の変更。"""
-    parts = (review, review.rerun) if review.rerun is not None else (review,)
+    """サイクルの 1 回目と再実行（と各確認）の runner の監査が観測した、作業場所の外の変更。"""
+    parts = _review_runs(review)
     return list(dict.fromkeys(path for part in parts if part.batch is not None for path in part.batch.outside_changes))
 
 
@@ -1659,7 +1743,13 @@ def _reviewer_retained(run: RunRecord, cycles: Sequence[CycleRecord]) -> list[di
 
 
 def _failed_review_reason(entries: Sequence[ReviewerEntry]) -> str:
-    reasons = "; ".join(f"{entry.actual_agent}: {entry.reason}" for entry in entries) or "担当が無い"
+    reasons = (
+        "; ".join(
+            f"{entry.actual_agent}: {entry.reason}" + (f"（短い確認: {entry.probe.state}）" if entry.probe else "")
+            for entry in entries
+        )
+        or "担当が無い"
+    )
     # 書きかけの値（<...>）と取り違えないよう、理由の中の山括弧を全角にする
     reasons = reasons.replace("<", "＜").replace(">", "＞")[:400]
     return f"external: 全レビュアーの結果を受け付けられなかった（{reasons}）"
@@ -1907,6 +1997,173 @@ def _review_batch(
     return batch, entries
 
 
+# --- 短い確認（#96） ---------------------------------------------------------------------------------------------
+
+
+def plan_probe(entries: Sequence[ReviewerEntry], batch: BatchResult, agents: Collection[str]) -> ProbeRun | None:
+    """runner の段階で却下したレビュアーの担当を、確認の対象にする。起動しない担当には skipped を入れる。
+
+    受け付けたレビュアーと、runner の成功の後に却下したレビュアー（payload 以降の段階）は対象にしない。
+    再実行と同じく、停止を確かめられない試行があれば起動しない（finish・recover の停止確認の経路に返す）。
+    """
+    failed = [entry for entry in entries if entry.verdict == "rejected" and entry.rejected_stage == "runner"]
+    if not failed:
+        return None
+    if not _stopped(batch):
+        for entry in failed:
+            entry.probe = ProbeOutcome(state="skipped", reason="停止を確認できない試行があるので、確認を起動しない")
+        return None
+    targets: list[str] = []
+    for entry in failed:
+        if entry.actual_agent in agents:
+            targets.append(entry.actual_agent)
+        else:
+            entry.probe = ProbeOutcome(state="skipped", reason="agent-runner の設定に無い担当なので、確認を起動しない")
+    return ProbeRun(agents=list(dict.fromkeys(targets))) if targets else None
+
+
+def probe_outcome(result: Result, first_line: str | None) -> ProbeOutcome:
+    """確認の runner の結果の判定。payload の中身は記録に写さない。"""
+    attempt = result.attempts[-1] if result.attempts else None
+    if attempt is None:
+        return ProbeOutcome(state="failed", reason=f"runner が確認の試行を起動しなかった（{result.state}）")
+    summary = summarize_attempt(attempt)
+    if not attempt.stop_confirmed:
+        return ProbeOutcome(state="unknown", reason="確認の試行の停止を確認できない", attempt=summary)
+    if result.state != "success" or attempt.state != "success" or attempt.exit_code != 0:
+        reason = f"runner の結果が success ではない（{result.state}、終了コード {attempt.exit_code}）"
+        return ProbeOutcome(state="failed", reason=reason, attempt=summary)
+    payload = attempt.payload
+    if not isinstance(payload, dict) or payload.get("probe") != "ok":
+        return ProbeOutcome(state="failed", reason="応答が決まった形ではない", attempt=summary)
+    matched = None if first_line is None else payload.get("first_line") == first_line
+    return ProbeOutcome(state="passed", first_line_matched=matched, attempt=summary)
+
+
+def _readme_first_line(run: RunRecord) -> str | None:
+    """確認の worktree（tool_commit）の README.md の 1 行目。読めなければ None。"""
+    try:
+        text = git_output(Path(run.tool_root), "show", f"{run.tool_commit}:README.md")
+    except LoopError:
+        return None
+    return text.splitlines()[0] if text else None
+
+
+def _after_failure_seconds(
+    review_started: str | None, probe_started: str | None, entry: ReviewerEntry
+) -> float | None:
+    """失敗から確認の開始までの秒数の目安。試行はレビューの開始から（並行に）始まり、fallback は順に続く。"""
+    if review_started is None or probe_started is None:
+        return None
+
+    def parse(value: str) -> datetime:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+
+    failed_at = parse(review_started).timestamp() + sum(attempt.elapsed_seconds for attempt in entry.attempts)
+    return round(max(0.0, parse(probe_started).timestamp() - failed_at), 1)
+
+
+def _probe_pending(part: ReviewPart | RerunPart) -> bool:
+    return part.probe is not None and part.probe.ended_at is None
+
+
+def _run_probe(
+    run_dir: Path,
+    run: RunRecord,
+    cycle: CycleRecord,
+    part: ReviewPart | RerunPart,
+    *,
+    adapter_loader: Callable[[str], Adapter],
+    tmp_root: Path | None,
+) -> None:
+    """part の後の確認を 1 回だけ実行し、各レビュアーの記録の probe を埋める。ループは止めない。
+
+    出力ディレクトリを記録してから起動する。前回の確認の出力に結果が無ければ（中断の跡）起動し直さず unknown にし、
+    資源は created のまま残す（finish が停止の確認を求める）。
+    """
+    probe = cast(ProbeRun, part.probe)
+    entries = [
+        entry
+        for entry in cycle.review.reviewers
+        if entry.actual_agent in probe.agents and entry.rejected_stage == "runner"
+    ]
+
+    def settle(outcomes: Mapping[str, ProbeOutcome]) -> None:
+        for entry in entries:
+            outcome = outcomes.get(entry.actual_agent) or ProbeOutcome(
+                state="unknown", reason="確認の結果に、この担当が無い"
+            )
+            entry.probe = outcome.model_copy(
+                update={"after_failure_seconds": _after_failure_seconds(part.started_at, probe.started_at, entry)}
+            )
+        probe.ended_at = now()
+        save_run(run_dir, run)
+        save_cycle(run_dir, cycle)
+
+    if probe.output_dir is None:
+        config = review_config_without_github_tokens(load_review_config(run))
+        config.roles[PROBE_ROLE] = Role(writes=False, deadline_seconds=PROBE_DEADLINE_SECONDS, result_shape="json")
+        config.workflows[PROBE_WORKFLOW] = Workflow(
+            assignments={PROBE_ROLE: Assignment(agents=list(probe.agents), fallback=[])}
+        )
+        parent = Path(tempfile.mkdtemp(prefix=TMP_PREFIX, dir=tmp_root))
+        resource = Resource(path=str(parent), kind="probe_output", cycle=cycle.cycle, state="created")
+        output_dir = _output_dir(resource)
+        run.resources.append(resource)
+        save_run(run_dir, run)
+        probe.output_dir = str(output_dir)
+        probe.started_at = now()
+        save_cycle(run_dir, cycle)
+        try:
+            batch = run_workflow(
+                config,
+                PROBE_WORKFLOW,
+                PROBE_PROMPT,
+                Path(run.tool_root),
+                revision=run.tool_commit,
+                concurrency=len(probe.agents),
+                output_dir=output_dir,
+                adapter_loader=adapter_loader,
+            )
+        except (ConfigError, RunnerError) as error:
+            name = type(error).__name__
+            if output_dir.exists():
+                outcome = ProbeOutcome(state="unknown", reason=f"runner が確認の途中で止まった（{name}）")
+            else:
+                parent.rmdir()
+                resource.state = "removed"
+                resource.reason = f"runner が確認を起動の前に拒否した（{name}）"
+                outcome = ProbeOutcome(state="skipped", reason=resource.reason)
+            settle(dict.fromkeys(probe.agents, outcome))
+            return
+        write_json(output_dir / "result.json", batch)
+    else:
+        output_dir = Path(probe.output_dir)
+        saved = _read_batch(output_dir / "result.json")
+        if saved is None:
+            outcome = ProbeOutcome(state="unknown", reason="前回の確認が結果を残さずに止まった。起動し直さない")
+            settle(dict.fromkeys(probe.agents, outcome))
+            return
+        batch = saved
+    first_line = _readme_first_line(run)
+    outcomes = {result.requested_agent: probe_outcome(result, first_line) for result in batch.results}
+    prefix = "rerun-" if isinstance(part, RerunPart) else ""
+    result_copy = cycle_dir(run_dir, cycle.cycle) / f"{prefix}probe-result.json"
+    write_json(result_copy, batch)
+    resource = next((item for item in run.resources if _output_dir(item) == output_dir), None)
+    retained = cleanup_output(Path(run.tool_root), resource, batch) if resource is not None else [str(output_dir)]
+    probe.batch = BatchInfo(
+        run_id=batch.run_id,
+        state=batch.state,
+        assignments=batch.assignments,
+        result_file=str(result_copy),
+        outside_changes=batch.outside_changes,
+    )
+    probe.seconds = batch.elapsed_seconds
+    probe.cleanup = CleanupInfo(state="retained" if retained else "removed", retained=retained)
+    settle(outcomes)
+
+
 def review(
     run_dir: Path,
     *,
@@ -1920,6 +2177,8 @@ def review(
     if not existing or existing[-1].state != "reviewing" or run.result is not None:
         raise LoopError(3, "state", "レビューの段階のサイクルが無い（reuse のサイクルではレビュアーを起動しない）")
     cycle = existing[-1]
+    rerun = cycle.review.rerun
+    # 1 回の呼び出しで次のどれか 1 つを進める。確認は、その runner の実行の結果と記録を保存してから起動する
     if cycle.review.batch is None:
         batch, entries = _review_batch(
             run_dir, run, cycle, cycle.review, github=github, adapter_loader=adapter_loader, tmp_root=tmp_root
@@ -1931,14 +2190,30 @@ def review(
         # 再実行は依存する仕事なので、別の担当でも停止を確かめられない試行があれば始めない（recover の経路に残す）
         if again and _stopped(batch):
             cycle.review.rerun = RerunPart(agents=[entry.actual_agent for entry in again], replaced=again)
-    elif cycle.review.rerun is not None and cycle.review.rerun.batch is None:
-        _, entries = _review_batch(
-            run_dir, run, cycle, cycle.review.rerun, github=github, adapter_loader=adapter_loader, tmp_root=tmp_root
+        # runner の失敗は、同じ担当の短い確認で原因の型を切り分ける（#96）
+        cycle.review.probe = plan_probe(entries, batch, load_review_config(run).agents.keys())
+        save_run(run_dir, run)
+        save_cycle(run_dir, cycle)
+        if _probe_pending(cycle.review):
+            _run_probe(run_dir, run, cycle, cycle.review, adapter_loader=adapter_loader, tmp_root=tmp_root)
+    elif _probe_pending(cycle.review):
+        # 1 回目の確認の途中で止まった。再実行より先に片付ける
+        _run_probe(run_dir, run, cycle, cycle.review, adapter_loader=adapter_loader, tmp_root=tmp_root)
+    elif rerun is not None and rerun.batch is None:
+        batch, entries = _review_batch(
+            run_dir, run, cycle, rerun, github=github, adapter_loader=adapter_loader, tmp_root=tmp_root
         )
         rerun_entries = {entry.actual_agent: entry for entry in entries}
         cycle.review.reviewers = [rerun_entries.get(entry.actual_agent, entry) for entry in cycle.review.reviewers]
+        rerun.probe = plan_probe(entries, batch, load_review_config(run).agents.keys())
+        save_run(run_dir, run)
+        save_cycle(run_dir, cycle)
+        if _probe_pending(rerun):
+            _run_probe(run_dir, run, cycle, rerun, adapter_loader=adapter_loader, tmp_root=tmp_root)
+    elif rerun is not None and _probe_pending(rerun):
+        _run_probe(run_dir, run, cycle, rerun, adapter_loader=adapter_loader, tmp_root=tmp_root)
     else:
-        # 前の review（と再実行）が全レビュアーの失敗で終わった。レビュアーを起動し直さず、同じ結果を返す
+        # 前の review（と再実行・確認）が全レビュアーの失敗で終わった。レビュアーを起動し直さず、同じ結果を返す
         raise _all_failed(run_dir, cycle.review.reviewers)
     entries = cycle.review.reviewers
     accepted = [entry for entry in entries if entry.verdict == "accepted"]
@@ -2029,7 +2304,14 @@ def _cycle_summary(cycle: CycleRecord) -> dict[str, Any]:
         "state": cycle.state,
         "review_mode": cycle.review.mode,
         "reviewers": [
-            {"agent": item.actual_agent, "verdict": item.verdict, "reason": item.reason}
+            {
+                "agent": item.actual_agent,
+                "verdict": item.verdict,
+                "reason": item.reason,
+                "rejected_stage": item.rejected_stage,
+                "attempts": [attempt.model_dump(mode="json") for attempt in item.attempts],
+                "probe": item.probe.model_dump(mode="json") if item.probe is not None else None,
+            }
             for item in cycle.review.reviewers
         ],
         "outside_changes": _review_outside_changes(cycle.review),
@@ -2094,8 +2376,10 @@ def _next_step(run: RunRecord, existing: Sequence[CycleRecord], run_dir: Path) -
     if not existing or existing[-1].state == "ended":
         return command("cycle-begin", "--run", str(run_dir))
     if existing[-1].state == "reviewing":
-        rerun = existing[-1].review.rerun
-        if existing[-1].review.batch is not None and (rerun is None or rerun.batch is not None):
+        review = existing[-1].review
+        rerun = review.rerun
+        settled = not _probe_pending(review) and (rerun is None or not _probe_pending(rerun))
+        if review.batch is not None and (rerun is None or rerun.batch is not None) and settled:
             # 全レビュアーが失敗したサイクル（再実行の後を含む）。review をやり直さずに止める
             return command(
                 "finish", "--run", str(run_dir), f"--abort={_failed_review_reason(existing[-1].review.reviewers)}"

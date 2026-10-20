@@ -22,7 +22,19 @@ from typing import TypedDict, cast
 from tools.agent_runner.adapters import Adapter, AdapterContext, LaunchSpec, load_adapter
 from tools.agent_runner.config import check_depth, validate_config
 from tools.agent_runner.environ import literal_environ, secret_values
-from tools.agent_runner.models import Attempt, BatchResult, Config, Identity, Payload, Receipt, Request, Result, State
+from tools.agent_runner.models import (
+    DIAGNOSIS_TEXT_CHARS,
+    Attempt,
+    BatchResult,
+    Config,
+    Diagnosis,
+    Identity,
+    Payload,
+    Receipt,
+    Request,
+    Result,
+    State,
+)
 from tools.agent_runner.process import execute, redact_file
 from tools.agent_runner.receipts import read_receipt
 from tools.agent_runner.workspace import (
@@ -208,12 +220,17 @@ def _collect(
     stdout: Path,
     stderr: Path,
     payload_check: Callable[[Payload], bool] | None,
-) -> tuple[State, Identity, Payload]:
+) -> tuple[State, Identity, Payload, Diagnosis | None]:
     try:
         # Validate regular, bounded file content before a collector can open it.
         receipt = read_receipt(context.receipt_path)
         outcome = adapter.collect(context, stdout, stderr)
         identity = Identity.model_validate(outcome.identity.model_dump(warnings=False))
+        diagnosis = (
+            Diagnosis.model_validate(outcome.diagnosis.model_dump(warnings=False))
+            if outcome.diagnosis is not None
+            else None
+        )
         failure = outcome.state
         if failure not in {
             None,
@@ -223,12 +240,13 @@ def _collect(
             "response_failed",
             "interrupted",
         }:
-            return "invalid_result", identity, None
+            return "invalid_result", identity, None, diagnosis
         if receipt is None:
             if outcome.receipt is not None:
                 receipt = Receipt.model_validate(outcome.receipt.model_dump(warnings=False))
             else:
-                return ("missing_result" if failure is None or failure == "success" else failure), identity, None
+                state = "missing_result" if failure is None or failure == "success" else failure
+                return state, identity, None, diagnosis
         request = context.request
         if (receipt.run_id, receipt.request_id, receipt.agent_id, receipt.role) != (
             request.run_id,
@@ -236,7 +254,7 @@ def _collect(
             request.agent_id,
             request.role,
         ):
-            return "invalid_result", identity, None
+            return "invalid_result", identity, None, diagnosis
         if receipt.status == "success":
             payload = receipt.payload
             valid = (
@@ -245,7 +263,7 @@ def _collect(
                 else isinstance(payload, str) and bool(payload.strip())
             )
             if not valid:
-                return "invalid_result", identity, None
+                return "invalid_result", identity, None, diagnosis
             if payload_check is not None:
                 # A caller refusal is not an adapter failure: keep the observed
                 # identity, but never expose the check's exception text.
@@ -254,14 +272,22 @@ def _collect(
                 except Exception:
                     accepted = False
                 if not accepted:
-                    return "invalid_result", identity, None
+                    return "invalid_result", identity, None, diagnosis
         state = receipt.status if failure is None or failure == "success" else failure
-        return state, identity, receipt.payload
+        return state, identity, receipt.payload, diagnosis
     except FileNotFoundError:
-        return "missing_result", Identity(), None
+        return "missing_result", Identity(), None, None
     except Exception:
         # Includes adapter parsing/validation failures; never expose exception text.
-        return "invalid_result", Identity(), None
+        return "invalid_result", Identity(), None, None
+
+
+def _bounded_diagnosis(diagnosis: Diagnosis, secrets: set[str]) -> Diagnosis:
+    """Redact first, then cut every string: a cut made first could keep a secret's head at the boundary."""
+    value = cast(dict[str, object], _scrub(diagnosis.model_dump(), secrets))
+    return Diagnosis.model_validate(
+        {key: item[:DIAGNOSIS_TEXT_CHARS] if isinstance(item, str) else item for key, item in value.items()}
+    )
 
 
 def read_only_assignments(
@@ -507,15 +533,17 @@ def run_workflow(
             if export_path is not None and export_unsafe:
                 # Only a provably redacted managed file may reach a collector.
                 sensitive_paths.append(export_path)
-                state, identity, payload = "response_failed", Identity(), None
+                state, identity, payload, diagnosis = "response_failed", Identity(), None, None
             else:
-                state, identity, payload = _collect(adapter, context, stdout_path, stderr_path, payload_check)
+                state, identity, payload, diagnosis = _collect(
+                    adapter, context, stdout_path, stderr_path, payload_check
+                )
             if not redact_file(context.receipt_path, tuple(secrets)):
                 sensitive_paths.append(context.receipt_path)
         else:
             # A live writer may hold a FIFO or replace the receipt. Never read or
             # rewrite its files before independent stop evidence is available.
-            state, identity, payload = "response_failed", Identity(), None
+            state, identity, payload, diagnosis = "response_failed", Identity(), None, None
             sensitive_paths.append(context.receipt_path)
             if export_path is not None:
                 sensitive_paths.append(export_path)
@@ -534,6 +562,7 @@ def run_workflow(
             agent_id=agent_id,
             state=state,
             identity=identity,
+            diagnosis=diagnosis,
             payload=payload,
             elapsed_seconds=time.monotonic() - attempt_started,
             exit_code=process.exit_code,
@@ -603,6 +632,8 @@ def run_workflow(
         for item in result.attempts:
             item.identity = Identity.model_validate(_scrub(item.identity.model_dump(), secrets))
             item.payload = cast(Payload, _scrub(item.payload, secrets))
+            if item.diagnosis is not None:
+                item.diagnosis = _bounded_diagnosis(item.diagnosis, secrets)
     successful = sum(result.state in {"success", "self"} for result in results)
     state = (
         "self"

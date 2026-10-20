@@ -23,9 +23,9 @@ from tools.agent_runner.adapters import (
     LaunchSpec,
 )
 from tools.agent_runner.adapters.skills import prompt_lines
-from tools.agent_runner.dsh_identity import read_session_identity
+from tools.agent_runner.dsh_identity import read_session_identity, read_session_tail
 from tools.agent_runner.environ import literal_environ
-from tools.agent_runner.models import Identity, Payload, Receipt, ReceiptStatus
+from tools.agent_runner.models import Diagnosis, DiagnosisEnding, Identity, Payload, Receipt, ReceiptStatus
 
 _KEYS = {"commandcode": "COMMANDCODE_API_KEY", "opencode-go": "OPENCODE_API_KEY"}
 _AUTH = re.compile(
@@ -162,6 +162,100 @@ def _classify(events: list[dict[str, object]], shape: str) -> tuple[ReceiptStatu
         return "success", text
     payload = _json_payload(text)
     return ("success", payload) if payload is not None else ("response_failed", None)
+
+
+def _text(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _failure(ending: DiagnosisEnding, details: dict[str, object], reason: str | None = None) -> dict[str, object]:
+    status = details.get("status")
+    return {
+        "ending": ending,
+        "reason": reason,
+        "code": _text(details.get("code")),
+        "status": status if type(status) is int else None,
+        "message": _text(details.get("message")),
+    }
+
+
+def _diagnose(stdout_path: Path, stderr_path: Path, context: AdapterContext, session: str | None) -> Diagnosis:
+    """How the attempt ended (#96): counts, labels and the failure's code/status/message only.
+
+    Independent of _classify, which still decides the state. The message head is
+    redacted and cut by the runner; no answer, tool or stderr text is copied.
+    """
+    events: list[dict[str, object]] = []
+    unreadable = False
+    for line in stdout_path.read_text(encoding="utf-8", errors="replace").split("\n"):
+        if not line.strip():
+            continue
+        try:
+            value = _decode(line)
+        except ValueError, RecursionError:
+            value = None
+        if not isinstance(value, dict):
+            unreadable = True
+            break
+        events.append(cast(dict[str, object], value))
+    steps = tool_calls = 0
+    tokens: int | None = None
+    ended: dict[str, object] | None = None
+    completed = False
+    for event in events:
+        kind, phase = event.get("type"), event.get("phase")
+        if kind == "tool_call":
+            tool_calls += 1
+        elif kind == "status" and phase == "step_start":
+            steps += 1
+        elif kind == "status" and phase == "step_end" and isinstance(event.get("usage"), dict):
+            count = cast(dict[str, object], event["usage"]).get("inputTokens")
+            if type(count) is int and count >= 0:
+                tokens = count
+        if ended is not None:
+            continue
+        # The first failure in stream order decides, as in _classify.
+        if kind == "error":
+            ended = _failure("error_event", event)
+        elif kind == "status" and phase == "turn_end":
+            reason = event.get("reason")
+            details = cast(dict[str, object], reason) if isinstance(reason, dict) else {}
+            if details.get("kind") == "completed":
+                completed = True
+            else:
+                error = details.get("error")
+                ended = _failure(
+                    "turn_end",
+                    cast(dict[str, object], error) if isinstance(error, dict) else {},
+                    _text(details.get("kind")),
+                )
+    if ended is None:
+        finished = completed and bool(events) and events[-1].get("type") == "final"
+        ended = {"ending": "unreadable" if unreadable else "completed" if finished else "incomplete"}
+    last = events[-1] if events else None
+    label = None if last is None else last.get("phase") if last.get("type") == "status" else last.get("type")
+    try:
+        stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        stderr = ""
+    tail = (
+        read_session_tail(context.receipt_path.parent / "dsh" / "state", context.work_dir, session)
+        if session
+        else None
+    )
+    return Diagnosis.model_validate(
+        {
+            **ended,
+            "steps": steps,
+            "tool_calls": tool_calls,
+            "last_event": _text(label),
+            "last_input_tokens": tokens,
+            "last_record": tail[0] if tail else None,
+            "last_record_at": tail[1] if tail else None,
+            "stderr_authentication": bool(_AUTH.search(stderr)),
+            "stderr_approval": bool(_APPROVAL.search(stderr)),
+        }
+    )
 
 
 class Dsh:
@@ -307,6 +401,11 @@ class Dsh:
                 # assistant message) keeps its classification and the session-only identity.
                 if status == "success":
                     status, payload = "response_failed", None
+        try:
+            diagnosis = _diagnose(stdout_path, stderr_path, context, identity.session_id)
+        except Exception:
+            # The summary is best effort; it never changes the classification above.
+            diagnosis = None
         return AdapterOutcome(
             receipt=Receipt(
                 run_id=context.request.run_id,
@@ -317,6 +416,7 @@ class Dsh:
                 payload=payload,
             ),
             identity=identity,
+            diagnosis=diagnosis,
         )
 
 

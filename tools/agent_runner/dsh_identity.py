@@ -8,8 +8,9 @@ import json
 import os
 import re
 import stat
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TextIO, cast
 
 from tools.agent_runner.models import Identity
 
@@ -47,7 +48,8 @@ def read_session_identity(dsh_home: Path, work_dir: Path, session_id: str, *, li
         raise ValueError("invalid DSH identity record") from error
 
 
-def _read_session(dsh_home: Path, work_dir: Path, session_id: str, *, live: bool) -> Identity:
+def _open_session(dsh_home: Path, session_id: str) -> TextIO:
+    """Open the attempt's one v4 log through real directories, never following a link."""
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,199}", session_id) is None:
         raise ValueError("invalid DSH session id")
     root = dsh_home.absolute()
@@ -67,9 +69,62 @@ def _read_session(dsh_home: Path, work_dir: Path, session_id: str, *, live: bool
     if not stat.S_ISDIR(current.lstat().st_mode):
         raise ValueError("unsafe DSH session directory")
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    with os.fdopen(fd, encoding="utf-8") as stream:
-        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-            raise ValueError("DSH session log is not a regular file")
+    stream = os.fdopen(fd, encoding="utf-8")
+    if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+        stream.close()
+        raise ValueError("DSH session log is not a regular file")
+    return stream
+
+
+def _bound(header: dict[str, Any], work_dir: Path, session_id: str) -> bool:
+    return (
+        header.get("type") == "session"
+        and type(header.get("version")) is int
+        and header["version"] == 4
+        and header.get("id") == session_id
+        and header.get("cwd") == str(work_dir.resolve(strict=True))
+        and header.get("isSeeded") is False
+    )
+
+
+def read_session_tail(dsh_home: Path, work_dir: Path, session_id: str) -> tuple[str, str | None] | None:
+    """The type and UTC time of a stopped attempt's last complete record (#96), or None.
+
+    Only the record type and its millisecond ``time`` are read; an unfinished
+    tail or a broken line ends the scan at the last complete record.
+    """
+    try:
+        with _open_session(dsh_home, session_id) as stream:
+            header: dict[str, Any] | None = None
+            last: tuple[str, str | None] | None = None
+            for line in stream:
+                if not line.endswith("\n"):
+                    break
+                try:
+                    value = _mapping(json.loads(line, object_pairs_hook=_object, parse_constant=_constant))
+                except ValueError, TypeError, RecursionError:
+                    break
+                if header is None:
+                    header = value
+                    if not _bound(header, work_dir, session_id):
+                        return None
+                    continue
+                kind, time = value.get("type"), value.get("time")
+                if not isinstance(kind, str):
+                    break
+                at = None
+                # Records carry Date.now() milliseconds; bool is an int subclass, so compare types.
+                if (type(time) is int or type(time) is float) and time >= 0:
+                    moment = datetime.fromtimestamp(time / 1000, UTC)
+                    at = moment.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+                last = (kind, at)
+            return last
+    except OSError, ValueError, OverflowError:
+        return None
+
+
+def _read_session(dsh_home: Path, work_dir: Path, session_id: str, *, live: bool) -> Identity:
+    with _open_session(dsh_home, session_id) as stream:
         header: dict[str, Any] | None = None
         route: dict[str, Any] | None = None
         observed: Identity | None = None
@@ -82,14 +137,7 @@ def _read_session(dsh_home: Path, work_dir: Path, session_id: str, *, live: bool
             value = _mapping(json.loads(line, object_pairs_hook=_object, parse_constant=_constant))
             if header is None:
                 header = value
-                if (
-                    header.get("type") != "session"
-                    or type(header.get("version")) is not int
-                    or header["version"] != 4
-                    or header.get("id") != session_id
-                    or header.get("cwd") != str(work_dir.resolve(strict=True))
-                    or header.get("isSeeded") is not False
-                ):
+                if not _bound(header, work_dir, session_id):
                     raise ValueError("DSH session is not bound to this invocation")
                 continue
             if type(value.get("seq")) is not int or value["seq"] != sequence:
