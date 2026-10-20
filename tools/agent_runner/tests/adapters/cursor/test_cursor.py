@@ -60,16 +60,28 @@ def test_prepare_reads_prompt_from_stdin_and_trusts_worktree(tmp_path: Path) -> 
     assert spec.argv[:2] == ("agent", "-p")
     assert spec.argv[spec.argv.index("--output-format") + 1] == "stream-json"
     assert "--trust" in spec.argv
-    assert spec.argv[spec.argv.index("--mode") + 1] == "ask"
     assert spec.argv[spec.argv.index("--model") + 1] == "auto"
     assert all("PROMPT-UNIQUE-TEXT" not in argument for argument in spec.argv)
     assert "PROMPT-UNIQUE-TEXT" in spec.stdin.decode()
 
 
+# #75: with --mode ask, Cursor CLI rejected shell commands that did not ask for its sandbox and ran the others inside
+# it, so PR review roles could not run the pr-review helpers: the sandbox denies their writes outside the worktree and
+# /tmp (their save directory, uv's cache) and the network. -f skips a sandbox the model asks for, but that is not
+# documented, so the launch states --sandbox disabled (runtimes/cursor.rst). When changing these flags, re-check them
+# on a real CLI and update runtimes/cursor.rst together with this test
+def test_prepare_read_only_role_allows_shell_without_cursor_sandbox(tmp_path: Path) -> None:
+    argv = ADAPTER.prepare(_context(tmp_path, writes=False)).argv
+    assert "-f" in argv
+    assert argv[argv.index("--sandbox") + 1] == "disabled"
+    assert "--mode" not in argv and "--plan" not in argv
+
+
+# #75 keeps the write roles' launch as it was (-f only; Cursor's sandbox follows the user's setting), as the issue asks
 def test_prepare_write_role_forces_and_effort_uses_bracket(tmp_path: Path) -> None:
     spec = ADAPTER.prepare(_context(tmp_path, writes=True, effort="high", args=("--flag",)))
     assert "-f" in spec.argv
-    assert "--mode" not in spec.argv
+    assert "--mode" not in spec.argv and "--sandbox" not in spec.argv
     assert spec.argv[spec.argv.index("--model") + 1] == "auto[effort=high]"
     assert "--flag" in spec.argv
 

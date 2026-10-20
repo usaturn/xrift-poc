@@ -108,6 +108,34 @@ def test_uv_no_sync_reproduces_cm1_with_another_venv_bin_on_path(
     assert "Failed to spawn" in result.stderr
 
 
+def test_uv_no_sync_reproduces_cm1_with_project_environment_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`UV_PROJECT_ENVIRONMENT` が別の venv を指していても C-M1 を再現する（#81）。
+
+    DSH の adapter は隔離した HOME の venv を `UV_PROJECT_ENVIRONMENT` に設定する。
+    そこに `pytest` があると、venv の無い worktree の `uv run --no-sync pytest` が成功してしまっていた。
+    """
+    env = create_env_repo(tmp_path / "repo")
+    worktree = create_owned_worktree(env.root, tmp_path / "wt")
+    project_environment = tmp_path / "isolated-venv"
+    # 隔離した venv にある pytest の代わり。起動されれば終了コード 0 で終わる
+    fake_pytest = _make_venv(project_environment) / "pytest"
+    fake_pytest.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_pytest.chmod(0o755)
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(project_environment))
+
+    result = run_uv_offline(
+        ("run", "--project", "tools/devenv", "--no-sync", "pytest", "--version"),
+        cwd=worktree,
+        cache_dir=tmp_path / "uv-cache",
+    )
+
+    assert result.returncode != 0
+    assert "Failed to spawn" in result.stderr
+    assert (worktree / "tools" / "devenv" / ".venv").is_dir()
+
+
 def test_uv_run_without_no_sync_fails_on_download_offline(tmp_path: Path) -> None:
     """`--no-sync` 無し（plan-complete が要求する形）は lock の同期でオフラインに失敗する。"""
     env = create_env_repo(tmp_path / "repo")

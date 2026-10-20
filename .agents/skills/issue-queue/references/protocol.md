@@ -18,15 +18,15 @@
 }
 ```
 
-値は利用者の指示に合わせる。上の番号・kindは例である。`agent_args` はargv配列で、シェルへ展開しない。秘密を含む引数を保存しない。`additional_issues` は `propose` または `enqueue`。remote branchの自動削除は提供しない。監視上限は60〜28800秒。
+値は利用者の指示に合わせる。上の番号・kindは例である。`agent_args` はargv配列で、シェルへ展開しない。秘密を含む引数を保存しない。helperは順序を保って子へ渡す。`agent_kind` が `codex` のときは先頭に `--no-daemon` を加え（既にあれば加えない）、`--remote` はinitとlaunchで拒否する。`additional_issues` は `propose` または `enqueue`。remote branchの自動削除は提供しない。監視上限は60〜28800秒。
 
-すべてのコマンドはJSONを返す。終了コード0はコマンドの処理成功であり、キュー完了とは限らない。`status` が `complete` のときだけ全件完了。`waiting`・`paused`・`blocked` と `next`・`reason` を読む。入力や観測、順序の拒否は3、argparseの引数エラーは2。失敗時も `run_dir` と保存済みの状態を返す。
+すべてのコマンドはJSONを返す。終了コード0はコマンドの処理成功であり、キュー完了とは限らない。`status` が `complete` のときだけ全件完了。`waiting`・`paused`・`blocked` と `next`・`reason` を読む。入力や観測、順序の拒否は3、argparseの引数エラーは2。失敗時も `run_dir` と保存済みの状態を返す。拒否の `next` は既定で `inspect`。親main checkoutが古いために `launch`・`advance` を拒否したときは `update_main` を返し、`advance` のそれ以外の拒否は照合した結果の `next` を返す。
 
 `status` は保存状態を表示する。実環境の照合には `reconcile` または `resume` を使う。`wait` のHerdrイベントは再確認のきっかけであり、工程の成功を記録するものではない。
 
 ## 子への依頼と結果
 
-helperは毎回、親main checkoutをcwdとする新しいHerdr paneを作り、一意のagent名を付ける。最初の操作として `ack --run ... --attempt ...` を依頼する。startの応答とその後のgetにnative sessionが無いagent（Codexなど）は、一意のagent名・kind・pane・terminalが起動時と一致することを照合して依頼を1回だけ送り、最初のackで呼び出し元のnative sessionを確定する。最初のackも、別のpane・terminal・agentからは受け付けない。確定後は呼び出し元のpane・terminal・native sessionが保存値と一致することを検査し、sessionの変更は拒否する。子に渡したスキルとhelperのhash、mainのcommitをattemptに保存する。
+helperは毎回、親main checkoutをcwdとする新しいHerdr paneを作り、一意のagent名を付ける。`agent start` へ渡す引数は、起動前にattemptの `launch_args` へ保存する。最初の操作として `ack --run ... --attempt ...` を依頼する。startの応答とその後のgetにnative sessionが無いagent（Codexなど）は、一意のagent名・kind・pane・terminalが起動時と一致することを照合して依頼を1回だけ送り、最初のackで呼び出し元のnative sessionを確定する。最初のackも、別のpane・terminal・agentからは受け付けない。確定後は呼び出し元のpane・terminal・native sessionが保存値と一致することを検査し、sessionの変更は拒否する。子に渡したスキルとhelperのhash、mainのcommitをattemptに保存する。片付けの子への依頼では、整理の対象を今回のPRとIssueのために作られたbranch・worktree・残骸に限り、それ以外は削除せずに報告させる。
 
 実装のPR本文には `<!-- issue-queue:<run ID>:<attempt ID> -->` を付ける。IssueがCLOSEDでも、対応するマーカーを持つ同repositoryのPRがMERGEDで、closedByPullRequestsReferencesに含まれることが確認できなければ次へ進まない。今回の `pr-review-fix-loop` の `run.json`、ended/no_fix_needed/merged、開始時刻、ロック解放も確認する。
 
@@ -72,14 +72,33 @@ helperは毎回、親main checkoutをcwdとする新しいHerdr paneを作り、
 
 同じkeyを再実行したときは読み取りによる照合だけを行う。全ページからマーカーと本文を照合し、投稿済みならそのURLを採用する。見つからなくても再POSTしない。成否不明の投稿があれば次の投稿も拒否する。別keyに変えて同じ投稿を送らない。外部への書き込みが未確認なら正常終了にしない。
 
+## 確認していないworktree
+
+実装の工程の起動・片付けの工程の起動・片付けの工程の終了の照合で、親main checkout、retainで登録したパス、結果に `blocks_next=false` で残されたパス、`retry` で引き継いだ資源（引き継いだattemptが結果を残すまで）以外のworktreeを判定する。処理中のIssueの番号Nについて、worktreeのパスか、`refs/heads/` を除いたbranch名に `issue-N` が番号の境界（直前が英数字でなく、直後が数字でない。大文字と小文字を区別しない）で現れるもの、結果に `blocks_next=true` で残されたものがあれば、`次工程を妨げるworktreeがあります` にパスと理由を並べて止まる。それ以外は中身を検査せずに無視し、runのイベントに残す。直前の `worktrees_ignored` と同じ内容なら重ねない。
+
+```json
+{
+  "action": "worktrees_ignored",
+  "check": "implement_launch | cleanup_launch | cleanup_finish",
+  "issue": 11,
+  "worktrees": [{"path": "完全パス", "head": "SHA", "branch": "feat/issue-110-x（detachedはnull）", "basis": "判定の根拠"}]
+}
+```
+
 ## 保存・排他・版
 
 state.jsonのschema_versionは1。helperがflockの下で一時ファイルをfsyncし、replaceして保存する。未対応schemaは拒否する。排他はコマンド単位のflockと、runに保存する司令塔のnative sessionの両方で行う。子が呼ぶ `ack`・`report`・`publish` は、司令塔の `wait` などが終わるまでflockを待ってから実行する。司令塔のコマンド同士の競合は待たずに拒否する。古さだけでロックを奪わない。司令塔を移すときはHerdrの現在の一覧で、呼び出し元以外に旧sessionのagentが無いことを確かめる。同じsessionの会話を別pane・新しいterminalで復旧した場合も引き継げる。
 
 意図保存と外部の操作は一つのトランザクションにはできない。意図があり結果が無い窓は「不明」として扱う。startの応答消失は一意agent名・kind・pane・terminalで照合できれば未送信の状態へ戻せる。prompt送信の成否不明はackを待つ。splitの応答消失など、所有paneを確定できない場合は手動調査で止め、再実行しない。paneの不在は、Herdrがstderrに返す構造化エラーの `error.code` が `pane_not_found` に完全一致するときだけと判断する。接続失敗・JSONでない応答・別のcodeは不在にしない。closeの意図を保存した後にpaneが無ければ、終了結果と外部状態を確認し直して次の工程へ進む。closeの意図が無いのにpaneが無ければ、再起動せず調査で止める。
 
+ackの前に子が消えたattemptは `abandon --run ... --reason <理由>` で閉じる。helperは、呼び出し元がownerか、resumeと同じ照合で旧ownerが不在であること、ackと結果が無いこと、agent名の `get` がstderrの構造化エラー `agent_not_found` で終わること、paneが残っていれば、保存したterminalで呼び出し元以外の同じkindのagentが動いていないこと、attemptのマーカーを持つPR（全状態）が無いことを確かめる。閉じたattemptは `abandon_reason` に理由を残し、そのattemptの子による `stopped_reason` を解除する。paneは閉じず、ownerと判断待ちは変えず、使用版は照合しない。同じ工程は次の `launch` で新しいattemptとして起動する。
+
+ack済みで `stopped`・`failed` の結果を残したattemptは `retry --run ... --reason <理由>` で閉じる。helperは、呼び出し元がownerか、resumeと同じ照合で旧ownerが不在であること、結果の `finalized` と `background_stopped` が真であること、attemptに投稿の記録（`effects`）が無いこと、agent名の `get` がstderrの構造化エラー `agent_not_found` で終わるか、見つかったagentの `agent_status` がidle・doneであること、paneが保存したterminalのまま残り呼び出し元以外の同じkindのagentがいれば、その `agent_status` もidle・doneであること、attemptのマーカーを持つPR（全状態）が無いことを確かめる。成功の結果は `advance` で進める。閉じたattemptは `retry_reason` に理由を残し、イベント `attempt_retried` を記録して `stopped_reason` を解除する。paneは閉じず、ownerと判断待ちは変えず、使用版は照合しない。古い子の `ack`・`report`・`publish` は、attemptが今回の工程のものでなくなるので拒否される。
+
+`retry` の後の `launch` は同じIssue・工程を新しいattemptとして起動し、依頼文に前のattemptのID・outcome・理由・結果の要約・`retained` を書く。前後関係は、同じIssue・工程で結果を残したattemptの順に辿る。ackの前に `abandon` で閉じたattemptは結果も作業も持たないので数えず、その後の `launch` の依頼文にも同じ引き継ぎを書く。前のattemptが残した資源は、作業を引き継いだattempt（結果を残す次のattempt）が結果を残すまで、起動の前の検査で次工程を妨げる資源として数えない。ほかのattemptが `blocks_next=true` で残したパスは止める。引き継いだattemptが結果を残した後は、その結果に残された資源として扱う。
+
 `prepared` はsplit、`pane_created` はstartの意図をまだ保存していない。`launch` は保存したattemptを再利用して、その未実行部分だけを続ける。pane_createdではpaneのterminal IDと、別のagentが起動していないことも確認する。`splitting` / `starting` / `submitting` を未実行に戻さない。起動・送信とも、保存されたblocking判断や停止要求を副作用の前に検査する。
 
-main更新はcleanup工程でのみ行う。次の子は更新後の親main checkoutから起動し、使用版を新たに保存する。helperは呼び出しごとに再ロードし、schemaを検査する。実装・持ち越しの途中で使用版が変わった場合は止める。cleanup後に未確認worktree・claim・更新の衝突があれば、次のIssueへ進めない。
+main checkoutを更新するのは、cleanup工程の子と、helperが `update_main` を返したときの司令塔だけである。helperは、親main checkoutのHEAD・ローカルの `origin/main`・remoteの `main` が一致するdetached HEADを最新とし、実装の工程の境界（現在のattemptが無い）と、cleanupの子の成功の結果・終了処理・バックグラウンドの停止・paneのidle/doneを確かめた後の終了の照合でだけ `update_main` を返す。判断待ち・停止・一時停止があればそれを先に返し、branchにいれば止める。保存した起動予定（`prepared`・`pane_created`）の続きは境界ではないので、使用版が一致すれば更新を求めずに続ける。司令塔は更新だけを行い、削除はしない。次の子は更新後の親main checkoutから起動し、使用版を新たに保存する。helperは呼び出しごとに再ロードし、schemaを検査する。実装・持ち越しの途中で使用版が変わった場合は止める。cleanup後に次工程を妨げるworktree・claim・更新の衝突があれば、次のIssueへ進めない。
 
 同じOSユーザーによる状態の直接改ざん、Herdrサーバーの交換、別repositoryのキュー、常駐継続運転、失敗した子の自動修復は対象外。状態や識別情報が不一致なら止める。

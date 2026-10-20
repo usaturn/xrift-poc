@@ -10,6 +10,27 @@ from .external import TOOL_ROOT
 from .models import Attempt, Run
 
 
+def handover(run: Run, attempt: Attempt) -> str:
+    """同じIssue・工程で直前に結果を残したattemptをretryで閉じていれば、その結果と残した資源を新しい子へ引き継ぐ文。"""
+    previous = next((a for a in reversed(run.stage_results(attempt.issue, attempt.phase)) if a.id != attempt.id), None)
+    if previous is None or previous.retry_reason is None or previous.result is None:
+        return ""
+    result = previous.result
+    retained = json.dumps([kept.model_dump() for kept in result.retained], ensure_ascii=False)
+    lines = [
+        f"前のattempt {previous.id} は {result.outcome} で終わり、司令塔が `queue retry` でこのattemptに引き継いだ。",
+        f"引き継ぎの理由: {previous.retry_reason}",
+        f"前の結果の要約: {result.summary}",
+        f"前のattemptが残した資源（引き継ぐ）: {retained}",
+    ]
+    if attempt.phase == "implement":
+        lines.append(
+            "issue-to-prの「issue-queueの引き継ぎ」に従い、引き継いだworktree・branchで続ける。"
+            "前のattemptのマーカーは使わない。"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def child_prompt(run: Run, attempt: Attempt, run_dir: Path) -> str:
     cli = shlex.join(
         [
@@ -35,7 +56,7 @@ run={run.id}, issue={attempt.issue}, phase={attempt.phase}, attempt={attempt.id}
 親main checkout={run.parent}。SDD/Spec/Plan/ログの保存先はAGENTS.mdに従いworktreeの外。
 SDD workspaceは親main checkoutのtmp/agentsに置き、worktree内に.superpowersを作らない。
 利用者の方針(JSON): {run.policy.model_dump_json()}
-実装ではPR本文に次のマーカーを入れ、マージ前に保持してください: {attempt.marker}
+{handover(run, attempt)}実装ではPR本文に次のマーカーを入れ、マージ前に保持してください: {attempt.marker}
 持ち越しの投稿は既存スキルのcheck_body・write targetの検査を先に行い、ghの書き込みの代わりに
 `{cli} publish {arguments} --input <投稿JSON>` を使う。投稿JSONは
 {{"key":"候補ごとの一意名","kind":"issue または comment","target":nullまたは同repoのIssue/PR番号,
@@ -43,6 +64,8 @@ SDD workspaceは親main checkoutのtmp/agentsに置き、worktree内に.superpow
 同じkeyの再実行は照合だけを行う。unknownを新しいkeyで再送してはいけない。
 外部投稿の権限は既存スキルの範囲のまま。ユーザーの承認/質問に代わりに答えない。
 cleanupは既存スキルのゲートを全て維持し、remote branch・reviews・tmp/agentsを保持する。
+cleanupで整理するのは今回のPRとIssueのために作られたbranch・worktree・残骸（pr-reviewの残骸とrefs/pr-review/<PR番号>を含む）だけ。
+それ以外のworktree・branch・残骸は別のセッションが使用している可能性があるので、マージ済み・cleanでも削除せずに報告する。
 このrunディレクトリは再開に必要なので削除しない。未確認の資源を一括削除しない。
 全工程終了後、バックグラウンドの停止と終了処理を確認し、次のJSONをこのrunの下の一意ファイルへ書き、
 `{cli} report {arguments} --input <結果JSON>` を最後の操作として実行して最終報告してください。

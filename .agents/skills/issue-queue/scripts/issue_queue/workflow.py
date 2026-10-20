@@ -6,13 +6,18 @@ import json
 import re
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
-from .external import External, identity
-from .models import Attempt, Init, Result, Run, now
+from .external import CommandError, External, agent_args, herdr_error_code, identity
+from .models import Attempt, Identity, IgnoredWorktree, Init, Result, Run, now
 from .publishing import check_followup_result, reconcile_effects
 from .storage import QueueError, Store
+
+# 確認していないworktreeを照合する検査。無視したworktreeの記録に残す。
+Check = Literal["implement_launch", "cleanup_launch", "cleanup_finish"]
+MainState = Literal["branch", "current", "outdated"]
+MAIN_ON_BRANCH = "親main checkoutがbranchにいます。queueは更新しません。detached HEADに戻してから照合し直してください"
 
 
 def timestamp(value: str) -> datetime:
@@ -22,9 +27,31 @@ def timestamp(value: str) -> datetime:
     return parsed
 
 
+def mentions_issue(text: str, number: int) -> bool:
+    """issue-<番号>を番号の境界で探す。issue-11はissue-110やxissue-11に当たらない。"""
+    return re.search(rf"(?<![0-9a-z])issue-{number}(?![0-9])", text, re.IGNORECASE) is not None
+
+
+def main_state(inventory: dict[str, Any]) -> MainState:
+    """HEAD・ローカルのorigin/main・remoteのmainが一致するdetached HEADだけをcurrentとする。"""
+    if inventory["branch"]:
+        return "branch"
+    if inventory["head"] == inventory["origin_main"] == inventory["remote_main"]:
+        return "current"
+    return "outdated"
+
+
+def outdated_message(inventory: dict[str, Any]) -> str:
+    return (
+        f"親main checkout（{inventory['head'][:12]}）が最新のorigin/main（{inventory['remote_main'][:12]}）と"
+        "一致しません。repo-cleanup-after-mergeの更新の手順で更新してから照合し直してください"
+    )
+
+
 def initialize(store: Store, ext: External, request: Init) -> tuple[Path, Run]:
     if any(n <= 0 for n in request.issues) or len(set(request.issues)) != len(request.issues):
         raise QueueError("Issue番号は正の整数で、重複なく指定してください")
+    agent_args(request.policy.agent_kind, request.policy.agent_args)
     for number in request.issues:
         issue = ext.issue(number)
         if issue["state"] != "OPEN" or "<!-- planning-parallel-issues board:" in issue["body"]:
@@ -90,15 +117,110 @@ class Workflow:
         if barrier := self.progress_barrier():
             raise QueueError(barrier[2])
 
+    def check_takeover(self, caller: Identity) -> None:
+        for agent in self.ext.agents():
+            # 呼び出し元自身は旧ownerと数えない。同じ会話を別pane・新しいterminalで復旧できる。
+            if (agent.get("pane_id"), agent.get("terminal_id")) == (caller.pane_id, caller.terminal_id):
+                continue
+            if agent.get("agent_session") and identity(agent).session == self.run.owner.session:
+                raise QueueError("元の司令塔がまだ存在します。古さを理由に引き継げません")
+
+    def abandon(self, reason: str) -> None:
+        """受領前に子が消えたattemptを閉じる。同じ工程は次のlaunchで新しいattemptとして起動する。
+
+        paneは閉じず、ownerも移さない。工程の境界の操作なので使用版は照合しない。
+        """
+        if not reason.strip():
+            raise QueueError("打ち切る理由を指定してください")
+        caller = self.ext.caller()
+        if caller != self.run.owner:
+            self.check_takeover(caller)
+        attempt = self.run.current()
+        if attempt is None or not attempt.pane_id:
+            raise QueueError("打ち切れるattemptがありません。pane作成前の起動予定はlaunchで続けてください")
+        if attempt.acknowledged or attempt.result is not None:
+            raise QueueError("受領済みのattemptは打ち切れません。子の結果と作業を確認してください")
+        named, in_pane = self.child_agents(attempt, caller)
+        if named is not None:
+            raise QueueError("子のagentがまだ存在します。停止を確認してから打ち切ってください")
+        if in_pane is not None:
+            raise QueueError("子のpaneで同じkindのagentが動いています。停止を確認してから打ち切ってください")
+        if self.marked_pr(attempt):
+            raise QueueError("このattemptのマーカーを持つPRがあります。打ち切らずに照合してください")
+        attempt.closed = True
+        attempt.abandon_reason = reason
+        self.run.event("attempt_abandoned", attempt=attempt.id, reason=reason)
+        if self.run.stopped_reason:
+            # blocked・監視上限は閉じたattemptの子についての停止なので、打ち切りで解消する。
+            self.run.event("stop_resolved", previous=self.run.stopped_reason, reason=reason)
+            self.run.stopped_reason = None
+        self.save()
+
+    def retry(self, reason: str) -> None:
+        """終了結果を残して止まった子のattemptを閉じる。同じ工程は次のlaunchで新しいattemptとして起動し、作業を引き継ぐ。
+
+        paneは閉じず、ownerも移さない。子は終了処理とバックグラウンドの停止を報告済みなので使用版は照合しない。
+        """
+        if not reason.strip():
+            raise QueueError("やり直す理由を指定してください")
+        caller = self.ext.caller()
+        if caller != self.run.owner:
+            self.check_takeover(caller)
+        attempt = self.run.current()
+        if attempt is None or not attempt.acknowledged or attempt.result is None:
+            raise QueueError("やり直せるattemptがありません。終了結果を残した受領済みのattemptだけをやり直せます")
+        result = attempt.result
+        if result.outcome == "success":
+            raise QueueError("成功した結果はadvanceで進めてください")
+        if not result.finalized or not result.background_stopped:
+            raise QueueError("子の終了処理またはバックグラウンドの停止を確認できません")
+        if attempt.effects:
+            # 新しい子が同じ投稿を重ねうる。成否不明の投稿は再送しない。
+            raise QueueError("投稿の記録があるattemptはやり直せません。投稿を照合してください")
+        # 子が残っていても、turnを終えて入力待ちなら作業は止まっている。
+        agents = [agent for agent in self.child_agents(attempt, caller) if agent is not None]
+        if any(agent.get("agent_status") not in {"idle", "done"} for agent in agents):
+            raise QueueError("子がまだ動いています。turnの終了を確認してからやり直してください")
+        if self.marked_pr(attempt):
+            raise QueueError("このattemptのマーカーを持つPRがあります。やり直さずに照合してください")
+        attempt.closed = True
+        attempt.retry_reason = reason
+        self.run.event("attempt_retried", attempt=attempt.id, reason=reason, outcome=result.outcome)
+        if self.run.stopped_reason:
+            self.run.event("stop_resolved", previous=self.run.stopped_reason, reason=reason)
+            self.run.stopped_reason = None
+        self.save()
+
+    def child_agents(self, attempt: Attempt, caller: Identity) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        """子でありうるagent。名前で見つかった子と、子のpaneに保存したterminalのまま残る同じkindのagent。
+
+        不在はHerdrの構造化エラーのcodeの完全一致だけで判定する。接続失敗・別のcodeは不在にしない。
+        """
+        try:
+            named: dict[str, Any] | None = self.ext.herdr("agent", "get", attempt.agent_name)["agent"]
+        except CommandError as error:
+            if herdr_error_code(error.stderr) != "agent_not_found":
+                raise
+            named = None
+        pane = self.ext.pane(attempt.pane_id) if attempt.pane_id else None
+        if (
+            pane
+            and pane.get("terminal_id") == attempt.pane_terminal_id
+            and pane.get("agent") == self.run.policy.agent_kind
+            # paneのagentは1つなので、呼び出し元がそのpane・terminalにいれば子ではない。
+            and (caller.pane_id, caller.terminal_id) != (attempt.pane_id, attempt.pane_terminal_id)
+        ):
+            return named, pane
+        return named, None
+
+    def marked_pr(self, attempt: Attempt) -> bool:
+        """attemptのマーカーを持つPRが（どの状態でも）あるか。"""
+        return any(attempt.marker in (p.get("body") or "") for p in self.ext.pages("pulls?state=all&per_page=100"))
+
     def resume(self, *, proceed: bool, reason: str | None = None) -> None:
         caller = self.ext.caller()
         if caller != self.run.owner:
-            for agent in self.ext.agents():
-                # 呼び出し元自身は旧ownerと数えない。同じ会話を別pane・新しいterminalで復旧できる。
-                if (agent.get("pane_id"), agent.get("terminal_id")) == (caller.pane_id, caller.terminal_id):
-                    continue
-                if agent.get("agent_session") and identity(agent).session == self.run.owner.session:
-                    raise QueueError("元の司令塔がまだ存在します。古さを理由に引き継げません")
+            self.check_takeover(caller)
             # 保存値以外に子・GitHub・worktreeも取得できた時だけownerを移す。
             self.observe()
             self.run.event("owner_transferred", previous=self.run.owner.model_dump(), current=caller.model_dump())
@@ -117,7 +239,8 @@ class Workflow:
                     self.run.stopped_reason = None
                     try:
                         status, action, _ = self.observe()
-                        if (status, action) != ("ok", "advance"):
+                        # 片付けの終了のupdate_mainも子の完了を照合できた結果。更新は次の操作として残る。
+                        if (status, action) not in {("ok", "advance"), ("ok", "update_main")}:
                             raise QueueError("監視上限後の子の完了を確認できません")
                     except QueueError, OSError, ValueError, KeyError:
                         self.run.stopped_reason = previous
@@ -137,20 +260,27 @@ class Workflow:
             self.run.event("continue")
         self.save()
 
-    def preflight(self) -> None:
+    def preflight(self, *, new: bool) -> None:
+        """実装の工程の起動の前の検査。newは新しいattemptを作るとき（工程の境界）に真。"""
         issue = self.ext.issue(self.run.queue[self.run.index])
         if issue["state"] != "OPEN" or "<!-- planning-parallel-issues board:" in issue["body"]:
             raise QueueError("Issueがclosedまたはボードの子です")
         dependencies = self.ext.pages(f"issues/{issue['number']}/dependencies/blocked_by")
         if any(d["state"].lower() == "open" for d in dependencies):
             raise QueueError("先行Issueが未完了です")
-        inventory = self.resource_barrier()
-        if not inventory["head"] == inventory["origin_main"] == inventory["remote_main"] or inventory["branch"]:
-            raise QueueError("親main checkoutを最新origin/mainのdetached HEADに更新してください")
+        inventory = self.resource_barrier("implement_launch")
+        state = main_state(inventory)
+        if state == "branch":
+            raise QueueError(MAIN_ON_BRANCH)
+        # 保存した起動予定の続きは境界ではない。更新すると保存した使用版と合わず続けられないので、版の照合に任せる。
+        if state == "outdated" and new:
+            raise QueueError(outdated_message(inventory), next_action="update_main")
 
-    def resource_barrier(self) -> dict[str, Any]:
-        inventory = self.ext.inventory()
-        self.run.observation = inventory
+    def resource_barrier(self, check: Check, inventory: dict[str, Any] | None = None) -> dict[str, Any]:
+        """claim・open PR・worktreeを照合する。worktreeは次工程を妨げるものだけで止め、他は無視して記録する。"""
+        if inventory is None:
+            inventory = self.ext.inventory()
+            self.run.observation = inventory
         if inventory["claims"] or inventory["local_claims"]:
             raise QueueError("未解放のclaimがあります")
         # 確認時のHEADのまま残るopen PRだけを保持として通す。
@@ -160,15 +290,56 @@ class Workflow:
             raise QueueError(
                 f"未確認または確認後に更新されたopen PRがあります。処理対象と競合を確認してください: {unconfirmed}"
             )
-        allowed = {str(self.ext.parent)}
-        allowed.update(d.path for d in self.run.decisions if d.category == "retain" and d.path)
+        issue = self.run.queue[self.run.index]
+        known = {str(self.ext.parent)}
+        known.update(d.path for d in self.run.decisions if d.category == "retain" and d.path)
+        blocking: dict[str, str] = {}
+        handed: set[str] = set()
         for attempt in self.run.attempts:
-            if attempt.result:
-                allowed.update(r.path for r in attempt.result.retained if not r.blocks_next)
-        unknown = [w["worktree"] for w in inventory["worktrees"] if w["worktree"] not in allowed]
-        if unknown:
-            raise QueueError(f"未確認のworktreeがあります: {unknown}")
+            if attempt.retry_reason is not None:
+                # retryで同じ工程の次の子へ引き継いだ資源。引き継いだ子が結果を残すまで通す。
+                # ackの前にabandonで閉じたattemptは結果を残さないので数えない。
+                # 引き継いだ子が結果を残した後は、その子が結果に残した資源として扱う。
+                if attempt.result and self.run.stage_results(attempt.issue, attempt.phase)[-1].id == attempt.id:
+                    handed.update(kept.path for kept in attempt.result.retained)
+                continue
+            for kept in attempt.result.retained if attempt.result else []:
+                if kept.blocks_next:
+                    blocking.setdefault(kept.path, kept.reason)
+                else:
+                    known.add(kept.path)
+        known.update(handed - blocking.keys())
+        problems: list[str] = []
+        ignored: list[IgnoredWorktree] = []
+        for worktree in inventory["worktrees"]:
+            path = worktree["worktree"]
+            # 利用者のretainと子が保持して続けられるとした資源は、今と同じく通す。
+            if path in known:
+                continue
+            branch = worktree["branch"].removeprefix("refs/heads/") if "branch" in worktree else None
+            if path in blocking:
+                problems.append(f"{path}: 子が次工程を妨げる資源として残しました（{blocking[path]}）")
+            elif mentions_issue(path, issue) or (branch is not None and mentions_issue(branch, issue)):
+                problems.append(f"{path}: Issue #{issue} のworktreeまたはbranch（{branch or 'detached'}）です")
+            else:
+                # 別のセッションの作業でありうるので、中身を検査せず（indexを書き換えうるgit statusを使わず）無視する。
+                basis = f"Issue #{issue} のbranch・パスに当たらず、子が次工程を妨げる資源として残したものでもない"
+                ignored.append(IgnoredWorktree(path=path, head=worktree.get("HEAD"), branch=branch, basis=basis))
+        if problems:
+            raise QueueError(
+                "次工程を妨げるworktreeがあります。処理対象と競合を確認してください: " + "; ".join(problems)
+            )
+        self.record_ignored(check, issue, ignored)
         return inventory
+
+    def record_ignored(self, check: Check, issue: int, ignored: list[IgnoredWorktree]) -> None:
+        """無視したworktreeをrunのイベントに残す。直前の記録と同じなら重ねない。"""
+        if not ignored:
+            return
+        values: dict[str, Any] = {"check": check, "issue": issue, "worktrees": [w.model_dump() for w in ignored]}
+        last = next((e for e in reversed(self.run.events) if e["action"] == "worktrees_ignored"), None)
+        if last is None or any(last.get(key) != value for key, value in values.items()):
+            self.run.event("worktrees_ignored", **values)
 
     def observe_merge(self, attempt: Attempt) -> dict[str, Any] | None:
         issue = self.ext.issue(attempt.issue)
@@ -226,7 +397,16 @@ class Workflow:
         self.run.observation = {"at": now(), **inventory}
         attempt = self.run.current()
         if attempt is None:
-            return self.progress_barrier() or ("ok", "launch", "次の工程を起動できます")
+            if barrier := self.progress_barrier():
+                return barrier
+            # 工程の境界。実装の子は親main checkoutのスキル・helperを使うので、起動の前に最新にさせる。
+            if self.run.phase == "implement":
+                state = main_state(inventory)
+                if state == "branch":
+                    return "blocked", "inspect", MAIN_ON_BRANCH
+                if state == "outdated":
+                    return "ok", "update_main", outdated_message(inventory)
+            return "ok", "launch", "次の工程を起動できます"
         if attempt.phase != "cleanup" and self.ext.version() != attempt.version:
             raise QueueError("工程の途中でスキル・helper・mainの版が変わりました。境界で照合してください")
         if attempt.launch == "prepared":
@@ -280,17 +460,18 @@ class Workflow:
         if attempt.phase == "followup":
             check_followup_result(self, attempt)
         if attempt.phase == "cleanup":
-            self.resource_barrier()
-            if not inventory["head"] == inventory["origin_main"] == inventory["remote_main"] or inventory["branch"]:
-                raise QueueError("片付け後のmain checkoutがorigin/mainと一致しません")
-            if inventory["claims"] or inventory["local_claims"]:
-                raise QueueError("片付け後に未解放のclaimがあります")
+            self.resource_barrier("cleanup_finish", inventory)
+            if main_state(inventory) == "branch":
+                raise QueueError("片付け後の" + MAIN_ON_BRANCH)
         if any(d.category == "blocking" and d.resolution is None for d in self.run.decisions):
             return "blocked", "decision", "次工程を妨げる判断待ちがあります"
         if any(r.blocks_next for r in result.retained):
             return "blocked", "inspect", "次工程を妨げる資源があります"
         if self.run.stopped_reason:
             return "blocked", "inspect", self.run.stopped_reason
+        # 片付けの子の終了を確かめた後なので、子の作業と重ならない。片付けの間にorigin/mainが進んだ場合など。
+        if attempt.phase == "cleanup" and main_state(inventory) == "outdated":
+            return "ok", "update_main", outdated_message(inventory)
         return "ok", "advance", "終了結果と外部状態を確認しました"
 
     def report(self, attempt_id: str, result: Result) -> None:
@@ -310,7 +491,7 @@ class Workflow:
         self.owner()
         status, next_action, reason = self.observe()
         if status != "ok" or next_action != "advance":
-            raise QueueError(reason)
+            raise QueueError(reason, next_action=next_action)
         attempt = self.run.current()
         assert attempt is not None and attempt.pane_id
         attempt.closing = True

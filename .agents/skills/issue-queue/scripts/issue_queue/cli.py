@@ -31,6 +31,8 @@ def parser() -> argparse.ArgumentParser:
         "advance",
         "wait",
         "resume",
+        "abandon",
+        "retry",
         "stop",
         "ack",
         "report",
@@ -49,6 +51,8 @@ def parser() -> argparse.ArgumentParser:
         if name == "resume":
             item.add_argument("--continue", dest="proceed", action="store_true")
             item.add_argument("--reason")
+        if name in {"abandon", "retry"}:
+            item.add_argument("--reason", required=True)
         if name == "queue":
             item.add_argument("--issues", nargs="+", type=int, required=True)
             item.add_argument("--reason", required=True)
@@ -80,7 +84,8 @@ def main() -> int:
                 path = store.path(args.run)
                 work = Workflow(store, ext, path, store.load(args.run))
             try:
-                if args.command not in {"status", "init", "ack", "report", "publish", "resume"}:
+                # resume・abandon・retryは、旧ownerの不在を照合して呼び出し元が実行できる。
+                if args.command not in {"status", "init", "ack", "report", "publish", "resume", "abandon", "retry"}:
                     work.owner()
                 if args.command == "launch":
                     launch(work)
@@ -148,6 +153,10 @@ def main() -> int:
                     work.run.event("decision", id=args.id, reason=args.reason, resolved=args.resolve)
                 elif args.command == "resume":
                     work.resume(proceed=args.proceed, reason=args.reason)
+                elif args.command == "abandon":
+                    work.abandon(args.reason)
+                elif args.command == "retry":
+                    work.retry(args.reason)
                 elif args.command == "stop":
                     work.run.stop_after = args.after
                     work.run.event("stop_requested", after=args.after)
@@ -177,7 +186,8 @@ def main() -> int:
         print(json.dumps(response, ensure_ascii=False))
         return 0
     except (QueueError, OSError, ValueError, KeyError, ValidationError) as error:
-        response = {"status": "blocked", "reason": str(error), "next": "inspect"}
+        next_action = error.next_action if isinstance(error, QueueError) else "inspect"
+        response = {"status": "blocked", "reason": str(error), "next": next_action}
         if work is not None:
             response.update(run_dir=str(work.path), run=work.run.model_dump(mode="json"))
         print(json.dumps(response, ensure_ascii=False))

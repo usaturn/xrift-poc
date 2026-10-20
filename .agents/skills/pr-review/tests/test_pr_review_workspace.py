@@ -12,6 +12,10 @@ from typing import Any
 
 import pytest
 
+# Codex の中でもモデルを固定したテストが通るように、実行環境の CODEX_THREAD_ID を外す（#81）。
+pytest_plugins = ("tools.test_support.plugin",)
+pytestmark = pytest.mark.usefixtures("outside_codex")
+
 SCRIPT = Path(__file__).parents[1] / "scripts" / "pr_review_workspace.py"
 SPEC = importlib.util.spec_from_file_location("pr_review_workspace", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None

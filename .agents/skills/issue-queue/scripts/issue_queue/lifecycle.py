@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from .external import identity
+from .external import agent_args, identity
 from .models import Attempt
 from .prompts import child_prompt
 from .storage import QueueError
@@ -19,9 +19,9 @@ def launch(work: Workflow) -> None:
     if attempt is not None and attempt.launch not in {"prepared", "pane_created"}:
         raise QueueError("起動済みまたは起動の成否不明です。reconcileで照合し再送しないでください")
     if run.phase == "implement":
-        work.preflight()
+        work.preflight(new=attempt is None)
     elif run.phase == "cleanup":
-        work.resource_barrier()
+        work.resource_barrier("cleanup_launch")
     if attempt is None:
         token = uuid4().hex
         attempt = Attempt(
@@ -31,6 +31,7 @@ def launch(work: Workflow) -> None:
             agent_name=f"iq-{token[:24]}",
             marker=f"<!-- issue-queue:{run.id}:{token} -->",
             version=work.ext.version(),
+            launch_args=agent_args(run.policy.agent_kind, run.policy.agent_args),
             launch="prepared",
         )
         attempt.prompt = child_prompt(run, attempt, work.path)
@@ -63,6 +64,8 @@ def launch(work: Workflow) -> None:
     pane = work.ext.pane(attempt.pane_id)
     if not pane or pane["terminal_id"] != attempt.pane_terminal_id or pane.get("agent") or pane.get("agent_session"):
         raise QueueError("保存したpaneが未使用であることを確認できません")
+    if attempt.launch_args is None:
+        raise QueueError("保存した起動予定に起動引数がありません")
     attempt.launch = "starting"
     work.save()
     agent = work.ext.herdr(
@@ -76,7 +79,7 @@ def launch(work: Workflow) -> None:
         "--timeout",
         "30000",
         "--",
-        *run.policy.agent_args,
+        *attempt.launch_args,
     )["agent"]
     work.started(attempt, agent)
     attempt.launch = "started"

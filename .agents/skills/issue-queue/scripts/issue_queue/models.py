@@ -46,6 +46,15 @@ class Retained(Record):
     blocks_next: bool
 
 
+class IgnoredWorktree(Record):
+    """起動の前の検査で、問題が無いと判定して無視したworktree。runのイベントに残す。"""
+
+    path: str
+    head: str | None
+    branch: str | None
+    basis: str
+
+
 class Result(Record):
     outcome: Literal["success", "stopped", "failed"]
     summary: str = Field(min_length=1)
@@ -77,6 +86,8 @@ class Attempt(Record):
     marker: str
     created_at: str = Field(default_factory=now)
     version: dict[str, str]
+    # agent startへ渡す引数。旧helperのattemptには無い。
+    launch_args: list[str] | None = None
     launch: Literal["prepared", "splitting", "pane_created", "starting", "started", "submitting", "submitted"]
     pane_id: str | None = None
     pane_terminal_id: str | None = None
@@ -87,6 +98,10 @@ class Attempt(Record):
     effects: list[Effect] = Field(default_factory=list[Effect])
     closing: bool = False
     closed: bool = False
+    # 受領前に子が消えたattemptをabandonで閉じた理由。
+    abandon_reason: str | None = None
+    # 終了結果を残して止まったattemptをretryで閉じた理由。同じ工程で次に結果を残すattemptへ作業を引き継ぐ。
+    retry_reason: str | None = None
     merged_at: str | None = None
     pr_url: str | None = None
     finished_at: str | None = None
@@ -134,6 +149,13 @@ class Run(Record):
             ),
             None,
         )
+
+    def stage_results(self, issue: int, phase: Phase) -> list[Attempt]:
+        """同じIssue・工程で結果を残したattemptを起動の順に返す。
+
+        ackの前にabandonで閉じたattemptは結果も作業も持たないので、引き継ぎの前後関係に数えない。
+        """
+        return [a for a in self.attempts if (a.issue, a.phase) == (issue, phase) and a.result is not None]
 
     def event(self, action: str, **values: Any) -> None:
         self.events.append({"at": now(), "action": action, **values})

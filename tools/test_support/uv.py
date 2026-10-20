@@ -14,6 +14,9 @@ venv の無い worktree で検証コマンド（`uv run --project tools/devenv .
   `uv run` が spawn するコマンドが、漏れた venv bin から解決されてしまい
   「venv 無し環境」の失敗（C-M1 相当）を再現できない。相対パスと空の
   エントリは、子の cwd で指す先が変わるため判定せずに残す
+- `UV_PROJECT_ENVIRONMENT`: 外す。DSH の adapter は隔離した HOME の venv をここに設定する。
+  残っていると、uv は worktree の `.venv` の代わりにその venv を使い、venv の無い
+  worktree での失敗（C-M1 相当）を再現できない（#81）
 - `uv` 自体は、絞る前の呼び出し元の `PATH` で絶対パスに解決してから起動する。
   `uv` が venv の `bin` にしか無くても、上の除去で見失わない
 """
@@ -41,6 +44,7 @@ def offline_uv_env(*, cache_dir: Path, base: Mapping[str, str] | None = None) ->
     env["UV_OFFLINE"] = "1"
     env["UV_CACHE_DIR"] = str(cache_dir)
     env["UV_PYTHON"] = sys.executable
+    env.pop("UV_PROJECT_ENVIRONMENT", None)
     running_venv_bin = str(Path(sys.executable).parent)
     env["PATH"] = os.pathsep.join(
         entry for entry in env.get("PATH", "").split(os.pathsep) if not _is_venv_bin(entry, running_venv_bin)
