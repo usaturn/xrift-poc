@@ -121,7 +121,7 @@ herdr-agent-task set "Issue #$NUMBER 実装・PR作成"
    | `self` が true で、同じファイルの逐次変更、1–2 Task、委譲不可 | `superpowers:executing-plans` |
 
    Pi の `/sp-implement` は直列実行、`/sp-implement-parallel` は依存を満たした独立 Task を別 worktree で並列実行する入口。SDD なら常に parallel という対応ではない。同じファイルを同時に書かせない。run 中は選んだスキルで続け、コマンド再入力待ちにしない。
-5. 選んだスキルの実装・TDD・レビューに従う。スキルを作る場合は `superpowers:writing-skills` の無し/ありの振る舞い比較を行う。固定文言の検査テストで代用しない。検証の失敗は `systematic-debugging` で調べ、解消できなければ停止する。テストの要否は AGENTS.md の「テストの採用基準」で判断し、守る挙動が無い変更に文言の照合テストを追加しない。
+5. 選んだスキルの実装・TDD・レビューに従う。スキルを作る場合は `superpowers:writing-skills` の無し/ありの振る舞い比較を行う。固定文言の検査テストで代用しない。検証の失敗は `systematic-debugging` で調べ、解消できなければ停止する。実装・検証の途中で範囲外の不具合（runner の担当が `result.concerns` で返したものを含む）が判明したら、`.agents/out-of-scope-defects.md` に従い、この run では直さずに ledger に書き、PR 本文に載せる。回避策で検証を通して続けてよい条件も同じ文書に従う。テストの要否は AGENTS.md の「テストの採用基準」で判断し、守る挙動が無い変更に文言の照合テストを追加しない。
 
 6. **`--merge` のときは、実装スキルの最終の全体レビュー（全 Task 後のブランチ全体レビュー）だけをループの 1 サイクル目で代える。**Task ごとのレビューは残す。最終レビューへ回す予定の minor（ledger の `deferred`）は PR 本文に一覧で書く。`--merge` が無ければ最終全体レビューを省かない。
 
@@ -167,10 +167,10 @@ herdr-agent-task set "Issue #$NUMBER 実装・PR作成"
 - **`verification-before-completion` と `finishing-a-development-branch` 必須。** 終了方法は PR 作成を選び、改めて選択肢を尋ねない。作業対象 root と remote を確認し、AGENTS.md の正式入口で検証する。
   - 親: `./scripts/ci/verify-devenv.sh`
   - 制作物: `package.json` の検証スクリプトと `xrift check --build`
-- `--merge` のときは commit 後に正式入口で検証し、検証した HEAD、そのときの `git status --porcelain` が空だったこと、終了コード、親の `tmp/agents/` に残したログの完全パスを記録する。ループで再利用する条件になる。
+- `--merge` のときは commit 後に正式入口で検証し、検証した HEAD、そのときの `git status --porcelain` が空だったこと、終了コード、回避策を使ったか（使ったなら、回避した失敗）、親の `tmp/agents/` に残したログの完全パスを記録する。ループで再利用する条件になる。
 - 長時間の検証・子・CI は `monitoring-long-tasks` 必須。同期の終了を待ち、終了コードと実ログを確認する。
 - worktree の Git root で明示パスのみ stage・commit し、**repository-ownership「公開前の秘密検査」の `scan before push` と `scanned push` の2ブロックを同じシェルで実行する**。ここでは引数なしの `scan_before_push` を使い、検査した SHA だけを自分の feature branch へ push する（関数本文を複製しない）。検査の失敗・空の SHA では push しない。`gh pr create --repo "$REPO" --base "$BASE" --head <feature branch>`（`BASE` は2章の5）で PR を作る。SHA を送り元にした push は上流 branch を設定しないので `--head` を明示する。親では `items/`・`worlds/` を stage しない。既存 PR が見つかったら重複作成しない。`--merge` のときは draft にしない（`finalize.py` は draft を拒否する）。
-- PR 本文: 同 repo の `Closes #N`、変更概要、**Spec の決定と理由、実行方式と理由**、実行した検証・結果、作業時間と主要 Task 別内訳。Plan の実装の担当が `self` 以外なら、割り当て（設定・`--implement`）、runner が観測した agent・モデル、Task ごとの依頼の回数と所要時間も書く。未実行の確認を成功と書かない。
+- PR 本文: 同 repo の `Closes #N`、変更概要、**Spec の決定と理由、実行方式と理由**、実行した検証・結果（回避策で通した検証は、回避策と回避した失敗も書く）、節 `## 作業中に判明した範囲外の不具合`（形は `.agents/out-of-scope-defects.md`。無ければ「なし」）、作業時間と主要 Task 別内訳。Plan の実装の担当が `self` 以外なら、割り当て（設定・`--implement`）、runner が観測した agent・モデル、Task ごとの依頼の回数と所要時間も書く。未実行の確認を成功と書かない。
 - `--merge` が無いとき、親の PR は **CI green を確認してから完了**。制作物の PR は CI があれば green を確認する。`--merge` のときは PR の作成直後、CI を待たずにループへ進む。マージ前には `finalize.py` がどの repository でも CI green を確認し、実行中なら `wait_for: ci` で待ち、CI の無い制作物では停止してマージしない。`--merge` の `finalize.py` によるマージ以外に、マージ・タグ・リリース・デプロイ・プロビジョニングは行わない。admin マージ・auto-merge・force push・branch 削除もしない（自身の claim の解放は別途その手順に従う）。
 - ボード子の成果公開・claim 解放は `planning-parallel-issues` に従う。自身の所有物だけを扱う。`--merge` のときは、ループの `finish` 後に結果を状況コメントへ書いてから解放する。
 - 完了時は Herdr task を completed にする。PR URL、検証結果、worktree/branch、実在する Spec/Plan・残存ログ（runner の出力先と残したパスを含む）の絶対パス、所要時間を報告する。
