@@ -104,33 +104,31 @@ Context7 のドキュメントの取得は、`ctx7` CLI と `find-docs` スキ�
 | Codex の MCP | `~/.codex/config.toml` の `mcp_servers.context7` | その表を消す |
 | Claude Code のユーザースコープの MCP | `~/.claude.json` の `mcpServers` | `claude mcp remove context7 -s user` |
 | claude.ai の Context7 コネクタ（`mcp__claude_ai_Context7__*`） | claude.ai のアカウントの設定 | claude.ai のコネクタの設定で外す。アカウント単位の設定で、他のプロジェクトにも効く |
-| Pi の Context7 拡張 | 共有の `~/.pi/agent/settings.json` | 外さない（次の節） |
+| Pi の Context7 拡張 | 共有の `~/.pi/agent/settings.json` | `pi remove npm:@upstash/context7-pi`。`~/.pi` を共有する他のコンテナの Pi にも効くので、先にそれらの Pi を止める。共有の `~/.pi` からは 2026-10-20 に外した（次の節） |
 
-### Pi の Context7 拡張をプロジェクト単位で止める
+### Pi の Context7 拡張（共有の `~/.pi` から外した後）
 
-`npm:@upstash/context7-pi` は、maatlog-poc・agent-workspace のセットアップが共有の `~/.pi` に入れ続ける。`pi remove` で消すと、それらのリポジトリの Pi からも Context7 が外れ、次のセットアップでまた入る。xrift-poc では共有の `~/.pi` を変えず、`.pi/settings.json` の `packages` に次の項目を置いて、プロジェクト単位で読み込みを止める。
+共有の `~/.pi` に `npm:@upstash/context7-pi` を入れていたセットアップ（usaturn/agent-workspace）は usaturn/agent-workspace#725 で入れなくなり、共有の `~/.pi` からも 2026-10-20 に外した。これに合わせて、#49 で `.pi/settings.json` の `packages` に置いた、読み込みを止める項目（`autoload: false` と `"!**"`）も外した（#54）。いまの xrift-poc の Pi は、context7-pi を導入も読み込みもしない。
 
-```json
-{
-  "source": "npm:@upstash/context7-pi",
-  "autoload": false,
-  "extensions": ["!**"],
-  "skills": ["!**"],
-  "prompts": ["!**"],
-  "themes": ["!**"]
-}
-```
+項目を残さなかったのは、Pi 1.3.0 が次のように動くためである。
 
-- `autoload: false` を付けた project の項目は、ユーザー設定の同じパッケージに対する差分として働く（Pi 同梱の `docs/packages.md` の「Understand scope and identity」）。`"!**"` で、拡張（`resolve-library-id`・`query-docs` のツール）、スキル（`context7-docs`）、プロンプト（`/c7-docs`）を読み込まない
-- 空配列（`"extensions": []` など）では止まらない。Pi 1.3.0 は差分の空配列を「変更なし」として扱い、ユーザー設定のとおりにすべて読み込む（2026-10-18 に確認）
-- project の設定なので、`+builtin:mcp` と同じく project trust を前提とする
-- ユーザー設定に `npm:@upstash/context7-pi` が無いと、差分の土台が無いため、Pi は project の `.pi/npm` に context7-pi を導入する（読み込みはしない。`.pi/npm` は Pi が置く `.gitignore` で Git に出ない）。他のリポジトリも移行して共有の `~/.pi` から context7-pi を外すときは、`.pi/settings.json` のこの項目も外す
-- `warn_retired_pi_extensions` の廃止済みの一覧には加えない。他のリポジトリが入れ続けるため、再ビルドのたびに警告が出る
+- `autoload: false` を付けた project の項目は、ユーザー設定の同じパッケージに対する差分としてだけ働く（Pi 同梱の `docs/packages.md` の「Understand scope and identity」）
+- ユーザー設定に同じパッケージが無いと差分の土台が無く、Pi は起動のたびに、まだ導入していない checkout の project の `.pi/npm` に context7-pi を導入する（読み込みはしない）。npm registry に届かないと導入に失敗し、Pi が起動しない（`npm error code ECONNREFUSED`）。`--offline` か `PI_OFFLINE=1` を付けると導入しない
+- trust 済みの checkout では、zsh の `update`（`pi update --extensions`）も、ユーザー設定にあるかどうかによらず `.pi/npm` に導入する
+- Pi が `.pi/npm` に置く `.gitignore`（`*` と `!.gitignore`）が未追跡のファイルとして残り、agent-runner の監査（`outside_changes`）と `git worktree remove`（`--force` なし）を止める
 
-読み込んでいないことは、モデルを呼ばずに RPC モードで確かめられる。親の main checkout（trust 済み）で実行する。trust していない worktree では `--approve` を付ける。
+同じ形（project の差分の項目）で共有の `~/.pi` のパッケージを止めるときは、共有の `~/.pi` から外す前に（遅くとも同時に）project の項目を外す。項目を先に外すと、共有の登録が残る間はそのリポジトリでも読み込むが、起動は registry に依存しない。xrift-poc では共有の `~/.pi` から先に外れたので、#54 までの間は上の導入が起きた。なお、項目で止めるには `"!**"` が要る。空配列（`"extensions": []` など）は差分の「変更なし」として扱われ、ユーザー設定のとおりにすべて読み込む（Pi 1.3.0、2026-10-18 に確認）。
+
+#54 より前の commit から作った worktree・branch では `.pi/settings.json` に項目が残っており、上の導入が起きる。`origin/main` を取り込んで項目を外す。取り込むまでの間に、registry に届かない環境で Pi を起動するときは、`--offline` か `PI_OFFLINE=1` を付ける。
+
+項目が残っていた間に Pi を起動した checkout には、`.pi/npm/` が未追跡のまま残る。項目を外した後の Pi は、この `.pi/npm/` を読み込まず、変えもしない。Git では無視しない（`.gitignore` に足すと、repo-cleanup-after-merge が照合できないまま残り続ける。生成の原因の項目を外して直した）。`.pi/npm/package.json` の `dependencies` が `@upstash/context7-pi` だけであることを確かめてから、`.pi/npm/` を消す。
+
+読み込んでいないことと、`.pi/npm` を作らないことは、モデルを呼ばずに RPC モードで確かめられる。親の main checkout（trust 済み）で実行する。trust していない worktree では `--approve` を付ける。`.pi/npm/` が残っている checkout では、上の手順で消してから実行する。`context7-pi is not loaded` と `.pi/npm is absent` だけが出れば、読み込まず、導入もしていない。`pi did not start` が出たときは Pi が起動していないので、`context7-pi is not loaded` が出ても読み込んでいないことの確認にならない。
 
 ```bash
-printf '{"type":"get_commands"}\n' | pi --mode rpc --no-session --no-mcp | grep -oE 'c7-docs|skill:context7-docs' || echo "context7-pi is not loaded"
+pi_out="$(printf '{"type":"get_commands"}\n' | pi --mode rpc --no-session --no-mcp)" || echo "pi did not start"
+grep -oE 'c7-docs|skill:context7-docs' <<<"$pi_out" || echo "context7-pi is not loaded"
+test -e .pi/npm && echo ".pi/npm exists" || echo ".pi/npm is absent"
 ```
 
 ### 認証
@@ -166,7 +164,8 @@ ctx7 docs /react/react "useEffect cleanup"
 | `Monthly quota reached`・`quota exceeded` | `CONTEXT7_API_KEY` を設定するか、`ctx7 login` を実行する |
 | `Update available` と表示される | 従わない。「更新」の手順で版を変える |
 | `context7` が `Failed to reconnect`・`CONNECTION_CLOSED` のまま一覧に残る | 古い設定を読んでいる。親の main checkout を `origin/main` に更新し、エージェントを起動し直す。親の中に置いた worktree（`.claude/worktrees/` など）では、Claude Code が祖先の main checkout の `.mcp.json` も読む。ユーザースコープの設定（前の表）も確かめる |
-| xrift-poc の Pi に `resolve-library-id`・`/c7-docs` が出る | project trust を確かめる。`.pi/settings.json` の項目が空配列になっていないかを確かめる |
+| xrift-poc の Pi に `resolve-library-id`・`/c7-docs` が出る | ユーザー設定（`~/.pi/agent/settings.json`）に `npm:@upstash/context7-pi` が残っている。xrift-poc は project の設定で止めていない（#54）。外し方は前の表 |
+| Pi が起動しない（`npm error code ECONNREFUSED`）、または checkout に `.pi/npm/` ができる | その checkout の `.pi/settings.json` に context7-pi の項目が残っている（#54 より前の commit）。`origin/main` を取り込む。急ぐときは `--offline` か `PI_OFFLINE=1` を付けて起動する。できた `.pi/npm/` の扱いは「Pi の Context7 拡張（共有の `~/.pi` から外した後）」 |
 
 ## 廃止した pi 拡張の警告
 
