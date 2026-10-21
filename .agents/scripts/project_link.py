@@ -65,6 +65,14 @@ class Report:
     note: str | None = None
 
 
+@dataclass(frozen=True)
+class _Target:
+    """リンクを置くディレクトリ。``git`` が偽なら Git 未初期化の制作物のディレクトリ。"""
+
+    path: Path
+    git: bool
+
+
 def _load_route_target() -> ModuleType:
     path = Path(__file__).resolve().parent / "route_target.py"
     spec = importlib.util.spec_from_file_location("route_target", path)
@@ -84,22 +92,25 @@ def skill_names(env_root: Path) -> list[str]:
     return sorted(path.name for path in skills.iterdir() if path.is_dir() and (path / "SKILL.md").is_file())
 
 
-def _target(directory: Path, env_root: Path) -> Path | None:
-    """リンクを置く Git の作業ツリーのルート。Git 未初期化の制作物なら None。"""
+def _target(directory: Path, env_root: Path) -> _Target:
+    """リンクを置く場所: 制作物の Git の作業ツリーのルートか、Git 未初期化の制作物のディレクトリ。"""
     # route() は無いパスを祖先で判定するので、無いディレクトリを Git 未初期化の制作物と取り違えないよう先に止める。
     if not directory.is_dir():
         raise LinkError(EXIT_USAGE, f"ディレクトリが無い: {directory}")
     result = _route_target.route(directory, env_root)
     target = directory.resolve()
     if result.kind == "stop" and result.code == "product_uninitialized":
-        return None
+        # Pi は起動した cwd の .pi/ だけを読むので、Pi を起動する制作物のディレクトリに置く。
+        if result.project_root is None or Path(result.project_root) != target:
+            raise LinkError(EXIT_USAGE, f"制作物のディレクトリを指定する: {result.project_root}")
+        return _Target(target, git=False)
     if result.kind != "product":
         raise LinkError(EXIT_USAGE, f"制作物の Git リポジトリではない（{result.code}: {result.reason}）")
     if result.project_root is None or not target.is_relative_to(Path(result.project_root)):
         raise LinkError(EXIT_USAGE, f"制作物の配下ではない worktree には対応しない: {target}")
     if Path(result.git_root) != target:
         raise LinkError(EXIT_USAGE, f"Git の作業ツリーのルートを指定する: {result.git_root}")
-    return target
+    return _Target(target, git=True)
 
 
 def _exclude_file(target: Path) -> Path:
@@ -330,10 +341,15 @@ def _hidden_notes(target: Path, entries: list[str], source: Path) -> list[str]:
 
 def link(directory: Path, env_root: Path) -> Report:
     report = Report()
-    target = _target(directory, env_root)
-    if target is None:
-        report.note = "Git 未初期化の制作物は、祖先の xrift-poc のスキルを読めるのでリンクは不要"
+    found = _target(directory, env_root)
+    if not found.git:
+        _link_pi(found.path, env_root.resolve(), report)
+        report.note = (
+            "Git 未初期化の制作物。スキルは祖先の xrift-poc から読めるのでリンクせず、.pi/ のリンクだけを置いた。"
+            "git init したら xrift-link を実行し、親のスキルへのリンクを置く"
+        )
         return report
+    target = found.path
     exclude = _exclude_file(target)
     text = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
     before, entries, after = _split_block(text, exclude)
@@ -363,10 +379,11 @@ def link(directory: Path, env_root: Path) -> Report:
 
 def unlink(directory: Path, env_root: Path) -> Report:
     report = Report()
-    target = _target(directory, env_root)
-    if target is None:
-        report.note = "Git 未初期化の制作物には、このスクリプトはリンクを置かない"
+    found = _target(directory, env_root)
+    if not found.git:
+        _unlink_pi(found.path, env_root.resolve(), report)
         return report
+    target = found.path
     exclude = _exclude_file(target)
     text = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
     before, entries, after = _split_block(text, exclude)
