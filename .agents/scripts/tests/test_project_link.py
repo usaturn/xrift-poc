@@ -8,6 +8,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,9 @@ SPEC.loader.exec_module(project_link)
 
 ORIGIN = "https://github.com/someone/my-world.git"
 SKILLS = ("alpha", "xrift-world")
+# 親（xrift-poc）が追跡する .pi/ の設定のファイル。Issue #55 は、この 3 つが制作物から起動した Pi に届くことを求める。
+# 親の .pi/ に設定のファイルを足したら、ここにも足す。
+PI_CONFIG = ("APPEND_SYSTEM.md", "mcp.json", "settings.json")
 
 
 @pytest.fixture
@@ -42,7 +46,7 @@ def git(repo: Path, *args: str) -> str:
 
 def links(project: Path) -> dict[str, str]:
     found: dict[str, str] = {}
-    for parent in (".agents/skills", ".claude/skills"):
+    for parent in (".agents/skills", ".claude/skills", ".pi"):
         directory = project / parent
         if directory.is_dir():
             for entry in directory.iterdir():
@@ -54,6 +58,45 @@ def links(project: Path) -> dict[str, str]:
 def exclude_text(project: Path) -> str:
     path = Path(git(project, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude").strip())
     return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+@pytest.fixture
+def pi_env(env: EnvRepo) -> EnvRepo:
+    (env.root / ".pi").mkdir()
+    for name in PI_CONFIG:
+        (env.root / ".pi" / name).write_text(f"{name} of xrift-poc\n", encoding="utf-8")
+    return env
+
+
+def pi_expected(env: EnvRepo, names: Sequence[str] = PI_CONFIG) -> dict[str, str]:
+    return {f".pi/{name}": str(env.root.resolve() / ".pi" / name) for name in names}
+
+
+def pi_links(project: Path) -> dict[str, str]:
+    return {relative: target for relative, target in links(project).items() if relative.startswith(".pi/")}
+
+
+def make_product(env: EnvRepo, git_product: bool, name: str = "my-world") -> Path:
+    return create_product(env.root, "worlds", name, git=git_product, origin_url=ORIGIN if git_product else None)
+
+
+def git_init(project: Path) -> None:
+    """Git 未初期化の制作物を、利用者と同じく後から Git で管理し始める（commit はしない）。"""
+    for args in (
+        ("init", "-q", "-b", "main"),
+        ("config", "user.name", "Test"),
+        ("config", "user.email", "test@example.invalid"),
+        ("config", "commit.gpgsign", "false"),
+        ("remote", "add", "origin", ORIGIN),
+    ):
+        git(project, *args)
+
+
+def check_ignore(repo: Path, *paths: str) -> list[str]:
+    result = subprocess.run(
+        ["git", "-C", str(repo), "check-ignore", *paths], capture_output=True, text=True, check=False
+    )
+    return result.stdout.splitlines()
 
 
 def test_skill_names_lists_directories_with_skill_md(env: EnvRepo) -> None:
@@ -120,40 +163,76 @@ def test_link_does_not_write_through_a_symlinked_or_file_component(env: EnvRepo,
     assert (project / ".claude").read_text(encoding="utf-8") == "not a directory\n"
 
 
-def test_uninitialized_product_needs_no_links(env: EnvRepo) -> None:
-    project = create_product(env.root, "items", "my-item", git=False)
-    report = project_link.link(project, env.root)
-    assert report.created == []
+def test_uninitialized_product_gets_only_pi_links(pi_env: EnvRepo) -> None:
+    # スキルは祖先の xrift-poc から読めるのでリンクしない。Pi の設定は cwd の .pi/ からしか読まないのでリンクする。
+    project = create_product(pi_env.root, "items", "空白 アイテム", git=False)
+
+    report = project_link.link(project, pi_env.root)
+
+    assert links(project) == pi_expected(pi_env)
+    assert sorted(report.created) == sorted(pi_expected(pi_env))
     assert report.note is not None
+    assert report.exclude_file is None
     assert not (project / ".agents").exists()
+    assert not (project / ".claude").exists()
+    assert project_link.link(project, pi_env.root).created == []
+    assert links(project) == pi_expected(pi_env)
 
 
-def test_link_rejects_paths_that_are_not_a_product_git_root(env: EnvRepo, tmp_path: Path) -> None:
-    project = create_product(env.root, "worlds", "my-world", origin_url=ORIGIN)
+def test_pi_links_of_an_uninitialized_product_stay_out_of_git_after_git_init(pi_env: EnvRepo) -> None:
+    project = create_product(pi_env.root, "worlds", "my-world", git=False)
+    project_link.link(project, pi_env.root)
+    assert pi_links(project) == pi_expected(pi_env)
+    git_init(project)
+
+    git(project, "add", "-A")
+    staged = git(project, "diff", "--cached", "--name-only", "-z").split("\0")
+
+    assert "README.md" in staged
+    assert not any(path.startswith(".pi/") for path in staged)
+    git(project, "commit", "-qm", "first commit of the product")
+    report = project_link.link(project, pi_env.root)
+    assert {f"{parent}/{name}" for parent in (".agents/skills", ".claude/skills") for name in SKILLS} <= set(
+        report.created
+    )
+    assert git(project, "status", "--porcelain") == ""
+    project_link.unlink(project, pi_env.root)
+    assert links(project) == {}
+    assert git(project, "status", "--porcelain") == ""
+
+
+def test_link_rejects_paths_that_are_not_a_product_git_root(pi_env: EnvRepo, tmp_path: Path) -> None:
+    root = pi_env.root
+    project = create_product(root, "worlds", "my-world", origin_url=ORIGIN)
     (project / "src").mkdir()
     outside = create_owned_worktree(project, tmp_path / "elsewhere")
-    inside_env = create_owned_worktree(project, env.root / "tmp", name="wt")
-    plain = create_product(env.root, "items", "plain", git=False)
-    # 親の worktree の items/・worlds/ は、Git 未初期化の制作物（リンク不要）として扱わない。
-    env_worktree = create_owned_worktree(env.root, tmp_path / "env-wt", name="feature")
+    inside_env = create_owned_worktree(project, root / "tmp", name="wt")
+    plain = create_product(root, "items", "plain", git=False)
+    # Pi は cwd の .pi/ だけを読むので、Git 未初期化の制作物でも制作物のディレクトリを求める。
+    (plain / "src").mkdir()
+    # 親の worktree の items/・worlds/ は、Git 未初期化の制作物として扱わない。
+    env_worktree = create_owned_worktree(root, tmp_path / "env-wt", name="feature")
     (env_worktree / "worlds" / "w").mkdir(parents=True)
     wrongs = (
-        env.root,
-        env.root / "worlds",
+        root,
+        root / "worlds",
         project / "src",
+        plain / "src",
         outside,
         inside_env,
         env_worktree / "worlds" / "w",
         project / "missing",
         plain / "missing",
-        env.root / "worlds" / "missing",
+        root / "worlds" / "missing",
     )
     for wrong in wrongs:
         for action in (project_link.link, project_link.unlink):
             with pytest.raises(project_link.LinkError) as caught:
-                action(wrong, env.root)
+                action(wrong, root)
             assert caught.value.code == 2, wrong
     assert not (env_worktree / "worlds" / "w" / ".agents").exists()
+    assert not (env_worktree / "worlds" / "w" / ".pi").exists()
+    assert not (plain / "src" / ".pi").exists()
 
 
 def test_link_works_in_a_product_worktree_inside_the_project(env: EnvRepo) -> None:
@@ -524,3 +603,205 @@ def test_unlink_continues_when_an_outside_component_holds_no_link_of_ours(env: E
     assert os.listdir(shared / "skills") == ["alpha"]
     assert sorted(report.removed) == sorted(f".claude/skills/{name}" for name in SKILLS)
     assert project_link.BLOCK_BEGIN not in exclude_text(project)
+
+
+# usaturn/xrift-poc#55: Pi は project の設定を cwd の .pi/ からだけ読む。制作物の .pi/ に親の設定へのリンクを置く。
+
+
+@pytest.mark.parametrize("pre_created", [False, True])
+def test_link_places_pi_links_in_a_git_product_and_ignores_them(pi_env: EnvRepo, pre_created: bool) -> None:
+    project = create_product(pi_env.root, "worlds", "my-world", origin_url=ORIGIN)
+    if pre_created:
+        (project / ".pi").mkdir()
+
+    report = project_link.link(project, pi_env.root)
+
+    expected = pi_expected(pi_env)
+    assert pi_links(project) == expected
+    assert set(expected) <= set(report.created)
+    assert git(project, "status", "--porcelain") == ""
+    paths = [*sorted(expected), ".pi/.gitignore"]
+    assert check_ignore(project, *paths) == paths
+    git(project, "add", "-A")
+    assert git(project, "diff", "--cached", "--name-only") == ""
+    assert project_link.link(project, pi_env.root).created == []
+
+
+@pytest.mark.parametrize("git_product", [True, False])
+def test_link_skips_pi_files_the_root_does_not_have(env: EnvRepo, git_product: bool) -> None:
+    (env.root / ".pi").mkdir()
+    (env.root / ".pi" / "APPEND_SYSTEM.md").write_text("rules\n", encoding="utf-8")
+    project = make_product(env, git_product)
+
+    project_link.link(project, env.root)
+
+    assert pi_links(project) == pi_expected(env, ["APPEND_SYSTEM.md"])
+    if git_product:
+        # 置いていない名前は無視しない。後から作った制作物自身の .pi/mcp.json は git status に出る。
+        (project / ".pi" / "mcp.json").write_text("{}\n", encoding="utf-8")
+        assert "?? .pi/mcp.json\0" in git(project, "status", "--porcelain", "-uall", "-z")
+
+
+@pytest.mark.parametrize("git_product", [True, False])
+def test_link_keeps_existing_pi_entries(pi_env: EnvRepo, tmp_path: Path, git_product: bool) -> None:
+    project = make_product(pi_env, git_product)
+    pi = project / ".pi"
+    pi.mkdir()
+    (pi / "APPEND_SYSTEM.md").write_text("制作物の規則\n", encoding="utf-8")
+    (pi / "mcp.json").mkdir()
+    (pi / "mcp.json" / "own.txt").write_text("own\n", encoding="utf-8")
+    (pi / "settings.json").symlink_to(tmp_path / "missing")
+
+    report = project_link.link(project, pi_env.root)
+
+    assert (pi / "APPEND_SYSTEM.md").read_text(encoding="utf-8") == "制作物の規則\n"
+    assert (pi / "mcp.json" / "own.txt").read_text(encoding="utf-8") == "own\n"
+    assert os.readlink(pi / "settings.json") == str(tmp_path / "missing")
+    assert not any(entry.startswith(".pi/") for entry in report.created)
+    assert sum(entry.startswith(".pi/") for entry in report.kept) == 3
+    assert not (pi / ".gitignore").exists()
+    if git_product:
+        status = git(project, "status", "--porcelain", "-uall", "-z")
+        for path in (".pi/APPEND_SYSTEM.md", ".pi/mcp.json/own.txt", ".pi/settings.json"):
+            assert f"?? {path}\0" in status
+
+
+def test_link_keeps_a_tracked_own_pi_file(pi_env: EnvRepo) -> None:
+    project = create_product(pi_env.root, "worlds", "my-world", origin_url=ORIGIN)
+    own = project / ".pi" / "mcp.json"
+    own.parent.mkdir()
+    own.write_text('{"mcpServers": {}}\n', encoding="utf-8")
+    git(project, "add", ".pi/mcp.json")
+    git(project, "commit", "-qm", "own mcp.json")
+
+    project_link.link(project, pi_env.root)
+
+    assert own.read_text(encoding="utf-8") == '{"mcpServers": {}}\n'
+    assert pi_links(project) == pi_expected(pi_env, ["APPEND_SYSTEM.md", "settings.json"])
+    assert git(project, "status", "--porcelain") == ""
+    own.write_text('{"mcpServers": {"own": {}}}\n', encoding="utf-8")
+    assert " M .pi/mcp.json\0" in git(project, "status", "--porcelain", "-z")
+
+
+@pytest.mark.parametrize("git_product", [True, False])
+@pytest.mark.parametrize("kind", ["symlink", "file"])
+def test_link_does_not_write_through_a_symlinked_or_file_pi(
+    pi_env: EnvRepo, tmp_path: Path, git_product: bool, kind: str
+) -> None:
+    project = make_product(pi_env, git_product)
+    outside = tmp_path / "outside-pi"
+    outside.mkdir()
+    if kind == "symlink":
+        (project / ".pi").symlink_to(outside, target_is_directory=True)
+    else:
+        (project / ".pi").write_text("not a directory\n", encoding="utf-8")
+
+    report = project_link.link(project, pi_env.root)
+
+    assert not any(entry.startswith(".pi/") for entry in report.created)
+    assert list(outside.iterdir()) == []
+    if kind == "file":
+        assert (project / ".pi").read_text(encoding="utf-8") == "not a directory\n"
+
+
+@pytest.mark.parametrize("git_product", [True, False])
+def test_link_leaves_pi_alone_when_the_product_has_its_own_pi_gitignore(pi_env: EnvRepo, git_product: bool) -> None:
+    project = make_product(pi_env, git_product)
+    own = project / ".pi" / ".gitignore"
+    own.parent.mkdir()
+    own.write_text("own\n", encoding="utf-8")
+
+    report = project_link.link(project, pi_env.root)
+
+    assert pi_links(project) == {}
+    assert own.read_text(encoding="utf-8") == "own\n"
+    assert any(entry.startswith(".pi/.gitignore") for entry in report.kept)
+
+
+def test_pi_links_do_not_hide_files_of_other_worktrees(pi_env: EnvRepo) -> None:
+    # info/exclude は全 worktree で共有され、ファイルは否定行で守れない。.pi/ の無視を他の worktree に広げない。
+    project = create_product(pi_env.root, "worlds", "my-world", origin_url=ORIGIN)
+    project_link.link(project, pi_env.root)
+    user = create_owned_worktree(project, project / ".worktrees", name="利用者 worktree")
+    own = [user / ".pi" / "mcp.json", user / ".pi" / "settings.json"]
+    own[0].parent.mkdir()
+    for path in own:
+        path.write_text("{}\n", encoding="utf-8")
+
+    status = git(user, "status", "--porcelain", "-uall", "-z")
+    result = subprocess.run(
+        ["git", "-C", str(project), "worktree", "remove", str(user)], capture_output=True, text=True, check=False
+    )
+
+    assert "?? .pi/mcp.json\0" in status
+    assert "?? .pi/settings.json\0" in status
+    assert result.returncode != 0, "制作物自身の未追跡の .pi/ のファイルを含む worktree を削除してはいけない"
+    assert all(path.read_text(encoding="utf-8") == "{}\n" for path in own)
+
+
+def test_relink_stops_ignoring_a_pi_link_replaced_by_an_own_file(pi_env: EnvRepo) -> None:
+    project = create_product(pi_env.root, "worlds", "my-world", origin_url=ORIGIN)
+    project_link.link(project, pi_env.root)
+    own = project / ".pi" / "mcp.json"
+    own.unlink()
+    own.write_text("{}\n", encoding="utf-8")
+
+    project_link.link(project, pi_env.root)
+
+    assert "?? .pi/mcp.json\0" in git(project, "status", "--porcelain", "-uall", "-z")
+    others = sorted(set(pi_expected(pi_env)) - {".pi/mcp.json"})
+    assert check_ignore(project, *others) == others
+
+
+@pytest.mark.parametrize("git_product", [True, False])
+def test_unlink_removes_only_its_own_pi_links(pi_env: EnvRepo, git_product: bool) -> None:
+    project = make_product(pi_env, git_product)
+    project_link.link(project, pi_env.root)
+    own = project / ".pi" / "settings.json"
+    own.unlink()
+    own.write_text("{}\n", encoding="utf-8")
+
+    report = project_link.unlink(project, pi_env.root)
+
+    assert pi_links(project) == {}
+    assert own.read_text(encoding="utf-8") == "{}\n"
+    removed = {entry for entry in report.removed if entry.startswith(".pi/")}
+    assert removed == set(pi_expected(pi_env)) - {".pi/settings.json"}
+    assert not (project / ".pi" / ".gitignore").exists()
+    if git_product:
+        assert "?? .pi/settings.json\0" in git(project, "status", "--porcelain", "-uall", "-z")
+
+
+def test_link_and_unlink_pi_links_in_a_worktree_inside_the_product(pi_env: EnvRepo) -> None:
+    project = create_product(pi_env.root, "worlds", "my-world", origin_url=ORIGIN)
+    worktree = create_owned_worktree(project, project / ".worktrees", name="feature")
+    project_link.link(project, pi_env.root)
+    project_link.link(worktree, pi_env.root)
+    assert pi_links(worktree) == pi_expected(pi_env)
+    assert git(worktree, "status", "--porcelain") == ""
+
+    project_link.unlink(worktree, pi_env.root)
+
+    assert pi_links(worktree) == {}
+    assert not (worktree / ".pi" / ".gitignore").exists()
+    assert pi_links(project) == pi_expected(pi_env)
+    assert git(project, "status", "--porcelain", "--", ".pi") == ""
+
+
+@pytest.mark.parametrize("git_product", [True, False])
+def test_unlink_keeps_links_behind_a_symlinked_pi(pi_env: EnvRepo, tmp_path: Path, git_product: bool) -> None:
+    # .pi を共有ディレクトリへのリンクに替えても、その中（制作物の外かもしれない）のリンクを消さない。
+    project = make_product(pi_env, git_product)
+    project_link.link(project, pi_env.root)
+    shared = tmp_path / "共有 設定"
+    shared.mkdir()
+    shutil.move(project / ".pi", shared / ".pi")
+    (project / ".pi").symlink_to(shared / ".pi", target_is_directory=True)
+
+    report = project_link.unlink(project, pi_env.root)
+
+    assert not any(entry.startswith(".pi/") for entry in report.removed)
+    assert any(entry.startswith(".pi") for entry in report.kept)
+    for relative, source in pi_expected(pi_env).items():
+        assert os.readlink(shared / relative) == source
+    assert (shared / ".pi" / ".gitignore").is_file()

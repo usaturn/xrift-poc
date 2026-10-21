@@ -1,22 +1,33 @@
 #!/usr/bin/env python3
-"""制作物の Git リポジトリに、xrift-poc のスキルへのシンボリックリンクを置く（usaturn/xrift-poc#1）。
+"""制作物に、xrift-poc のスキルと Pi の設定へのシンボリックリンクを置く（usaturn/xrift-poc#1・#55）。
 
 Claude Code・pi・Codex は、独立した Git リポジトリの中から起動すると、祖先にある xrift-poc の
 ``.claude/skills``・``.agents/skills`` を読まない（2026-10-10 に確認）。Git 未初期化の制作物では
-読むので、この補助は要らない。
+読むので、スキルのリンクは独立した Git リポジトリの制作物にだけ置く。Pi 1.3.0 は project の設定
+（``.pi/`` の ``APPEND_SYSTEM.md``・``mcp.json``・``settings.json``）を、起動した cwd の ``.pi/`` からだけ
+読み、祖先を辿らない（2026-10-21 に確認）。``.pi/`` のリンクは Git 未初期化の制作物にも置く。
 
-- ``link [dir]``: ``<dir>/.agents/skills/<name>`` と ``<dir>/.claude/skills/<name>`` に、
-  ``<root>/.agents/skills/<name>`` への絶対パスのリンクを置き、置いたリンクを ``info/exclude`` の
-  管理ブロックに登録する。同じ名前のもの（壊れたリンクを含む）が既にあれば変えない
-- ``unlink [dir]``: 管理ブロックに登録され、ルートのスキルを指すリンクだけを消す。途中のシンボリックリンクを
-  たどった先が同じリポジトリの別の worktree の中なら、そのリンクは消さずに残す。どの worktree の中でもない
-  （共有ディレクトリなど）リンクを消すことになる場合は、何も変えずに止まる（usaturn/xrift-poc#4）
+- ``link [dir]``: 独立した Git リポジトリの制作物では、``<dir>/.agents/skills/<name>`` と
+  ``<dir>/.claude/skills/<name>`` に、``<root>/.agents/skills/<name>`` への絶対パスのリンクを置き、置いたリンクを
+  ``info/exclude`` の管理ブロックに登録する。どちらの制作物でも、``<dir>/.pi/<file>`` に、ルートに実在する
+  ``<root>/.pi/<file>`` への絶対パスのリンクを置く。同じ名前のもの（壊れたリンクを含む）が既にあれば変えない
+- ``unlink [dir]``: 管理ブロックに登録され、ルートのスキルを指すリンクと、ルートの ``.pi/`` の同じ名前の
+  ファイルを指す ``.pi/`` のリンクだけを消す。途中のシンボリックリンクをたどった先が同じリポジトリの別の
+  worktree の中なら、そのスキルのリンクは消さずに残す。どの worktree の中でもない（共有ディレクトリなど）
+  リンクを消すことになる場合は、何も変えずに止まる（usaturn/xrift-poc#4）。``.pi`` がシンボリックリンクなら、
+  中のリンクは消さずに報告する
 - 管理ブロックの行は ``info/exclude`` が制作物のすべての worktree で共有されるため、link・unlink のたびに
   「いずれかの worktree に実在する、ルートのスキルへのリンク」から作り直す。各除外行の直後にディレクトリだけを
   再び含める否定行を置き、別 worktree の同名の利用者ディレクトリを隠さない。空になったときだけブロックを外す
+- ``.pi/`` のリンクは、置いた worktree の ``.pi/.gitignore`` で無視する。``.pi/`` の 3 つはファイルで否定行で
+  守れず、共有の ``info/exclude`` で無視すると、他の worktree の制作物自身の同名のファイルまで隠れるため。
+  ``.pi/.gitignore`` は 1 行目に管理ブロックの開始の印を置き、自分自身と置いたリンクを並べ、link・unlink の
+  たびに作り直す（リンクが無くなれば消す）。印の無い、制作物自身の ``.pi/.gitignore`` があれば ``.pi/`` の
+  リンクを置かない
 
 ``dir`` は ``<root>/items/<name>``・``<root>/worlds/<name>`` の配下にある Git の作業ツリーのルート
-（制作物のリポジトリか、その中に作った worktree）に限る。
+（制作物のリポジトリか、その中に作った worktree）か、Git 未初期化の制作物のディレクトリ（``<root>/items/<name>``・
+``<root>/worlds/<name>`` そのもの）に限る。
 
 終了コード: 0 成功（何もしなかった場合を含む）、1 前提が壊れている（unlink がどの worktree の中でもない
 リンクを消すことになる場合を含む）、2 対象外のパス・引数の誤り。
@@ -37,11 +48,15 @@ from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from types import ModuleType
-from typing import cast
+from typing import Literal, cast
 
 BLOCK_BEGIN = "# >>> xrift-poc project_link >>>"
 BLOCK_END = "# <<< xrift-poc project_link <<<"
 LINK_DIRS = (Path(".agents/skills"), Path(".claude/skills"))
+PI_DIR = Path(".pi")
+PI_FILES = ("APPEND_SYSTEM.md", "mcp.json", "settings.json")
+PI_IGNORE = PI_DIR / ".gitignore"
+PI_IGNORE_NOTE = "# xrift-link が置いた .pi/ のリンクを無視する。link・unlink のたびに作り直すので、手で編集しない"
 EXIT_ERROR = 1
 EXIT_USAGE = 2
 
@@ -59,6 +74,14 @@ class Report:
     kept: list[str] = field(default_factory=list[str])
     exclude_file: str | None = None
     note: str | None = None
+
+
+@dataclass(frozen=True)
+class _Target:
+    """リンクを置くディレクトリ。``git`` が偽なら Git 未初期化の制作物のディレクトリ。"""
+
+    path: Path
+    git: bool
 
 
 def _load_route_target() -> ModuleType:
@@ -80,22 +103,25 @@ def skill_names(env_root: Path) -> list[str]:
     return sorted(path.name for path in skills.iterdir() if path.is_dir() and (path / "SKILL.md").is_file())
 
 
-def _target(directory: Path, env_root: Path) -> Path | None:
-    """リンクを置く Git の作業ツリーのルート。Git 未初期化の制作物なら None。"""
+def _target(directory: Path, env_root: Path) -> _Target:
+    """リンクを置く場所: 制作物の Git の作業ツリーのルートか、Git 未初期化の制作物のディレクトリ。"""
     # route() は無いパスを祖先で判定するので、無いディレクトリを Git 未初期化の制作物と取り違えないよう先に止める。
     if not directory.is_dir():
         raise LinkError(EXIT_USAGE, f"ディレクトリが無い: {directory}")
     result = _route_target.route(directory, env_root)
     target = directory.resolve()
     if result.kind == "stop" and result.code == "product_uninitialized":
-        return None
+        # Pi は起動した cwd の .pi/ だけを読むので、Pi を起動する制作物のディレクトリに置く。
+        if result.project_root is None or Path(result.project_root) != target:
+            raise LinkError(EXIT_USAGE, f"制作物のディレクトリを指定する: {result.project_root}")
+        return _Target(target, git=False)
     if result.kind != "product":
         raise LinkError(EXIT_USAGE, f"制作物の Git リポジトリではない（{result.code}: {result.reason}）")
     if result.project_root is None or not target.is_relative_to(Path(result.project_root)):
         raise LinkError(EXIT_USAGE, f"制作物の配下ではない worktree には対応しない: {target}")
     if Path(result.git_root) != target:
         raise LinkError(EXIT_USAGE, f"Git の作業ツリーのルートを指定する: {result.git_root}")
-    return target
+    return _Target(target, git=True)
 
 
 def _exclude_file(target: Path) -> Path:
@@ -230,6 +256,84 @@ def _live_entries(target: Path, source: Path) -> list[str]:
     return [line for entry in sorted(entries) for line in (entry, f"!{entry}/")]
 
 
+def _is_pi_link(path: Path, root: Path) -> bool:
+    """``path`` が、ルートの ``.pi/`` の同じ名前のファイルを指す、置いたリンクか。"""
+    return path.is_symlink() and Path(os.readlink(path)) == root / PI_DIR / path.name
+
+
+def _pi_ignore_state(target: Path) -> Literal["absent", "ours", "theirs"]:
+    """``.pi/.gitignore`` が無いか、このスクリプトのもの（1 行目が印）か、制作物のものか。"""
+    path = target / PI_IGNORE
+    if not path.exists() and not path.is_symlink():
+        return "absent"
+    if path.is_symlink() or not path.is_file():
+        return "theirs"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError, UnicodeDecodeError:
+        return "theirs"
+    return "ours" if lines[:1] == [BLOCK_BEGIN] else "theirs"
+
+
+def _sync_pi_ignore(target: Path, root: Path) -> None:
+    """``target`` の ``.pi/`` にある置いたリンクと自分自身を無視する ``.pi/.gitignore`` を作り直す。
+
+    ``info/exclude`` は全 worktree で共有され、否定行で守れるのはディレクトリだけなので、``.pi/`` の
+    ファイルのリンクをそこで無視すると、他の worktree の制作物自身の同名のファイルまで隠れる。リンクを置いた
+    worktree の中だけで無視し、リンクが無くなれば消す。制作物の ``.pi/.gitignore`` には触らない。
+    """
+    state = _pi_ignore_state(target)
+    if state == "theirs":
+        return
+    path = target / PI_IGNORE
+    names = [name for name in PI_FILES if _is_pi_link(target / PI_DIR / name, root)]
+    if not names:
+        if state == "ours":
+            path.unlink()
+        return
+    text = "\n".join([BLOCK_BEGIN, PI_IGNORE_NOTE, "/.gitignore", *(f"/{name}" for name in names)]) + "\n"
+    if state == "absent" or path.read_text(encoding="utf-8") != text:
+        _write_atomic(path, text)
+
+
+def _link_pi(target: Path, root: Path, report: Report) -> None:
+    """``target/.pi/`` に、ルートの ``.pi/`` にある設定のファイルへのリンクを置く。"""
+    names = [name for name in PI_FILES if (root / PI_DIR / name).is_file()]
+    if not names:
+        return
+    if _blocked_component(target, PI_DIR) is not None:
+        report.kept.append(f"{PI_DIR.as_posix()}: シンボリックリンクかディレクトリではないので、中に置かない")
+        return
+    if _pi_ignore_state(target) == "theirs":
+        report.kept.append(f"{PI_IGNORE.as_posix()}: 制作物のファイル。リンクを Git から外せないので置かない")
+        return
+    for name in names:
+        path = target / PI_DIR / name
+        relative = (PI_DIR / name).as_posix()
+        if path.is_symlink() or path.exists():
+            report.kept.append(f"{relative}: 既にある")
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.symlink_to(root / PI_DIR / name)
+        report.created.append(relative)
+    _sync_pi_ignore(target, root)
+
+
+def _unlink_pi(target: Path, root: Path, report: Report) -> None:
+    """``target/.pi/`` の、置いたリンクだけを消す。"""
+    directory = target / PI_DIR
+    if directory.is_symlink():
+        report.kept.append(f"{PI_DIR.as_posix()}: シンボリックリンク。中（制作物の外かもしれない）のリンクは外さない")
+        return
+    if not directory.is_dir():
+        return
+    for name in PI_FILES:
+        if _is_pi_link(directory / name, root):
+            (directory / name).unlink()
+            report.removed.append((PI_DIR / name).as_posix())
+    _sync_pi_ignore(target, root)
+
+
 def _hidden_notes(target: Path, entries: list[str], source: Path) -> list[str]:
     """共有の除外で隠れる利用者のファイル・リンクを、worktree の場所付きで報告する。"""
     notes: list[str] = []
@@ -248,10 +352,15 @@ def _hidden_notes(target: Path, entries: list[str], source: Path) -> list[str]:
 
 def link(directory: Path, env_root: Path) -> Report:
     report = Report()
-    target = _target(directory, env_root)
-    if target is None:
-        report.note = "Git 未初期化の制作物は、祖先の xrift-poc のスキルを読めるのでリンクは不要"
+    found = _target(directory, env_root)
+    if not found.git:
+        _link_pi(found.path, env_root.resolve(), report)
+        report.note = (
+            "Git 未初期化の制作物。スキルは祖先の xrift-poc から読めるのでリンクせず、.pi/ のリンクだけを置いた。"
+            "git init したら xrift-link を実行し、親のスキルへのリンクを置く"
+        )
         return report
+    target = found.path
     exclude = _exclude_file(target)
     text = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
     before, entries, after = _split_block(text, exclude)
@@ -270,6 +379,7 @@ def link(directory: Path, env_root: Path) -> Report:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.symlink_to(source / name, target_is_directory=True)
             report.created.append(relative)
+    _link_pi(target, env_root.resolve(), report)
     merged = _live_entries(target, source)
     if merged != entries:
         _write_atomic(exclude, _render(before, merged, after))
@@ -280,10 +390,11 @@ def link(directory: Path, env_root: Path) -> Report:
 
 def unlink(directory: Path, env_root: Path) -> Report:
     report = Report()
-    target = _target(directory, env_root)
-    if target is None:
-        report.note = "Git 未初期化の制作物には、このスクリプトはリンクを置かない"
+    found = _target(directory, env_root)
+    if not found.git:
+        _unlink_pi(found.path, env_root.resolve(), report)
         return report
+    target = found.path
     exclude = _exclude_file(target)
     text = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
     before, entries, after = _split_block(text, exclude)
@@ -310,6 +421,7 @@ def unlink(directory: Path, env_root: Path) -> Report:
             report.removed.append(relative.as_posix())
         elif path.is_symlink() or path.exists():
             report.kept.append(f"{relative.as_posix()}: xrift-poc のスキルへのリンクではない")
+    _unlink_pi(target, env_root.resolve(), report)
     merged = _live_entries(target, source)
     if merged != entries:
         _write_atomic(exclude, _render(before, merged, after))

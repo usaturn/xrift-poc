@@ -210,8 +210,10 @@ xrift check --build
 
 ### 制作物からエージェントを起動する
 
-- Git 未初期化の制作物から起動すると、Claude Code・pi・Codex は親の指示とスキルを読む
+- Git 未初期化の制作物から起動すると、Claude Code・pi・Codex は親の指示とスキルを読む。Git を初期化したら、次の項目のとおり `xrift-link` を実行する
 - 独立した Git リポジトリの制作物では、最初に一度 `xrift-link`（`project_link.py link`）を実行し、親のスキルへのリンクを置く。制作物の既存のファイル・スキル・設定は上書きしない。外すときは `xrift-link unlink`。制作物の worktree も制作物のディレクトリの中（例: `worlds/<name>/.worktrees/<branch>`）に作り、そこでも `xrift-link` を実行する。親の外に作った制作物の worktree は、共有の指示とスキルを読めない
+- Pi は、project の設定（`.pi/` の `APPEND_SYSTEM.md`・`mcp.json`・`settings.json`）を起動した cwd の `.pi/` からだけ読み、親の `.pi/` を読まない。Pi を使う制作物では、Git 未初期化でも `xrift-link` を実行し、`.pi/` にこの 3 つへのリンクを置く（Git 未初期化ならスキルはリンクしない）。Pi は制作物のルート（worktree ならそのルート）から起動する
+- `.pi/` のリンク先は親の main checkout のファイルである。制作物から起動した Pi で project の設定を変える操作（`pi mcp add -l` など）は、親のファイルを書き換える
 - Codex は `cod` で起動する（親の `AGENTS.md` を読むよう `project_root_markers` を指定している）
 
 ## スキルの置き場所

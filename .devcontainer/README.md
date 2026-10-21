@@ -63,7 +63,7 @@ Herdr の復元手順は `.devcontainer/docs/herdr-session-cwd-restore.md` を�
 `zshrc.txt` が定義する主な補助は次のとおり。
 
 - `cod`: Codex を `project_root_markers=[".devcontainer"]` つきで起動し、制作物の中からでも親の `AGENTS.md` を読ませる
-- `xrift-link`: 独立した Git リポジトリの制作物に、親のスキルへのリンクを置く・外す（`xrift-link [link|unlink] [dir]`）
+- `xrift-link`: 制作物に、親のスキル（独立した Git リポジトリの制作物だけ）と Pi の設定（`.pi/` の `APPEND_SYSTEM.md`・`mcp.json`・`settings.json`）へのリンクを置く・外す（`xrift-link [link|unlink] [dir]`）。Pi は起動したディレクトリの `.pi/` しか読まないため、Git 未初期化の制作物でも Pi を使うなら実行する（ルートの README.md の「エージェントを制作物から起動する」）
 - `xrift_poc_periodic_cleanup`: シェルの起動時に、`cleanup-workspace.bash` を 24 時間に 1 回の間隔で実行する。状態は `~/.cache/xrift-poc` に置く（`XRIFT_POC_CLEANUP_STATE_DIR` で変えられる）。`items/`・`worlds/` は片付けの対象にしない。一時 worktree の `items/`・`worlds/` にデータがあれば、その worktree を残す
 
 XRift 認証（`xrift login`）は利用者が手動で行う。ポートは前節を参照する。
