@@ -55,7 +55,8 @@ def parser() -> argparse.ArgumentParser:
         if name in {"abandon", "retry", "end"}:
             item.add_argument("--reason", required=True)
         if name == "retry":
-            item.add_argument("--handover", type=Path, action="append")
+            # 1つの--handoverに並べても、資源ごとに繰り返してもよい。
+            item.add_argument("--handover", type=Path, action="extend", nargs="+")
         if name == "queue":
             item.add_argument("--issues", nargs="+", type=int, required=True)
             item.add_argument("--reason", required=True)

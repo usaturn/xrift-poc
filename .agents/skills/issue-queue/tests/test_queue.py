@@ -1623,7 +1623,8 @@ def test_retry_hands_over_worktree_of_attempt_without_result(queue_env: QueueEnv
     spec.write_text("# 前の子のSpec\n")
     lose_child(queue_env, attempt)
     reason = "子は容量不足で止まり、paneが閉じられた。\n作業を引き継ぐ"
-    queue_env.call("retry", "--run", run, "--reason", reason, "--handover", str(work), "--handover", str(spec))
+    # 1つの--handoverに並べても、資源ごとに繰り返してもよい。司令塔のagentは並べて書いた（行動比較の場面8）。
+    queue_env.call("retry", "--run", run, "--reason", reason, "--handover", str(work), str(spec))
     # 起動の前の検査は、引き継いだworktreeで止まらない。
     relaunched = queue_env.launch(run)
     for handed in (attempt["id"], reason, str(work), str(spec)):
