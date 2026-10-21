@@ -196,8 +196,9 @@ class Workflow:
             if not result.finalized or not result.background_stopped:
                 raise QueueError("子の終了処理またはバックグラウンドの停止を確認できません")
         if attempt.effects:
-            # 新しい子が同じ投稿を重ねうる。成否不明の投稿は再送しない。
-            raise QueueError("投稿の記録があるattemptはやり直せません。投稿を照合してください")
+            # 投稿をすべて読み戻して照合する。成否不明・重複・不一致の投稿は再送しないので、やり直さない。
+            # 照合した投稿の記録は次のattemptへ写し、同じkeyの投稿は照合だけになる（lifecycle.launch）。
+            reconcile_effects(self, attempt)
         if not self.child_stopped(attempt, caller):
             if result is None:
                 raise QueueError(

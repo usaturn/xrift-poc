@@ -76,6 +76,8 @@ class Effect(Record):
     state: Literal["intent", "confirmed"] = "intent"
     url: str | None = None
     created_at: str = Field(default_factory=now)
+    # retryで前のattemptから写した投稿の記録なら、投稿したattemptのID。このattemptの投稿ではない。
+    inherited_from: str | None = None
 
 
 class Attempt(Record):

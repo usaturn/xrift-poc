@@ -27,6 +27,18 @@ def handover(run: Run, attempt: Attempt) -> str:
             lines += [f"前の結果の要約: {result.summary}", f"前のattemptが残した資源（引き継ぐ）: {retained}"]
         if previous.handover:
             lines.append(f"司令塔が照合して引き継いだ資源: {json.dumps(previous.handover, ensure_ascii=False)}")
+    inherited = [
+        {"key": e.key, "kind": e.kind, "target": e.target, "title": e.title, "url": e.url}
+        for e in attempt.effects
+        if e.inherited_from
+    ]
+    if inherited:
+        posts = json.dumps(inherited, ensure_ascii=False)
+        lines += [
+            f"前のattemptの投稿（照合済み。このattemptの記録に引き継いだ）: {posts}",
+            "同じ投稿をしない。同じ候補の投稿が要るときは、同じkeyでpublishを実行すると照合だけを行う。"
+            "結果のurlsには、このattemptで投稿したURLをすべて書く（引き継いだURLは書いても書かなくてもよい）。",
+        ]
     if not lines:
         return ""
     if attempt.phase == "implement":

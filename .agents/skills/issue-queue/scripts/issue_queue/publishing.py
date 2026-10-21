@@ -10,7 +10,7 @@ from uuid import uuid4
 from pydantic import Field
 
 from .external import REPOSITORY, command
-from .models import Attempt, Effect, Record
+from .models import Attempt, Effect, Record, Run
 from .storage import QueueError
 
 if TYPE_CHECKING:
@@ -23,6 +23,19 @@ class Publication(Record):
     target: int | None
     title: str | None
     body: str = Field(min_length=1)
+
+
+def inherited_effects(run: Run, attempt: Attempt) -> list[Effect]:
+    """retryで引き継ぎが続くattemptの投稿の記録の写し。retryは全投稿を照合できたときだけ通るので、どれも照合済み。
+
+    マーカーで重複を除き、投稿したattemptをinherited_fromに残す。新しいattemptで同じkeyのpublishは照合だけになる。
+    """
+    effects: dict[str, Effect] = {}
+    for previous in run.handovers(attempt.issue, attempt.phase):
+        for effect in previous.effects:
+            inherited_from = effect.inherited_from or previous.id
+            effects.setdefault(effect.marker, effect.model_copy(update={"inherited_from": inherited_from}))
+    return list(effects.values())
 
 
 def reconcile_effects(work: Workflow, attempt: Attempt) -> None:
@@ -61,6 +74,18 @@ def publish(work: Workflow, attempt_id: str, request: Publication) -> None:
         return
     if any(e.state != "confirmed" for e in attempt.effects):
         raise QueueError("成否不明の投稿を照合してから次の投稿へ進んでください")
+    # 別keyに変えて同じ投稿を送らない。retryで引き継いだ投稿の記録とも比べる。
+    same = next(
+        (
+            e
+            for e in attempt.effects
+            if (e.kind, e.target, e.title) == (request.kind, request.target, request.title)
+            and e.body == request.body + "\n\n" + e.marker
+        ),
+        None,
+    )
+    if same is not None:
+        raise QueueError(f"同じ内容の投稿がkey {same.key} で記録されています（{same.url}）。同じkeyで照合してください")
     implementation = next(
         a for a in reversed(work.run.attempts) if a.issue == attempt.issue and a.phase == "implement"
     )
@@ -106,8 +131,10 @@ def publish(work: Workflow, attempt_id: str, request: Publication) -> None:
 def check_followup_result(work: Workflow, attempt: Attempt) -> None:
     assert attempt.result is not None
     reconcile_effects(work, attempt)
-    urls = {e.url for e in attempt.effects}
-    if urls != set(attempt.result.urls):
+    confirmed = {e.url for e in attempt.effects}
+    own = {e.url for e in attempt.effects if e.inherited_from is None}
+    # このattemptの投稿はすべて結果に書く。retryで引き継いだ投稿は、書いても書かなくてもよい。
+    if not own <= set(attempt.result.urls) <= confirmed:
         raise QueueError("持ち越し結果のURLと、投稿・読み戻し済みのURLが一致しません")
     for url in attempt.result.issues:
         if not re.fullmatch(rf"https://github.com/{REPOSITORY}/issues/[1-9]\d*", url):

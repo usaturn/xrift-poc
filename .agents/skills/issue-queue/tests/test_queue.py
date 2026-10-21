@@ -1184,18 +1184,69 @@ def test_retry_accepts_only_stopped_child_with_finished_work(queue_env: QueueEnv
     assert sum(c[:3] == ["herdr", "agent", "start"] for c in queue_env.data()["calls"]) == 1
 
 
-def test_retry_refuses_followup_with_publications(queue_env: QueueEnv) -> None:
+@pytest.mark.parametrize(
+    ("ending", "urls"),
+    [("stopped", "own"), ("stopped", "with_inherited"), ("no_result", "own"), ("stopped", "missing_own")],
+)
+def test_retry_continues_followup_without_reposting(queue_env: QueueEnv, ending: str, urls: str) -> None:
+    # 投稿（confirmed）を残した持ち越しをやり直す。引き継いだ投稿を重ねずに、残りの投稿だけを行う。
     run, attempt = queue_env.followup()
-    body = queue_env.json_file(
-        "comment.json", {"key": "summary", "kind": "comment", "target": 100, "title": None, "body": "## 調査結果"}
-    )
+    summary = {
+        "key": "summary",
+        "kind": "comment",
+        "target": 100,
+        "title": None,
+        "body": "## 調査結果\n候補Aは見送り。\n実例 `$(not-a-command)`",
+    }
+    body = queue_env.json_file("summary.json", summary)
     published = queue_env.call(
         "publish", "--run", run, "--attempt", attempt["id"], "--input", str(body), pane_id=attempt["pane_id"]
     )
     url = published["run"]["attempts"][-1]["effects"][0]["url"]
-    stop_child(queue_env, run, attempt, urls=[url])
-    # 新しい子が同じ投稿を重ねうるので、投稿の記録があるattemptはやり直さない。
-    queue_env.call("retry", "--run", run, "--reason", "持ち越しをやり直す", code=3)
+    if ending == "stopped":
+        stop_child(queue_env, run, attempt, urls=[url])
+    else:
+        lose_child(queue_env, attempt)
+    queue_env.call("retry", "--run", run, "--reason", "原因を取り除いた。\n投稿は済み")
+    relaunched = queue_env.launch(run)
+    inherited = relaunched["effects"][0]
+    assert (inherited["state"], inherited["url"], inherited["inherited_from"]) == ("confirmed", url, attempt["id"])
+    assert url in relaunched["prompt"]
+    queue_env.ack(run, relaunched)
+
+    def publish(file: Path, *, code: int = 0) -> dict[str, Any]:
+        args = ("publish", "--run", run, "--attempt", relaunched["id"], "--input", str(file))
+        return queue_env.call(*args, pane_id=relaunched["pane_id"], code=code)
+
+    # 同じkeyは照合だけ、同じ内容の別keyは拒否、新しい内容は1回だけPOSTする。
+    publish(body)
+    publish(queue_env.json_file("same.json", {**summary, "key": "summary-again"}), code=3)
+    extra = queue_env.json_file("extra.json", {**summary, "key": "addendum", "body": "## 追記\n候補Bを起票した"})
+    new_url = publish(extra)["run"]["attempts"][-1]["effects"][-1]["url"]
+    assert len(queue_env.data()["comments"]) == 2
+    # 結果のurlsは、このattemptの投稿をすべて含み、照合済みのURLだけからなれば受け付ける。
+    reported = {"own": [new_url], "with_inherited": [url, new_url], "missing_own": [url]}[urls]
+    queue_env.report(run, relaunched, urls=reported)
+    queue_env.child(relaunched, "done")
+    queue_env.call("advance", "--run", run, code=3 if urls == "missing_own" else 0)
+
+
+def test_retry_refuses_followup_with_unconfirmed_post(queue_env: QueueEnv) -> None:
+    # 成否不明の投稿は再送しないので、新しい子に同じ工程をやり直させない。
+    run, attempt = queue_env.followup()
+    data = queue_env.data()
+    data["fail"] = "gh api repos/usaturn/xrift-poc/issues"
+    queue_env.save(data)
+    body = queue_env.json_file(
+        "post.json", {"key": "candidate-B", "kind": "issue", "target": None, "title": "B", "body": "body"}
+    )
+    args = ("publish", "--run", run, "--attempt", attempt["id"], "--input", str(body))
+    queue_env.call(*args, pane_id=attempt["pane_id"], code=3)
+    data = queue_env.data()
+    data["fail"] = None
+    queue_env.save(data)
+    stop_child(queue_env, run, attempt)
+    queue_env.call("retry", "--run", run, "--reason", "投稿の成否を確かめずにやり直す", code=3)
     assert queue_env.call("status", "--run", run)["run"]["attempts"][-1]["closed"] is False
 
 
