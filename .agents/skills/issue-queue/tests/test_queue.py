@@ -1510,7 +1510,11 @@ def test_ended_run_refuses_progress_and_allows_new_init(queue_env: QueueEnv) -> 
     lose_child(queue_env, attempt)
     state_file = Path(run) / "state.json"
     state = json.loads(state_file.read_text())
-    state.pop("ended_reason", None)
+    state.pop("ended_reason")
+    for item in state["attempts"]:
+        item.pop("handover")
+        for effect in item["effects"]:
+            effect.pop("inherited_from")
     state_file.write_text(json.dumps(state))
     init = ("init", "--input", str(queue_env.home / "input.json"))
     queue_env.call(*init, code=3)
