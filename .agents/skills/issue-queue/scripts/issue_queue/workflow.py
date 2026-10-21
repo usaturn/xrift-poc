@@ -283,7 +283,9 @@ class Workflow:
                 if self.named_agent(attempt) is not None:
                     raise QueueError("子のagentが存在します。停止を確認してから終えてください")
             elif not self.child_stopped(attempt, caller):
-                raise QueueError("子が動いているか、結果を残さずに残っています。子の停止を確認してから終えてください")
+                raise QueueError(
+                    "子が動いているか、停止を確認できる結果を残さずに残っています。子の停止を確認してから終えてください"
+                )
         self.run.ended_reason = reason
         self.run.event(
             "run_ended",
@@ -305,12 +307,14 @@ class Workflow:
             return None
 
     def child_stopped(self, attempt: Attempt, caller: Identity) -> bool:
-        """子が動いていないか。結果が無ければ子が居ないこと、結果があれば居る子がすべてidle・doneであること。
+        """子が動いていないか。終了処理とバックグラウンドの停止を報告した結果があれば、居る子がすべてidle・doneであること。
+        結果が無いか、結果がどちらかの停止を確認できていなければ、子が居ないこと。
 
-        結果の無い子はidle・doneでも、バックグラウンドの処理の完了で再開しうるので止まったと数えない。
+        そうした子はidle・doneでも、バックグラウンドの処理の完了で再開しうるので止まったと数えない。
         """
         agents = [agent for agent in self.child_agents(attempt, caller) if agent is not None]
-        if attempt.result is None:
+        result = attempt.result
+        if result is None or not result.finalized or not result.background_stopped:
             return not agents
         return all(agent.get("agent_status") in {"idle", "done"} for agent in agents)
 

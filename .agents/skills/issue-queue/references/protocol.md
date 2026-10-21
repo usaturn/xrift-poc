@@ -72,7 +72,7 @@ ack済みで結果の無い子は、paneがidle・doneなら `stalled`、子のa
 
 コメントはkind=comment、title=null、target=元PRまたはopenの同repositoryの集約先Issue番号。新しいIssue → 元PRの事後調査コメント → 集約先コメントの順序を守る。helperは本文末尾に一意マーカーを付け、intentを保存してからPOSTする。stateに保存された本文が送信内容であり、スキルの元ファイルとの比較では末尾マーカーを含める。
 
-同じkeyを再実行したときは読み取りによる照合だけを行う。全ページからマーカーと本文を照合し、投稿済みならそのURLを採用する。見つからなくても再POSTしない。成否不明の投稿があれば次の投稿も拒否する。別keyに変えて同じ投稿を送らない。helperも、記録済みの投稿とkind・target・title・本文が同じ投稿を、別のkeyでも拒否する。外部への書き込みが未確認なら正常終了にしない。
+同じkeyを再実行したときは読み取りによる照合だけを行う。全ページからマーカーと本文を照合し、投稿済みならそのURLを採用する。見つからなくても再POSTしない。成否不明の投稿があれば次の投稿も拒否する。別keyに変えて同じ投稿を送らない。helperも、記録済みの投稿とkind・target・title・本文が同じ投稿と、記録済みの投稿のマーカーを含む本文（送信内容やその引用）をkind・target・titleによらず、別のkeyでもPOSTの前に拒否する。外部への書き込みが未確認なら正常終了にしない。
 
 `retry` で閉じた持ち越しのattemptの投稿の記録は、次のattemptを作るときに写す（`inherited_from` に投稿したattemptのID）。写した投稿と同じkeyの `publish` は照合だけを行う。持ち越しの結果の `urls` は、このattemptが投稿したURLをすべて含み、照合済みのURL（写した投稿を含む）だけからなること。
 
@@ -103,7 +103,7 @@ ack済みの子が止まったattemptは `retry --run ... --reason <理由> [--h
 
 `retry` の後の `launch` は同じIssue・工程を新しいattemptとして起動し、依頼文に、引き継ぎが続くattemptのID・outcome（結果が無ければその旨）・理由・結果の要約・`retained`・`handover` を起動の順に書く。引き継ぎは、`retry` で閉じたattemptのうち、同じIssue・工程で後のattemptが結果を残していないものから続く。ackの前に `abandon` で閉じたattemptと、結果を残さずに `retry` で閉じたattemptは、引き継ぎを終わらせない。引き継ぎが続く間、そのattemptの `retained` と `handover` は、起動の前の検査で次工程を妨げる資源として数えない。ほかのattemptが `blocks_next=true` で残したパスは止める。引き継いだattemptが結果を残した後は、その結果に残された資源として扱う。
 
-続けられないrunは `end --run ... --reason <理由>` で終える。helperは、呼び出し元がownerか、resumeと同じ照合で旧ownerが不在であること、runが完了も終了もしていないこと、現在のattemptの子が動いていないことを確かめる。attemptが無いか `prepared` なら子は居ない。`splitting`・`pane_created` は、agent名の `get` が `agent_not_found` で終わること。それ以外は、`retry` と同じ範囲のagentが、結果が無ければどれも居ないこと、結果があればidle・doneであること。マーカー付きのPR・投稿・資源・判断待ちは条件にせず、変えない。終えたrunは `ended_reason` に理由を残し、イベント `run_ended`（理由・Issue・工程・attempt・呼び出し元）を記録する。attempt・paneは変えない。終えたrunは `status`・`reconcile`・`wait` だけを受け付け（`status: ended`・`next: none`）、子の `ack`・`report`・`publish` を含むほかのコマンドを拒否する。`init` は、完了したrunと終えたrunを未完了に数えない。
+続けられないrunは `end --run ... --reason <理由>` で終える。helperは、呼び出し元がownerか、resumeと同じ照合で旧ownerが不在であること、runが完了も終了もしていないこと、現在のattemptの子が動いていないことを確かめる。attemptが無いか `prepared` なら子は居ない。`splitting`・`pane_created` は、agent名の `get` が `agent_not_found` で終わること。それ以外は、`retry` と同じ範囲のagentが、結果が `finalized` と `background_stopped` の両方が真ならidle・doneであること、結果が無いか、どちらかが偽ならどれも居ないこと（停止を確認できない子はidle・doneでも再開しうる）。マーカー付きのPR・投稿・資源・判断待ちは条件にせず、変えない。終えたrunは `ended_reason` に理由を残し、イベント `run_ended`（理由・Issue・工程・attempt・呼び出し元）を記録する。attempt・paneは変えない。終えたrunは `status`・`reconcile`・`wait` だけを受け付け（`status: ended`・`next: none`）、子の `ack`・`report`・`publish` を含むほかのコマンドを拒否する。`init` は、完了したrunと終えたrunを未完了に数えない。
 
 `prepared` はsplit、`pane_created` はstartの意図をまだ保存していない。`launch` は保存したattemptを再利用して、その未実行部分だけを続ける。pane_createdではpaneのterminal IDと、別のagentが起動していないことも確認する。`splitting` / `starting` / `submitting` を未実行に戻さない。起動・送信とも、保存されたblocking判断や停止要求を副作用の前に検査する。
 

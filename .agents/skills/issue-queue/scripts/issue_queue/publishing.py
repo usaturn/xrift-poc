@@ -75,6 +75,12 @@ def publish(work: Workflow, attempt_id: str, request: Publication) -> None:
     if any(e.state != "confirmed" for e in attempt.effects):
         raise QueueError("成否不明の投稿を照合してから次の投稿へ進んでください")
     # 別keyに変えて同じ投稿を送らない。retryで引き継いだ投稿の記録とも比べる。
+    # 記録した投稿の送信本文やその引用は、マーカーの照合を重複させるので、kind・target・titleによらず送らない。
+    marked = next((e for e in attempt.effects if e.marker in request.body), None)
+    if marked is not None:
+        raise QueueError(
+            f"本文に投稿 {marked.key} のマーカーが含まれます（{marked.url}）。送信した本文やその引用は投稿できません"
+        )
     same = next(
         (
             e

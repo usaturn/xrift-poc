@@ -1221,6 +1221,17 @@ def test_retry_continues_followup_without_reposting(queue_env: QueueEnv, ending:
     # 同じkeyは照合だけ、同じ内容の別keyは拒否、新しい内容は1回だけPOSTする。
     publish(body)
     publish(queue_env.json_file("same.json", {**summary, "key": "summary-again"}), code=3)
+    # 引き継いだ投稿の送信本文（末尾にマーカー）や、その引用を別keyで渡しても、kindによらずPOSTしない。
+    sent = inherited["body"]
+    issues = len(queue_env.data()["issues"])
+    resent = [
+        {**summary, "key": "summary-sent", "body": sent},
+        {**summary, "key": "summary-quoted", "body": "引用します。\n\n" + sent},
+        {**summary, "key": "summary-issue", "kind": "issue", "target": None, "title": "調査結果", "body": sent},
+    ]
+    for index, request in enumerate(resent):
+        publish(queue_env.json_file(f"resent-{index}.json", request), code=3)
+    assert (len(queue_env.data()["comments"]), len(queue_env.data()["issues"])) == (1, issues)
     extra = queue_env.json_file("extra.json", {**summary, "key": "addendum", "body": "## 追記\n候補Bを起票した"})
     new_url = publish(extra)["run"]["attempts"][-1]["effects"][-1]["url"]
     assert len(queue_env.data()["comments"]) == 2
@@ -1248,6 +1259,30 @@ def test_retry_refuses_followup_with_unconfirmed_post(queue_env: QueueEnv) -> No
     stop_child(queue_env, run, attempt)
     queue_env.call("retry", "--run", run, "--reason", "投稿の成否を確かめずにやり直す", code=3)
     assert queue_env.call("status", "--run", run)["run"]["attempts"][-1]["closed"] is False
+
+
+@pytest.mark.parametrize("form", ["sent", "quoted", "issue"])
+def test_publish_refuses_body_with_recorded_marker_under_another_key(queue_env: QueueEnv, form: str) -> None:
+    # 同じattemptで記録した投稿の送信本文（末尾にマーカー）や、その引用を別keyで渡しても、kindによらずPOSTしない。
+    run, attempt = queue_env.followup()
+    summary = {"key": "summary", "kind": "comment", "target": 100, "title": None, "body": "## 調査結果\n候補Aは見送り"}
+
+    def publish(name: str, request: dict[str, Any], *, code: int = 0) -> dict[str, Any]:
+        file = queue_env.json_file(name, request)
+        args = ("publish", "--run", run, "--attempt", attempt["id"], "--input", str(file))
+        return queue_env.call(*args, pane_id=attempt["pane_id"], code=code)
+
+    sent = publish("summary.json", summary)["run"]["attempts"][-1]["effects"][0]["body"]
+    issues = len(queue_env.data()["issues"])
+    request = {
+        "sent": {**summary, "key": "summary-sent", "body": sent},
+        "quoted": {**summary, "key": "summary-quoted", "body": "引用します。\n\n" + sent},
+        "issue": {**summary, "key": "summary-issue", "kind": "issue", "target": None, "title": "結果", "body": sent},
+    }[form]
+    publish("resent.json", request, code=3)
+    assert (len(queue_env.data()["comments"]), len(queue_env.data()["issues"])) == (1, issues)
+    effects = queue_env.call("status", "--run", run)["run"]["attempts"][-1]["effects"]
+    assert [(e["key"], e["state"]) for e in effects] == [("summary", "confirmed")]
 
 
 def stopped_with_worktree(queue_env: QueueEnv, run: str, attempt: dict[str, Any]) -> Path:
@@ -1452,6 +1487,9 @@ def lose_split_response(queue_env: QueueEnv, run: str) -> None:
         "splitting",
         "child_gone",
         "settled_result",
+        "background_running_gone",
+        "background_running_done",
+        "not_finalized_idle",
         "idle_without_result",
         "working",
         "same_kind_in_pane",
@@ -1461,7 +1499,10 @@ def lose_split_response(queue_env: QueueEnv, run: str) -> None:
     ],
 )
 def test_end_accepts_only_run_whose_child_is_stopped(queue_env: QueueEnv, case: str) -> None:
-    # boundary〜settled_resultを受け付ける。idle_without_result以降はchild_goneから条件を1つだけ変える
+    # boundary〜background_running_goneを受け付ける。background_running_done・not_finalized_idleはsettled_resultの
+    # 結果の停止の報告を1つだけ偽にし、background_running_goneはさらに子のpaneを閉じる（停止を確認できない結果は、
+    # 子が居なければ受け付ける）。
+    # idle_without_result以降はchild_goneから条件を1つだけ変える
     # （idle_without_result・working・same_kind_in_paneは子のpaneを残す）。
     run = queue_env.init()
     caller = "w1:p1"
@@ -1474,6 +1515,13 @@ def test_end_accepts_only_run_whose_child_is_stopped(queue_env: QueueEnv, case: 
         queue_env.ack(run, attempt)
         if case == "settled_result":
             stop_child(queue_env, run, attempt)
+        elif case in ("background_running_gone", "background_running_done"):
+            stop_child(queue_env, run, attempt, background_stopped=False)
+            if case == "background_running_gone":
+                lose_child(queue_env, attempt)
+        elif case == "not_finalized_idle":
+            stop_child(queue_env, run, attempt, finalized=False)
+            queue_env.child(attempt, "idle")
         elif case == "idle_without_result":
             queue_env.child(attempt, "idle")
         elif case == "same_kind_in_pane":
@@ -1494,7 +1542,7 @@ def test_end_accepts_only_run_whose_child_is_stopped(queue_env: QueueEnv, case: 
     if case == "already_ended":
         end_run(queue_env, run, "最初の終了")
     reason = "子の停止を確認。\n続けられないので終える"
-    accepted = case in ("boundary", "prepared", "splitting", "child_gone", "settled_result")
+    accepted = case in ("boundary", "prepared", "splitting", "child_gone", "settled_result", "background_running_gone")
     end_run(queue_env, run, reason, pane_id=caller, code=0 if accepted else 3)
     saved = queue_env.call("status", "--run", run)["run"]
     assert saved["ended_reason"] == ("最初の終了" if case == "already_ended" else reason if accepted else None)
