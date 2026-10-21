@@ -54,6 +54,8 @@ def parser() -> argparse.ArgumentParser:
             item.add_argument("--reason")
         if name in {"abandon", "retry", "end"}:
             item.add_argument("--reason", required=True)
+        if name == "retry":
+            item.add_argument("--handover", type=Path, action="append", default=[])
         if name == "queue":
             item.add_argument("--issues", nargs="+", type=int, required=True)
             item.add_argument("--reason", required=True)
@@ -170,7 +172,7 @@ def main() -> int:
                 elif args.command == "abandon":
                     work.abandon(args.reason)
                 elif args.command == "retry":
-                    work.retry(args.reason)
+                    work.retry(args.reason, args.handover)
                 elif args.command == "end":
                     work.end(args.reason)
                 elif args.command == "stop":

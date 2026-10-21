@@ -174,10 +174,12 @@ class Workflow:
             self.run.stopped_reason = None
         self.save()
 
-    def retry(self, reason: str) -> None:
-        """終了結果を残して止まった子のattemptを閉じる。同じ工程は次のlaunchで新しいattemptとして起動し、作業を引き継ぐ。
+    def retry(self, reason: str, handover: list[Path] | None = None) -> None:
+        """受領済みの子が止まったattemptを閉じる。同じ工程は次のlaunchで新しいattemptとして起動し、作業を引き継ぐ。
 
-        paneは閉じず、ownerも移さない。子は終了処理とバックグラウンドの停止を報告済みなので使用版は照合しない。
+        結果を残した子は終了処理とバックグラウンドの停止を報告済みなので、残っていてもidle・doneならよい。
+        結果を残さずに終わった子は、居なくなったことを照合する。handoverは司令塔が照合して引き継ぐ資源のパス。
+        paneは閉じず、ownerも移さず、使用版は照合しない。
         """
         if not reason.strip():
             raise QueueError("やり直す理由を指定してください")
@@ -185,29 +187,65 @@ class Workflow:
         if caller != self.run.owner:
             self.check_takeover(caller)
         attempt = self.run.current()
-        if attempt is None or not attempt.acknowledged or attempt.result is None:
-            raise QueueError("やり直せるattemptがありません。終了結果を残した受領済みのattemptだけをやり直せます")
+        if attempt is None or not attempt.acknowledged:
+            raise QueueError("やり直せるattemptがありません。受領前に子が消えたattemptはabandonで閉じてください")
         result = attempt.result
-        if result.outcome == "success":
-            raise QueueError("成功した結果はadvanceで進めてください")
-        if not result.finalized or not result.background_stopped:
-            raise QueueError("子の終了処理またはバックグラウンドの停止を確認できません")
+        if result is not None:
+            if result.outcome == "success":
+                raise QueueError("成功した結果はadvanceで進めてください")
+            if not result.finalized or not result.background_stopped:
+                raise QueueError("子の終了処理またはバックグラウンドの停止を確認できません")
         if attempt.effects:
             # 新しい子が同じ投稿を重ねうる。成否不明の投稿は再送しない。
             raise QueueError("投稿の記録があるattemptはやり直せません。投稿を照合してください")
-        # 子が残っていても、turnを終えて入力待ちなら作業は止まっている。
-        agents = [agent for agent in self.child_agents(attempt, caller) if agent is not None]
-        if any(agent.get("agent_status") not in {"idle", "done"} for agent in agents):
+        if not self.child_stopped(attempt, caller):
+            if result is None:
+                raise QueueError(
+                    "子がまだ居ます。結果を残さずに止まった子は、利用者が子を終了させてからやり直してください"
+                )
             raise QueueError("子がまだ動いています。turnの終了を確認してからやり直してください")
         if self.marked_pr(attempt):
             raise QueueError("このattemptのマーカーを持つPRがあります。やり直さずに照合してください")
+        handed = self.handover_paths(attempt, handover or [])
         attempt.closed = True
         attempt.retry_reason = reason
-        self.run.event("attempt_retried", attempt=attempt.id, reason=reason, outcome=result.outcome)
+        attempt.handover = handed
+        self.run.event(
+            "attempt_retried",
+            attempt=attempt.id,
+            reason=reason,
+            outcome=result.outcome if result else None,
+            handover=handed,
+        )
         if self.run.stopped_reason:
             self.run.event("stop_resolved", previous=self.run.stopped_reason, reason=reason)
             self.run.stopped_reason = None
         self.save()
+
+    def handover_paths(self, attempt: Attempt, paths: list[Path]) -> list[str]:
+        """retryで新しい子へ引き継ぐ資源を照合する。実装の工程だけで、親main checkout以外の存在する絶対パスのうち、
+        パス（worktreeならbranchも）に処理中のIssueの番号が番号の境界で現れるもの。worktreeは一覧の形のパスで返す。
+
+        作り手は確かめられない（retainedと同じ）。新しい子はissue-to-prの引き継ぎでworktreeを照合し直す。
+        """
+        if not paths:
+            return []
+        if attempt.phase != "implement":
+            raise QueueError("資源を引き継げるのは実装の工程だけです")
+        worktrees = {str(Path(w["worktree"]).resolve()): w for w in self.ext.worktrees()}
+        handed: list[str] = []
+        for path in paths:
+            if not path.is_absolute() or not path.exists():
+                raise QueueError(f"引き継ぐ資源は存在する絶対パスで指定してください: {path}")
+            resolved = path.resolve()
+            if resolved == self.ext.parent:
+                raise QueueError("親main checkoutは引き継げません")
+            worktree = worktrees.get(str(resolved))
+            names = [worktree["worktree"], worktree.get("branch", "").removeprefix("refs/heads/")] if worktree else []
+            if not any(mentions_issue(name, attempt.issue) for name in [str(path), *names]):
+                raise QueueError(f"処理中のIssue #{attempt.issue} の資源ではありません: {path}")
+            handed.append(worktree["worktree"] if worktree else str(path))
+        return handed
 
     def end(self, reason: str) -> None:
         """続けられないrunを、子の停止を照合して理由とともに終える。終えたrunは新しいrunのinitを止めない。
@@ -360,11 +398,11 @@ class Workflow:
         handed: set[str] = set()
         for attempt in self.run.attempts:
             if attempt.retry_reason is not None:
-                # retryで同じ工程の次の子へ引き継いだ資源。引き継いだ子が結果を残すまで通す。
-                # ackの前にabandonで閉じたattemptは結果を残さないので数えない。
-                # 引き継いだ子が結果を残した後は、その子が結果に残した資源として扱う。
-                if attempt.result and self.run.stage_results(attempt.issue, attempt.phase)[-1].id == attempt.id:
-                    handed.update(kept.path for kept in attempt.result.retained)
+                # retryで同じ工程の次の子へ引き継いだ資源（子の結果に残したものと、司令塔が照合したもの）。
+                # 引き継いだ子が結果を残すまで通し（Run.handovers）、その後はその子が結果に残した資源として扱う。
+                if any(a.id == attempt.id for a in self.run.handovers(attempt.issue, attempt.phase)):
+                    handed.update(kept.path for kept in (attempt.result.retained if attempt.result else []))
+                    handed.update(attempt.handover)
                 continue
             for kept in attempt.result.retained if attempt.result else []:
                 if kept.blocks_next:

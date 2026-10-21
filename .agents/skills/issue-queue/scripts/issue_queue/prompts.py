@@ -11,18 +11,24 @@ from .models import Attempt, Run
 
 
 def handover(run: Run, attempt: Attempt) -> str:
-    """同じIssue・工程で直前に結果を残したattemptをretryで閉じていれば、その結果と残した資源を新しい子へ引き継ぐ文。"""
-    previous = next((a for a in reversed(run.stage_results(attempt.issue, attempt.phase)) if a.id != attempt.id), None)
-    if previous is None or previous.retry_reason is None or previous.result is None:
+    """同じIssue・工程でretryで閉じ、引き継ぎが続くattemptの結果・残した資源・司令塔が照合した資源を新しい子へ渡す文。"""
+    lines: list[str] = []
+    for previous in run.handovers(attempt.issue, attempt.phase):
+        if previous.id == attempt.id:
+            continue
+        result = previous.result
+        ended = "結果を残さずに" if result is None else f" {result.outcome} で"
+        lines += [
+            f"前のattempt {previous.id} は{ended}終わり、司令塔が `queue retry` でこのattemptに引き継いだ。",
+            f"引き継ぎの理由: {previous.retry_reason}",
+        ]
+        if result is not None:
+            retained = json.dumps([kept.model_dump() for kept in result.retained], ensure_ascii=False)
+            lines += [f"前の結果の要約: {result.summary}", f"前のattemptが残した資源（引き継ぐ）: {retained}"]
+        if previous.handover:
+            lines.append(f"司令塔が照合して引き継いだ資源: {json.dumps(previous.handover, ensure_ascii=False)}")
+    if not lines:
         return ""
-    result = previous.result
-    retained = json.dumps([kept.model_dump() for kept in result.retained], ensure_ascii=False)
-    lines = [
-        f"前のattempt {previous.id} は {result.outcome} で終わり、司令塔が `queue retry` でこのattemptに引き継いだ。",
-        f"引き継ぎの理由: {previous.retry_reason}",
-        f"前の結果の要約: {result.summary}",
-        f"前のattemptが残した資源（引き継ぐ）: {retained}",
-    ]
     if attempt.phase == "implement":
         lines.append(
             "issue-to-prの「issue-queueの引き継ぎ」に従い、引き継いだworktree・branchで続ける。"
