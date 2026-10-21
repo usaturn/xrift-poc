@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
+import uuid
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -435,21 +438,36 @@ def test_parent_preparation_keeps_an_existing_output(
 DSH_MODEL = "actual/model"
 
 
-def staged_reviewer(loop: Any, env: Any, monkeypatch: pytest.MonkeyPatch, *, case: str | None) -> Any:
-    """実際の pr-review prepare/complete で DSH の staged を作る偽の runner（子の起動と停止の観測だけを模す）。"""
+def staged_reviewer(
+    loop: Any, env: Any, monkeypatch: pytest.MonkeyPatch, *, case: str | None | Sequence[str | None]
+) -> Any:
+    """実際の pr-review prepare/complete で DSH の staged を作る偽の runner（子の起動と停止の観測だけを模す）。
+
+    case は起動ごとの振る舞いで、列なら起動ごとに次の値を使う（最後の値を使い続ける）。None は受け付けられる
+    staged、unstopped は停止を確認できない試行、identity は runner の識別が合わない試行。次は Issue #71 の経路:
+    abandoned は prepare をやり直して 1 回目のセッションを放棄し、2 回目のセッションで staged を返す。crashed・
+    timed_out は prepare の後に runner の段階で失敗する。reported は prepare の後に、review_run.py fail と同じ形の
+    payload でセッションを報告して止める。run ID と request ID は runner と同じく起動ごとに新しい値にする
+    （1 回目と再実行が別々の .staging/<run>/ を持つ）。短い確認（probe）には誰も答えない。
+    """
     from tools.test_support.dsh import write_session
 
     monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
     launched: list[str] = []
+    cases = [case] if case is None or isinstance(case, str) else list(case)
 
     def dispatch(config: Any, workflow: str, prompt: str, root: Path, **kwargs: Any) -> BatchResult:
         output: Path = kwargs["output_dir"]
-        work = output / "request-1" / "attempt-1" / "worktree"
+        if workflow == loop.PROBE_WORKFLOW:
+            return no_reviewers(output)
+        current = cases[min(len(launched), len(cases) - 1)]
+        run_id, request_id = uuid.uuid4().hex, uuid.uuid4().hex
+        work = output / request_id / "attempt-1" / "worktree"
         work.mkdir(parents=True)
         launched.append("alpha")
         request = Request(
-            run_id="fixture-run",
-            request_id="request-1",
+            run_id=run_id,
+            request_id=request_id,
             agent_id="alpha",
             role="inspect",
             work_dir=work,
@@ -466,57 +484,80 @@ def staged_reviewer(loop: Any, env: Any, monkeypatch: pytest.MonkeyPatch, *, cas
             monkeypatch.setenv(key, value)
         monkeypatch.chdir(work)
         parameters = loop.review_entry.parent_data.parameters_from_prompt(prompt)
-        prepared = loop.review_entry.prepare(
-            argparse.Namespace(
-                pr=parameters["pr_url"],
-                runtime="dsh",
-                model_name=None,
-                request=str(request_path),
-                review_commit=None,
-                source_root=None,
-                records_comments=parameters["records_comments"],
-                temp_root=None,
+
+        def prepare() -> dict[str, Any]:
+            prepared: dict[str, Any] = loop.review_entry.prepare(
+                argparse.Namespace(
+                    pr=parameters["pr_url"],
+                    runtime="dsh",
+                    model_name=None,
+                    request=str(request_path),
+                    review_commit=None,
+                    source_root=None,
+                    records_comments=parameters["records_comments"],
+                    temp_root=None,
+                )
             )
-        )
-        assert prepared["status"] == "prepared", prepared
-        head = prepared["reviewed_head"][:12]
-        Path(prepared["draft"]).write_text(
-            f"- 対象: PR #900 / head {head} / 2026-10-14\n- レビュアー: {DSH_MODEL}（ランタイム: dsh）\n\n"
-            "## Review history\n\n| Reviewed at (UTC) | HEAD | Mode |\n|---|---|---|\n"
-            f"| 2026-10-14T00:00:00Z | `{head}` | Initial |\n\n## Summary\n\n全体差分を確認した。\n",
-            encoding="utf-8",
-        )
-        findings = Path(prepared["findings_draft"])
-        document = json.loads(findings.read_text(encoding="utf-8"))
-        document["coverage"]["read"] = ["PR 全体の差分と change.txt の全文"]
-        findings.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
-        staged = loop.review_entry.complete(argparse.Namespace(state=prepared["state_file"]))
-        assert staged["status"] == "staged", staged
+            assert prepared["status"] == "prepared", prepared
+            return prepared
+
+        if current == "abandoned":
+            prepare()
+        prepared = prepare()
         identity = Identity(provider="commandcode", model=DSH_MODEL, effort="high", session_id="session-test")
-        if case == "identity":
-            identity.model = "other-model"
+        state: Any = "success"
+        exit_code: int | None = 0
+        payload: Any = None
+        if current == "crashed":
+            state, exit_code = "response_failed", 1
+        elif current == "timed_out":
+            state, exit_code = "timed_out", None
+        elif current == "reported":
+            _parent, session = loop.review_entry.workspace.load_state(prepared["state_file"])
+            payload = {
+                **loop.review_entry.result_fields(session),
+                "status": "failed",
+                "reason": "テスト: レビューの途中で止めた",
+                "retained_paths": loop.review_entry.retained_paths(session),
+            }
+        else:
+            head = prepared["reviewed_head"][:12]
+            Path(prepared["draft"]).write_text(
+                f"- 対象: PR #900 / head {head} / 2026-10-14\n- レビュアー: {DSH_MODEL}（ランタイム: dsh）\n\n"
+                "## Review history\n\n| Reviewed at (UTC) | HEAD | Mode |\n|---|---|---|\n"
+                f"| 2026-10-14T00:00:00Z | `{head}` | Initial |\n\n## Summary\n\n全体差分を確認した。\n",
+                encoding="utf-8",
+            )
+            findings = Path(prepared["findings_draft"])
+            document = json.loads(findings.read_text(encoding="utf-8"))
+            document["coverage"]["read"] = ["PR 全体の差分と change.txt の全文"]
+            findings.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+            payload = loop.review_entry.complete(argparse.Namespace(state=prepared["state_file"]))
+            assert payload["status"] == "staged", payload
+            if current == "identity":
+                identity.model = "other-model"
         attempt = Attempt(
             agent_id="alpha",
-            state="success",
+            state=state,
             identity=identity,
-            exit_code=0,
+            exit_code=exit_code,
             elapsed_seconds=1.0,
-            stop_confirmed=case != "unstopped",
+            stop_confirmed=current != "unstopped",
             work_dir=work,
             request_path=request_path,
-            payload=staged,
+            payload=payload,
         )
         result = Result(
-            request_id="request-1",
+            request_id=request_id,
             role="inspect",
             requested_agent="alpha",
             actual_agent="alpha",
-            state="success",
+            state=state,
             attempts=[attempt],
         )
         return BatchResult(
-            run_id="fixture-run",
-            state="success",
+            run_id=run_id,
+            state="success" if state == "success" else "failed",
             assignments={"inspect": ["alpha"]},
             results=[result],
             outside_changes=[],
@@ -526,6 +567,11 @@ def staged_reviewer(loop: Any, env: Any, monkeypatch: pytest.MonkeyPatch, *, cas
 
     monkeypatch.setattr(loop, "run_workflow", dispatch)
     return launched
+
+
+def staged_sessions(env: Any, run_id: str | None = None) -> list[str]:
+    """``.staging/<run>/<request>/<agent>/`` の直下に残っている項目の完全パス（名前の順）。run_id を省くと全 run。"""
+    return sorted(str(path) for path in env.review_dir.glob(f".staging/{run_id or '*'}/*/*/*"))
 
 
 @pytest.mark.parametrize("case", [None, "unstopped", "identity"])
@@ -633,19 +679,23 @@ def test_parent_input_is_removed_only_after_an_accepted_dsh_review(
         assert (path / "snapshot.json").is_file()
 
 
-def test_finish_reports_parent_input_left_by_failed_after_run(
-    loop: Any, env: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """後処理の失敗で settle_parent_input に届かなかった親入力も、finish の retained に出る。"""
-    dsh_parent_env(loop, env, monkeypatch)
-    staged_reviewer(loop, env, monkeypatch, case=None)
-    log = tmp_path / "after-run.log"
+def fail_after_run(loop: Any, monkeypatch: pytest.MonkeyPatch, log: Path) -> None:
+    """レビューの後処理（after_run）が、停止を確認した失敗を返すようにする。"""
     log.write_text("after_run failed\n", encoding="utf-8")
 
     def failed_after_run(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
         return [{"state": "failed", "stop_confirmed": True, "stdout_path": str(log), "stderr_path": str(log)}]
 
     monkeypatch.setattr(loop, "run_after_run", failed_after_run)
+
+
+def test_finish_reports_parent_input_left_by_failed_after_run(
+    loop: Any, env: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """後処理の失敗で settle_parent_input に届かなかった親入力も、finish の retained に出る。"""
+    dsh_parent_env(loop, env, monkeypatch)
+    staged_reviewer(loop, env, monkeypatch, case=None)
+    fail_after_run(loop, monkeypatch, tmp_path / "after-run.log")
     run_dir = Path(env.start()["run_dir"])
     loop.cycle_begin(run_dir, github=env.github)
     with pytest.raises(loop.LoopError) as error:
@@ -1610,9 +1660,10 @@ def test_cycle_record_without_the_rerun_fields_loads(loop: Any, env: Any) -> Non
     )
     path = run_dir / "cycle-1.json"
     record = read(path)
-    # この変更より前の helper が書いた記録には、再実行と調査用の欄（試行の要約を含む）が無い
+    # この変更より前の helper が書いた記録には、再実行と調査用の欄（試行の要約を含む）と、runner の run ID の欄が無い
     record["review"].pop("rerun")
     record["review"].pop("probe")
+    record["review"].pop("runner_run_id")
     for entry in record["review"]["reviewers"]:
         for key in ("rejected_stage", "request_file", "request_sha256", "attempts", "probe"):
             entry.pop(key)
@@ -1724,7 +1775,7 @@ def test_finish_and_status_report_the_first_attempt_worktree(loop: Any, env: Any
         "path": worktree,
         "exists": True,
         "registered": True,
-        "observed": [{"cycle": 1, "agent": "alpha", "attempt": "first"}],
+        "observed": [{"cycle": 1, "agent": "alpha", "attempt": "first", "source": "payload"}],
     }
     ref = retained_item(finished, f"refs/pr-review/{kit.number}")
     assert (ref["exists"], ref["registered"]) == (None, None)
@@ -1749,8 +1800,8 @@ def test_rerun_that_fails_again_reports_both_attempts(loop: Any, env: Any, kit: 
     finished = loop.finish(run_dir, abort="external: テストの終了")
 
     observed = {item["path"]: item["observed"] for item in finished["reviewer_retained"]}
-    assert observed[first] == [{"cycle": 1, "agent": "beta", "attempt": "first"}]
-    assert observed[rerun] == [{"cycle": 1, "agent": "beta", "attempt": "rerun"}]
+    assert observed[first] == [{"cycle": 1, "agent": "beta", "attempt": "first", "source": "payload"}]
+    assert observed[rerun] == [{"cycle": 1, "agent": "beta", "attempt": "rerun", "source": "payload"}]
     assert [item["attempt"] for item in observed[f"refs/pr-review/{kit.number}"]] == ["first", "rerun"]
 
 
@@ -1767,7 +1818,7 @@ def test_reviewer_retained_reports_the_state_after_removal(loop: Any, env: Any, 
 
     removed = retained_item(finished, worktree)
     assert (removed["exists"], removed["registered"]) == (False, False)
-    assert removed["observed"] == [{"cycle": 1, "agent": "alpha", "attempt": "first"}]
+    assert removed["observed"] == [{"cycle": 1, "agent": "alpha", "attempt": "first", "source": "payload"}]
     session = retained_item(finished, str(Path(worktree).parent))
     assert (session["exists"], session["registered"]) == (True, False)
 
@@ -1785,7 +1836,9 @@ def test_pending_rerun_does_not_count_the_same_attempt_twice(loop: Any, env: Any
     )
 
     [worktree] = session_worktrees(env)
-    assert retained_item(ended, worktree)["observed"] == [{"cycle": 1, "agent": "alpha", "attempt": "first"}]
+    assert retained_item(ended, worktree)["observed"] == [
+        {"cycle": 1, "agent": "alpha", "attempt": "first", "source": "payload"}
+    ]
 
 
 def test_reviewer_retained_survives_an_unreadable_worktree_list(
@@ -1806,3 +1859,199 @@ def test_reviewer_retained_survives_an_unreadable_worktree_list(
     item = retained_item(finished, worktree)
     assert (item["exists"], item["registered"]) == (True, None)
     assert finished["lock_released"] is True
+
+
+# --- .staging/ に残った DSH のセッション（#71） ------------------------------------------------------------------
+
+
+def staged_cycle(loop: Any, env: Any, monkeypatch: pytest.MonkeyPatch, case: str | None | list[str | None]) -> Path:
+    """alpha を DSH にし、実際の prepare/complete の偽の runner で、サイクル 1 の review の直前まで進める。"""
+    dsh_parent_env(loop, env, monkeypatch)
+    staged_reviewer(loop, env, monkeypatch, case=case)
+    run_dir = Path(env.start()["run_dir"])
+    loop.cycle_begin(run_dir, github=env.github)
+    return run_dir
+
+
+def test_session_abandoned_in_the_accepted_attempt_is_reported(
+    loop: Any, env: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 経路 1（PR #63 の再現）: 同じ試行の中で prepare をやり直し、2 回目のセッションで保存した。
+    # 受け付けた試行の payload は 2 回目しか指さないが、1 回目のセッションは .staging/<run>/ に残る
+    run_dir = staged_cycle(loop, env, monkeypatch, "abandoned")
+    reviewed = loop.review(run_dir, github=env.github, tmp_root=env.tmp_root)
+    assert [item["agent"] for item in reviewed["accepted"]] == ["alpha"]
+    # 保存したセッションは親の確定が消すので、残るのは放棄したものだけ
+    [abandoned] = staged_sessions(env)
+    # 偽の dispatch はこのプロセスの cwd を回収済みの worktree に移している。finish の前に戻す
+    monkeypatch.chdir(env.root)
+
+    finished = loop.finish(run_dir, abort="external: テストの終了")
+
+    assert finished["reviewer_retained"] == [
+        {
+            "path": abandoned,
+            "exists": True,
+            "registered": False,
+            "observed": [{"cycle": 1, "agent": "alpha", "attempt": "first", "source": "staging"}],
+        }
+    ]
+    assert loop.status(run_dir=run_dir)["reviewer_retained"] == finished["reviewer_retained"]
+    # 報告するだけで消さない
+    assert Path(abandoned, "session.json").is_file()
+
+
+@pytest.mark.parametrize("case", ["crashed", "timed_out", "unstopped"])
+def test_session_of_a_runner_level_failure_is_reported(
+    loop: Any, env: Any, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    # 経路 2: prepare の後に runner の段階で失敗した試行（終了コード 0 以外・期限切れ・停止を確認できない）は
+    # payload を読まずに却下するので、そのセッションは報告されないまま残る（PR #91・#92・#98、PR #76 の再実行）
+    run_dir = staged_cycle(loop, env, monkeypatch, case)
+    with pytest.raises(loop.LoopError) as error:
+        loop.review(run_dir, github=env.github, tmp_root=env.tmp_root)
+    assert (error.value.code, error.value.stage) == (6, "review")
+    [session] = staged_sessions(env)
+    monkeypatch.chdir(env.root)
+
+    if case == "unstopped":
+        # 停止を確かめられない runner の出力があるので、finish はロックを保持して止まる。回収の出力に出る
+        with pytest.raises(loop.LoopError) as held:
+            loop.finish(run_dir, abort="external: fixture reviewer failed")
+        assert held.value.code == 7
+        ended = loop.recover(run_dir, operator_confirmed_stopped="fixture: the fake runner has no process")
+    else:
+        ended = loop.finish(run_dir, abort="external: fixture reviewer failed")
+
+    assert retained_item(ended, session)["observed"] == [
+        {"cycle": 1, "agent": "alpha", "attempt": "first", "source": "staging"}
+    ]
+    assert Path(session, "session.json").is_file()
+
+
+def test_reported_session_is_counted_once_and_the_rerun_keeps_its_own_staging(
+    loop: Any, env: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # PR #76 の形: 1 回目は payload でセッションを報告して止まり（payload の段階の却下で再実行）、再実行は
+    # 別の .staging/<run>/ に作ったセッションを残して runner の段階で失敗する
+    run_dir = staged_cycle(loop, env, monkeypatch, ["reported", "crashed"])
+    pending = loop.review(run_dir, github=env.github, tmp_root=env.tmp_root)
+    assert pending["rerun"] == {"agents": ["alpha"]}
+    # 偽の dispatch はこのプロセスの cwd を回収済みの worktree に移している。親の準備の前に戻す
+    monkeypatch.chdir(env.root)
+    with pytest.raises(loop.LoopError) as error:
+        loop.review(run_dir, github=env.github, tmp_root=env.tmp_root)
+    assert error.value.code == 6
+    review = read(run_dir / "cycle-1.json")["review"]
+    first, rerun = review["batch"]["run_id"], review["rerun"]["batch"]["run_id"]
+    assert first != rerun
+    [reported] = staged_sessions(env, first)
+    [failed] = staged_sessions(env, rerun)
+
+    finished = loop.finish(run_dir, abort="external: fixture reviewer failed")
+
+    observed = [item["observed"] for item in finished["reviewer_retained"] if item["path"] == reported]
+    assert observed == [[{"cycle": 1, "agent": "alpha", "attempt": "first", "source": "payload"}]]
+    assert retained_item(finished, failed)["observed"] == [
+        {"cycle": 1, "agent": "alpha", "attempt": "rerun", "source": "staging"}
+    ]
+
+
+def test_saved_sessions_empty_levels_and_other_runs_are_not_reported(
+    loop: Any, env: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 対照: 保存できたセッションは親の確定が階層ごと消す。空の階層だけが残っても出さない。別の run（同じ PR の
+    # 前の run など）の .staging/<run>/ のセッションはこの run の報告に出さず、消さない
+    other = env.review_dir / ".staging" / ("0" * 32) / ("1" * 32) / "alpha" / "pr-review-900-otherrun"
+    other.mkdir(parents=True)
+    (other / "session.json").write_text("{}", encoding="utf-8")
+    run_dir = staged_cycle(loop, env, monkeypatch, None)
+    reviewed = loop.review(run_dir, github=env.github, tmp_root=env.tmp_root)
+    assert [item["agent"] for item in reviewed["accepted"]] == ["alpha"]
+    run_id = read(run_dir / "cycle-1.json")["review"]["batch"]["run_id"]
+    assert not (env.review_dir / ".staging" / run_id).exists()
+    (env.review_dir / ".staging" / run_id / ("2" * 32) / "alpha").mkdir(parents=True)
+    monkeypatch.chdir(env.root)
+
+    finished = loop.finish(run_dir, abort="external: テストの終了")
+
+    assert finished["reviewer_retained"] == []
+    assert (other / "session.json").is_file()
+
+
+def test_staging_walk_returns_leftovers_without_following_links(loop: Any, tmp_path: Path) -> None:
+    # 名前と種類だけを見る。たどるのはリンクでないディレクトリだけで、たどらない項目は残ったものとして返す
+    review_dir = tmp_path / "review"
+    run = review_dir / ".staging" / "run-1"
+    agent = run / "request-1" / "dsh-ccd"
+    session = agent / "pr-review-900-abcd1234"
+    (session / "worktree").mkdir(parents=True)
+    (agent / "stray.txt").write_text("x", encoding="utf-8")
+    (run / "request-2" / "dsh-ccd").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    (outside / "dsh-ccd" / "pr-review-900-outside0").mkdir(parents=True)
+    (run / "request-3").symlink_to(outside, target_is_directory=True)
+    (run / "stray.txt").write_text("x", encoding="utf-8")
+
+    assert loop._staging_sessions(review_dir, "run-1") == [
+        ("dsh-ccd", session),
+        ("dsh-ccd", agent / "stray.txt"),
+        (None, run / "request-3"),
+        (None, run / "stray.txt"),
+    ]
+    assert loop._staging_sessions(review_dir, "run-2") == []
+    # runner の Identifier の形でない run ID（壊れた記録）では、.staging/ の外を見ない
+    (review_dir / "elsewhere" / "request" / "dsh-ccd" / "pr-review-900-elsewher").mkdir(parents=True)
+    for broken in ("../elsewhere", "..", "run-1/request-1", ""):
+        assert loop._staging_sessions(review_dir, broken) == []
+
+
+def test_staging_walk_reports_the_directory_of_a_name_it_cannot_print(loop: Any, tmp_path: Path) -> None:
+    # UTF-8 で表せない名前（os.scandir はサロゲートで返す）は JSON の出力に書けず、finish・status・recover の
+    # 出力が UnicodeEncodeError で落ちる。名前の代わりに、それを含むディレクトリを返す
+    review_dir = tmp_path / "review"
+    agent = review_dir / ".staging" / "run-1" / "request-1" / "dsh-ccd"
+    session = agent / "pr-review-900-abcd1234"
+    session.mkdir(parents=True)
+    (agent / os.fsdecode(b"pr-review-900-\xff")).mkdir()
+
+    found = loop._staging_sessions(review_dir, "run-1")
+
+    assert found == [("dsh-ccd", session), ("dsh-ccd", agent)]
+    json.dumps([[name, str(path)] for name, path in found], ensure_ascii=False).encode("utf-8")
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root は権限によらず一覧を読める")
+def test_staging_walk_reports_a_directory_it_cannot_list(loop: Any, tmp_path: Path) -> None:
+    # 一覧を読めないディレクトリは、中に残ったものがありうるので、そのディレクトリ自体を返す
+    review_dir = tmp_path / "review"
+    agent = review_dir / ".staging" / "run-1" / "request-1" / "dsh-ccd"
+    (agent / "pr-review-900-abcd1234").mkdir(parents=True)
+    agent.chmod(0)
+    try:
+        assert loop._staging_sessions(review_dir, "run-1") == [("dsh-ccd", agent)]
+    finally:
+        agent.chmod(0o700)
+
+
+def test_session_left_by_a_review_whose_after_run_failed_is_reported(
+    loop: Any, env: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # 後処理の失敗（終了コード 5）では batch を記録できず、finish の回収が runner の出力（result.json）を消す。
+    # runner が結果を返した直後に記録した run ID で、.staging/<run>/ に残ったセッションを引く
+    run_dir = staged_cycle(loop, env, monkeypatch, "abandoned")
+    fail_after_run(loop, monkeypatch, tmp_path / "after-run.log")
+    with pytest.raises(loop.LoopError) as error:
+        loop.review(run_dir, github=env.github, tmp_root=env.tmp_root)
+    assert (error.value.code, error.value.stage) == (5, "after_run")
+    [abandoned] = staged_sessions(env)
+    review = read(run_dir / "cycle-1.json")["review"]
+    assert review["batch"] is None
+    assert review["runner_run_id"] == Path(abandoned).parents[2].name
+    monkeypatch.chdir(env.root)
+
+    finished = loop.finish(run_dir, abort="external: fixture after_run failed")
+
+    assert retained_item(finished, abandoned)["observed"] == [
+        {"cycle": 1, "agent": "alpha", "attempt": "first", "source": "staging"}
+    ]

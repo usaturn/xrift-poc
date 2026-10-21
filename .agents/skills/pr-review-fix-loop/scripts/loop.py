@@ -332,6 +332,9 @@ class RerunPart(StrictModel):
     ended_at: str | None = None
     seconds: float | None = None
     batch: BatchInfo | None = None
+    # runner が結果を返した直後に記録する runner の run ID（batch.run_id と同じ値）。後処理の失敗や中断で batch を
+    # 記録できなくても、.staging/<run>/ に残ったセッションを報告できるように残す（#71）。この欄より前の記録には無い
+    runner_run_id: str | None = None
     after_run_started: bool = False
     after_run: list[dict[str, Any]] | None = None
     cleanup: CleanupInfo | None = None
@@ -346,6 +349,9 @@ class ReviewPart(StrictModel):
     ended_at: str | None = None
     seconds: float | None = None
     batch: BatchInfo | None = None
+    # runner が結果を返した直後に記録する runner の run ID（batch.run_id と同じ値）。後処理の失敗や中断で batch を
+    # 記録できなくても、.staging/<run>/ に残ったセッションを報告できるように残す（#71）。この欄より前の記録には無い
+    runner_run_id: str | None = None
     after_run_started: bool = False
     after_run: list[dict[str, Any]] | None = None
     reviewers: list[ReviewerEntry] = Field(default_factory=list[ReviewerEntry])
@@ -1706,18 +1712,91 @@ def _review_outside_changes(review: ReviewPart) -> list[str]:
     return list(dict.fromkeys(path for part in parts if part.batch is not None for path in part.batch.outside_changes))
 
 
-def _reviewer_retained(run: RunRecord, cycles: Sequence[CycleRecord]) -> list[dict[str, Any]]:
-    """レビュアーの pr-review が残したと報告したパスごとの、過去の観測（observed）と、いまの状態。
+# runner の Identifier（tools/agent_runner/models.py）と同じ形。記録が壊れていても .staging/ の外を見ない
+_RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 
-    loop はこれらを所有しないので消さない。中身は読まず、lstat と tool_root の worktree の登録だけを見る。
-    絶対パスでない値（pr_ref の ref 名など）は、どのリポジトリのものか分からないので確かめない（null）。
+
+def _review_run_ids(review: ReviewPart) -> list[tuple[Literal["first", "rerun"], str]]:
+    """サイクルの 1 回目と再実行の runner の run ID。短い確認は保存先に書けず、セッションを作らないので含めない。
+
+    runner が結果を返した直後の記録（runner_run_id）と、検査の後の batch の両方を見る（どちらも同じ値。
+    runner_run_id より前の記録には batch しか無く、後処理の失敗や中断では batch が無い）。
+    """
+    parts: list[tuple[Literal["first", "rerun"], ReviewPart | RerunPart]] = [("first", review)]
+    if review.rerun is not None:
+        parts.append(("rerun", review.rerun))
+    found: list[tuple[Literal["first", "rerun"], str]] = [
+        (attempt, run_id)
+        for attempt, part in parts
+        for run_id in (part.runner_run_id, part.batch.run_id if part.batch is not None else None)
+        if run_id is not None
+    ]
+    return list(dict.fromkeys(found))
+
+
+def _staging_sessions(review_dir: Path, run_id: str) -> list[tuple[str | None, Path]]:
+    """DSH のレビュアーの pr-review が ``.staging/<run_id>/<request>/<agent>/`` に残したものと、その <agent> の名前。
+
+    セッションは <agent>/ の直下に作られる（pr-review の pr_review_parent.staging_root）。名前と種類だけを見て、
+    中身は読まず、リンクはたどらない。たどらない項目（<agent>/ の直下の項目と、上の階層のディレクトリでない項目）は
+    そのパスで返す。一覧を読めないディレクトリと、UTF-8 で表せない名前（出力の JSON に書けない）の項目を含む
+    ディレクトリは、中に残ったものがありうるので、そのディレクトリのパスで返す。無いディレクトリと空の
+    ディレクトリからは何も返さない。<agent> より上の階層のものの名前は None。並びは名前の順。
+    """
+    found: list[tuple[str | None, Path]] = []
+
+    def walk(directory: Path, agent: str | None, depth: int) -> None:
+        try:
+            with os.scandir(directory) as listing:
+                entries = sorted(listing, key=lambda entry: entry.name)
+        except FileNotFoundError, NotADirectoryError:
+            return
+        except OSError:
+            found.append((agent, directory))
+            return
+        unprintable = False
+        for entry in entries:
+            try:
+                entry.name.encode("utf-8")
+            except UnicodeEncodeError:
+                unprintable = True
+                continue
+            try:
+                descend = depth < 2 and entry.is_dir(follow_symlinks=False)
+            except OSError:
+                descend = False
+            if descend:
+                walk(Path(entry.path), entry.name if depth == 1 else None, depth + 1)
+            else:
+                found.append((agent, Path(entry.path)))
+        if unprintable:
+            found.append((agent, directory))
+
+    if _RUN_ID.fullmatch(run_id):
+        walk(review_dir / ".staging" / run_id, None, 0)
+    return found
+
+
+def _reviewer_retained(run: RunRecord, cycles: Sequence[CycleRecord]) -> list[dict[str, Any]]:
+    """レビュアーの pr-review が残したパスごとの、観測（observed）と、いまの状態。
+
+    観測は 2 種類ある。レビュアーが payload の retained_paths で報告したパス（source: payload）と、この run が
+    起動したレビュー（1 回目・再実行）の .staging/<run>/ に、いま残っている DSH のセッション（source: staging。
+    payload が指さないものや、payload を読まない runner の段階の失敗のものを含む。報告されたパスには重ねない）。
+    loop はこれらを所有しないので消さない。中身は読まず、名前と種類・lstat と tool_root の worktree の登録だけを
+    見る。絶対パスでない値（pr_ref の ref 名など）は、どのリポジトリのものか分からないので確かめない（null）。
     """
     observed: dict[str, list[dict[str, Any]]] = {}
     for cycle in cycles:
         for attempt, entry in _review_attempts(cycle.review):
             for path in entry.retained_paths:
                 observed.setdefault(path, []).append(
-                    {"cycle": cycle.cycle, "agent": entry.actual_agent, "attempt": attempt}
+                    {"cycle": cycle.cycle, "agent": entry.actual_agent, "attempt": attempt, "source": "payload"}
+                )
+        for attempt, run_id in _review_run_ids(cycle.review):
+            for agent, session in _staging_sessions(Path(run.review_dir), run_id):
+                observed.setdefault(
+                    str(session), [{"cycle": cycle.cycle, "agent": agent, "attempt": attempt, "source": "staging"}]
                 )
     if not observed:
         return []
@@ -1926,6 +2005,11 @@ def _review_batch(
             ) from error
         # 親の確定より前に runner の結果を残す。途中で止まっても、再開が同じ親の確定から続ける
         write_json(output_dir / "result.json", batch)
+    if part.runner_run_id is None:
+        # 回収は runner の出力（result.json）を消すので、batch を記録する前に止まっても
+        # .staging/<run>/ を引けるように残す
+        part.runner_run_id = batch.run_id
+        save_cycle(run_dir, cycle)
     config = load_review_config(run)
     if part.after_run is None:
         if part.after_run_started:
