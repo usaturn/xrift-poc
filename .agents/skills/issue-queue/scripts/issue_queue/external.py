@@ -178,7 +178,8 @@ class External:
             raise QueueError("GitHub一覧のページが不正です")
         return [item for page in pages for item in page]
 
-    def inventory(self) -> dict[str, Any]:
+    def worktrees(self) -> list[dict[str, str]]:
+        """git worktree list --porcelain -z の各worktreeの欄（worktree・HEAD・branch・detachedなど）。"""
         records: list[dict[str, str]] = []
         for block in self.git("worktree", "list", "--porcelain", "-z").split("\0\0"):
             record: dict[str, str] = {}
@@ -188,6 +189,10 @@ class External:
                     record[key] = value
             if record:
                 records.append(record)
+        return records
+
+    def inventory(self) -> dict[str, Any]:
+        records = self.worktrees()
         remote_main = self.git("ls-remote", "--heads", "origin", "refs/heads/main").split()
         if len(remote_main) != 2:
             raise QueueError("originのmainを確認できません")

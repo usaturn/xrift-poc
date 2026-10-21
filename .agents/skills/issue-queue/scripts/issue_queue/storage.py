@@ -59,8 +59,8 @@ class Store:
     def create(self, run: Run) -> Path:
         for file in self.base.glob("issue-queue.*/state.json"):
             previous = self.load(str(file.parent))
-            if not previous.complete:
-                raise QueueError(f"未完了runを再開してください: {file.parent}")
+            if not previous.complete and previous.ended_reason is None:
+                raise QueueError(f"未完了runを再開するか、続けられなければendで終えてください: {file.parent}")
         path = Path(tempfile.mkdtemp(prefix="issue-queue.", dir=self.base))
         self.save(path, run)
         return path

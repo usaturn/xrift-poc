@@ -1,5 +1,6 @@
 import fcntl
 import json
+import os
 import subprocess
 import sys
 import time
@@ -37,16 +38,34 @@ def test_launch_once_even_when_prompt_response_is_lost(queue_env: QueueEnv) -> N
     assert sum(c[:3] == ["herdr", "agent", "prompt"] for c in calls) == 1
 
 
-def test_long_idle_does_not_complete_or_close_pane(queue_env: QueueEnv) -> None:
+@pytest.mark.parametrize("state", ["idle", "done"])
+def test_child_idle_without_result_is_reported_apart_from_waiting(queue_env: QueueEnv, state: str) -> None:
+    # 結果の無いidleは、止まった子とバックグラウンドの処理を待つ子を区別できない。待機と区別して返し、待機は続ける。
     run = queue_env.init()
     attempt = queue_env.launch(run)
     queue_env.ack(run, attempt)
-    queue_env.child(attempt, "idle")
-    for _ in range(3):
+    queue_env.child(attempt, state)
+    for _ in range(2):
         observed = queue_env.call("reconcile", "--run", run)
-        assert observed["status"] == "waiting"
-        assert observed["next"] == "wait"
+        assert (observed["status"], observed["next"], observed["run"]["stopped_reason"]) == ("stalled", "wait", None)
+    # 長いidleでも完了にせず、paneを閉じない。
     queue_env.call("advance", "--run", run, code=3)
+    assert attempt["pane_id"] in queue_env.data()["panes"]
+    # バックグラウンドの処理の完了などで子が再開すれば、待機に戻る。
+    queue_env.child(attempt, "working")
+    assert queue_env.call("wait", "--run", run)["status"] == "waiting"
+
+
+def test_child_agent_exited_without_result_is_blocked_without_error(queue_env: QueueEnv) -> None:
+    # 子のagentが結果を残さずに終了し、paneにはshellだけが残る（クラッシュ・/exit）。
+    run = queue_env.init()
+    attempt = queue_env.launch(run)
+    queue_env.ack(run, attempt)
+    data = queue_env.data()
+    data["panes"][attempt["pane_id"]].update(name=None, agent=None, agent_session=None, agent_status="unknown")
+    queue_env.save(data)
+    observed = queue_env.call("reconcile", "--run", run)
+    assert (observed["status"], observed["next"]) == ("blocked", "inspect")
     assert attempt["pane_id"] in queue_env.data()["panes"]
 
 
@@ -511,6 +530,22 @@ def test_saved_launch_resumes_with_saved_version_after_origin_moved(queue_env: Q
     resumed = queue_env.launch(run)
     assert (resumed["id"], resumed["launch"]) == (saved["id"], "submitted")
     assert resumed["version"] == saved["version"]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can read files regardless of their permissions")
+def test_cleanup_child_at_work_is_reconciled_without_reading_skill_files(queue_env: QueueEnv) -> None:
+    # 片付けの子は作業の中で親main checkoutを更新する。置き換え中の版の対象のファイルを読めない間も照合を止めない。
+    run, _ = queue_env.cleanup()
+    skills = queue_env.root / ".agents/skills/issue-to-pr"
+    skills.mkdir(parents=True)
+    unreadable = skills / "SKILL.md"
+    unreadable.write_text("updating skills\n")
+    unreadable.chmod(0)
+    try:
+        observed = queue_env.call("reconcile", "--run", run)
+    finally:
+        unreadable.chmod(0o600)
+    assert (observed["status"], observed["next"]) == ("waiting", "wait")
 
 
 def test_monitor_limit_on_cleanup_resumes_into_update(queue_env: QueueEnv) -> None:
@@ -1166,19 +1201,105 @@ def test_retry_accepts_only_stopped_child_with_finished_work(queue_env: QueueEnv
     assert sum(c[:3] == ["herdr", "agent", "start"] for c in queue_env.data()["calls"]) == 1
 
 
-def test_retry_refuses_followup_with_publications(queue_env: QueueEnv) -> None:
+@pytest.mark.parametrize(
+    ("ending", "urls"),
+    [("stopped", "own"), ("stopped", "with_inherited"), ("no_result", "own"), ("stopped", "missing_own")],
+)
+def test_retry_continues_followup_without_reposting(queue_env: QueueEnv, ending: str, urls: str) -> None:
+    # 投稿（confirmed）を残した持ち越しをやり直す。引き継いだ投稿を重ねずに、残りの投稿だけを行う。
     run, attempt = queue_env.followup()
-    body = queue_env.json_file(
-        "comment.json", {"key": "summary", "kind": "comment", "target": 100, "title": None, "body": "## 調査結果"}
-    )
+    summary = {
+        "key": "summary",
+        "kind": "comment",
+        "target": 100,
+        "title": None,
+        "body": "## 調査結果\n候補Aは見送り。\n実例 `$(not-a-command)`",
+    }
+    body = queue_env.json_file("summary.json", summary)
     published = queue_env.call(
         "publish", "--run", run, "--attempt", attempt["id"], "--input", str(body), pane_id=attempt["pane_id"]
     )
     url = published["run"]["attempts"][-1]["effects"][0]["url"]
-    stop_child(queue_env, run, attempt, urls=[url])
-    # 新しい子が同じ投稿を重ねうるので、投稿の記録があるattemptはやり直さない。
-    queue_env.call("retry", "--run", run, "--reason", "持ち越しをやり直す", code=3)
+    if ending == "stopped":
+        stop_child(queue_env, run, attempt, urls=[url])
+    else:
+        lose_child(queue_env, attempt)
+    queue_env.call("retry", "--run", run, "--reason", "原因を取り除いた。\n投稿は済み")
+    relaunched = queue_env.launch(run)
+    inherited = relaunched["effects"][0]
+    assert (inherited["state"], inherited["url"], inherited["inherited_from"]) == ("confirmed", url, attempt["id"])
+    assert url in relaunched["prompt"]
+    queue_env.ack(run, relaunched)
+
+    def publish(file: Path, *, code: int = 0) -> dict[str, Any]:
+        args = ("publish", "--run", run, "--attempt", relaunched["id"], "--input", str(file))
+        return queue_env.call(*args, pane_id=relaunched["pane_id"], code=code)
+
+    # 同じkeyは照合だけ、同じ内容の別keyは拒否、新しい内容は1回だけPOSTする。
+    publish(body)
+    publish(queue_env.json_file("same.json", {**summary, "key": "summary-again"}), code=3)
+    # 引き継いだ投稿の送信本文（末尾にマーカー）や、その引用を別keyで渡しても、kindによらずPOSTしない。
+    sent = inherited["body"]
+    issues = len(queue_env.data()["issues"])
+    resent = [
+        {**summary, "key": "summary-sent", "body": sent},
+        {**summary, "key": "summary-quoted", "body": "引用します。\n\n" + sent},
+        {**summary, "key": "summary-issue", "kind": "issue", "target": None, "title": "調査結果", "body": sent},
+    ]
+    for index, request in enumerate(resent):
+        publish(queue_env.json_file(f"resent-{index}.json", request), code=3)
+    assert (len(queue_env.data()["comments"]), len(queue_env.data()["issues"])) == (1, issues)
+    extra = queue_env.json_file("extra.json", {**summary, "key": "addendum", "body": "## 追記\n候補Bを起票した"})
+    new_url = publish(extra)["run"]["attempts"][-1]["effects"][-1]["url"]
+    assert len(queue_env.data()["comments"]) == 2
+    # 結果のurlsは、このattemptの投稿をすべて含み、照合済みのURLだけからなれば受け付ける。
+    reported = {"own": [new_url], "with_inherited": [url, new_url], "missing_own": [url]}[urls]
+    queue_env.report(run, relaunched, urls=reported)
+    queue_env.child(relaunched, "done")
+    queue_env.call("advance", "--run", run, code=3 if urls == "missing_own" else 0)
+
+
+def test_retry_refuses_followup_with_unconfirmed_post(queue_env: QueueEnv) -> None:
+    # 成否不明の投稿は再送しないので、新しい子に同じ工程をやり直させない。
+    run, attempt = queue_env.followup()
+    data = queue_env.data()
+    data["fail"] = "gh api repos/usaturn/xrift-poc/issues"
+    queue_env.save(data)
+    body = queue_env.json_file(
+        "post.json", {"key": "candidate-B", "kind": "issue", "target": None, "title": "B", "body": "body"}
+    )
+    args = ("publish", "--run", run, "--attempt", attempt["id"], "--input", str(body))
+    queue_env.call(*args, pane_id=attempt["pane_id"], code=3)
+    data = queue_env.data()
+    data["fail"] = None
+    queue_env.save(data)
+    stop_child(queue_env, run, attempt)
+    queue_env.call("retry", "--run", run, "--reason", "投稿の成否を確かめずにやり直す", code=3)
     assert queue_env.call("status", "--run", run)["run"]["attempts"][-1]["closed"] is False
+
+
+@pytest.mark.parametrize("form", ["sent", "quoted", "issue"])
+def test_publish_refuses_body_with_recorded_marker_under_another_key(queue_env: QueueEnv, form: str) -> None:
+    # 同じattemptで記録した投稿の送信本文（末尾にマーカー）や、その引用を別keyで渡しても、kindによらずPOSTしない。
+    run, attempt = queue_env.followup()
+    summary = {"key": "summary", "kind": "comment", "target": 100, "title": None, "body": "## 調査結果\n候補Aは見送り"}
+
+    def publish(name: str, request: dict[str, Any], *, code: int = 0) -> dict[str, Any]:
+        file = queue_env.json_file(name, request)
+        args = ("publish", "--run", run, "--attempt", attempt["id"], "--input", str(file))
+        return queue_env.call(*args, pane_id=attempt["pane_id"], code=code)
+
+    sent = publish("summary.json", summary)["run"]["attempts"][-1]["effects"][0]["body"]
+    issues = len(queue_env.data()["issues"])
+    request = {
+        "sent": {**summary, "key": "summary-sent", "body": sent},
+        "quoted": {**summary, "key": "summary-quoted", "body": "引用します。\n\n" + sent},
+        "issue": {**summary, "key": "summary-issue", "kind": "issue", "target": None, "title": "結果", "body": sent},
+    }[form]
+    publish("resent.json", request, code=3)
+    assert (len(queue_env.data()["comments"]), len(queue_env.data()["issues"])) == (1, issues)
+    effects = queue_env.call("status", "--run", run)["run"]["attempts"][-1]["effects"]
+    assert [(e["key"], e["state"]) for e in effects] == [("summary", "confirmed")]
 
 
 def stopped_with_worktree(queue_env: QueueEnv, run: str, attempt: dict[str, Any]) -> Path:
@@ -1351,3 +1472,336 @@ def test_own_issue_worktree_retained_by_child_passes_cleanup_and_is_judged_later
     event = [e for e in state["events"] if e["action"] == "worktrees_ignored"][-1]
     assert (event["check"], event["issue"]) == ("implement_launch", 12)
     assert str(work) in [w["path"] for w in event["worktrees"]]
+
+
+def end_run(queue_env: QueueEnv, run: str, reason: str, *, pane_id: str = "w1:p1", code: int = 0) -> dict[str, Any]:
+    return queue_env.call("end", "--run", run, "--reason", reason, pane_id=pane_id, code=code)
+
+
+def lose_child(queue_env: QueueEnv, attempt: dict[str, Any]) -> None:
+    """子のpaneが閉じられた。子のagentと名前も無くなる。"""
+    data = queue_env.data()
+    del data["panes"][attempt["pane_id"]]
+    queue_env.save(data)
+
+
+def lose_split_response(queue_env: QueueEnv, run: str) -> None:
+    """splitの応答が失われ、attemptがsplittingのまま残る。fakeはpaneを作ってから応答を落とす。"""
+    data = queue_env.data()
+    data["fail_after"] = "herdr pane split"
+    queue_env.save(data)
+    queue_env.call("launch", "--run", run, code=3)
+    data = queue_env.data()
+    data["fail_after"] = None
+    queue_env.save(data)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "boundary",
+        "prepared",
+        "splitting",
+        "child_gone",
+        "settled_result",
+        "background_running_gone",
+        "background_running_done",
+        "not_finalized_idle",
+        "idle_without_result",
+        "working",
+        "same_kind_in_pane",
+        "herdr_failure",
+        "owner_alive",
+        "already_ended",
+    ],
+)
+def test_end_accepts_only_run_whose_child_is_stopped(queue_env: QueueEnv, case: str) -> None:
+    # boundary〜background_running_goneを受け付ける。background_running_done・not_finalized_idleはsettled_resultの
+    # 結果の停止の報告を1つだけ偽にし、background_running_goneはさらに子のpaneを閉じる（停止を確認できない結果は、
+    # 子が居なければ受け付ける）。
+    # idle_without_result以降はchild_goneから条件を1つだけ変える
+    # （idle_without_result・working・same_kind_in_paneは子のpaneを残す）。
+    run = queue_env.init()
+    caller = "w1:p1"
+    if case == "prepared":
+        queue_env.interrupt_launch(run, "prepared")
+    elif case == "splitting":
+        lose_split_response(queue_env, run)
+    elif case != "boundary":
+        attempt = queue_env.launch(run)
+        queue_env.ack(run, attempt)
+        if case == "settled_result":
+            stop_child(queue_env, run, attempt)
+        elif case in ("background_running_gone", "background_running_done"):
+            stop_child(queue_env, run, attempt, background_stopped=False)
+            if case == "background_running_gone":
+                lose_child(queue_env, attempt)
+        elif case == "not_finalized_idle":
+            stop_child(queue_env, run, attempt, finalized=False)
+            queue_env.child(attempt, "idle")
+        elif case == "idle_without_result":
+            queue_env.child(attempt, "idle")
+        elif case == "same_kind_in_pane":
+            # 子のagent名は消えたが、保存したterminalのpaneで同じkindのagentが入力待ちで残る。
+            data = queue_env.data()
+            data["panes"][attempt["pane_id"]].update(name=None, agent_status="idle")
+            queue_env.save(data)
+        elif case != "working":
+            lose_child(queue_env, attempt)
+        data = queue_env.data()
+        if case == "herdr_failure":
+            data["fail"] = "herdr agent get " + attempt["agent_name"]
+            data["fail_stderr"] = '{"error":{"code":"server_error","message":"lookup failed"},"id":"cli:agent:get"}'
+        if case == "owner_alive":
+            caller = "w1:p9"
+            data["panes"][caller] = pane(caller, "another-controller")
+        queue_env.save(data)
+    if case == "already_ended":
+        end_run(queue_env, run, "最初の終了")
+    reason = "子の停止を確認。\n続けられないので終える"
+    accepted = case in ("boundary", "prepared", "splitting", "child_gone", "settled_result", "background_running_gone")
+    end_run(queue_env, run, reason, pane_id=caller, code=0 if accepted else 3)
+    saved = queue_env.call("status", "--run", run)["run"]
+    assert saved["ended_reason"] == ("最初の終了" if case == "already_ended" else reason if accepted else None)
+    # 終える操作はpaneを閉じない。
+    assert not any(c[:3] == ["herdr", "pane", "close"] for c in queue_env.data()["calls"])
+
+
+def test_ended_run_refuses_progress_and_allows_new_init(queue_env: QueueEnv) -> None:
+    # 1bの形: ack済み・結果なしで子のpaneが閉じられた。旧helperが書いた形（ended_reasonの欄なし）から終える。
+    run = queue_env.init()
+    attempt = queue_env.launch(run)
+    queue_env.ack(run, attempt)
+    lose_child(queue_env, attempt)
+    state_file = Path(run) / "state.json"
+    state = json.loads(state_file.read_text())
+    state.pop("ended_reason")
+    for item in state["attempts"]:
+        item.pop("handover")
+        for effect in item["effects"]:
+            effect.pop("inherited_from")
+    state_file.write_text(json.dumps(state))
+    init = ("init", "--input", str(queue_env.home / "input.json"))
+    queue_env.call(*init, code=3)
+    reason = "子が結果を残さずに終わり、paneも無い。\n残りは新しいrunで処理する"
+    ended = end_run(queue_env, run, reason)
+    assert (ended["status"], ended["next"]) == ("ended", "none")
+    event = next(e for e in ended["run"]["events"] if e["action"] == "run_ended")
+    observed_event = (event["reason"], event["issue"], event["phase"], event["attempt"])
+    assert observed_event == (reason, 11, "implement", attempt["id"])
+    observed = queue_env.call("reconcile", "--run", run)
+    assert (observed["status"], observed["next"]) == ("ended", "none")
+    for command in (("launch",), ("advance",), ("resume",), ("abandon", "--reason", "r"), ("retry", "--reason", "r")):
+        assert queue_env.call(command[0], "--run", run, *command[1:], code=3)["next"] == "none"
+    new_run = queue_env.call(*init)["run_dir"]
+    assert new_run != run
+    assert (Path(run) / "state.json").is_file()
+    assert sum(c[:3] == ["herdr", "pane", "split"] for c in queue_env.data()["calls"]) == 1
+
+
+def test_ended_run_refuses_records_from_its_child(queue_env: QueueEnv) -> None:
+    # 結果を残して入力待ちの子が、runを終えた後にackや結果を送っても記録しない。
+    run = queue_env.init()
+    attempt = queue_env.launch(run)
+    queue_env.ack(run, attempt)
+    stop_child(queue_env, run, attempt)
+    end_run(queue_env, run, "停止を確認して終える")
+    queue_env.call("ack", "--run", run, "--attempt", attempt["id"], pane_id=attempt["pane_id"], code=3)
+    result = queue_env.result(run, attempt, outcome="stopped", loop_run=None)
+    report = ("report", "--run", run, "--attempt", attempt["id"], "--input", str(result))
+    queue_env.call(*report, pane_id=attempt["pane_id"], code=3)
+    events = queue_env.call("status", "--run", run)["run"]["events"]
+    assert sum(e["action"] == "ack" for e in events) == 1
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "pane_closed",
+        "agent_exited",
+        "monitor_limit",
+        "idle",
+        "working",
+        "same_kind_in_pane",
+        "herdr_failure",
+        "marker_pr",
+        "owner_alive",
+        "not_acknowledged",
+    ],
+)
+def test_retry_without_result_accepts_only_child_that_is_gone(queue_env: QueueEnv, case: str) -> None:
+    # pane_closed・agent_exited・monitor_limitだけを受け付ける。他はpane_closedから条件を1つだけ変える。
+    run = queue_env.init()
+    attempt = queue_env.launch(run)
+    if case != "not_acknowledged":
+        queue_env.ack(run, attempt)
+    if case == "monitor_limit":
+        # 子が結果を残さずにidleのまま監視上限を過ぎ、その後に利用者がpaneを閉じた。
+        queue_env.child(attempt, "idle")
+        state_file = Path(run) / "state.json"
+        state = json.loads(state_file.read_text())
+        state["attempts"][-1]["created_at"] = (datetime.now(UTC) - timedelta(hours=9)).isoformat()
+        state_file.write_text(json.dumps(state))
+        assert queue_env.call("reconcile", "--run", run)["run"]["stopped_reason"]
+    caller = "w1:p1"
+    data = queue_env.data()
+    child = data["panes"][attempt["pane_id"]]
+    if case == "agent_exited":
+        child.update(name=None, agent=None, agent_session=None, agent_status="unknown")
+    elif case == "idle":
+        child["agent_status"] = "idle"
+    elif case == "same_kind_in_pane":
+        child.update(name=None, agent_status="idle")
+    elif case != "working":
+        del data["panes"][attempt["pane_id"]]
+    if case == "herdr_failure":
+        data["fail"] = "herdr agent get " + attempt["agent_name"]
+        data["fail_stderr"] = '{"error":{"code":"server_error","message":"lookup failed"},"id":"cli:agent:get"}'
+    if case == "owner_alive":
+        caller = "w1:p9"
+        data["panes"][caller] = pane(caller, "another-controller")
+    queue_env.save(data)
+    if case == "marker_pr":
+        queue_env.merge(attempt, close=False)
+    accepted = case in ("pane_closed", "agent_exited", "monitor_limit")
+    reason = "子は結果を残さずに止まった。\n同じ工程をやり直す"
+    queue_env.call("retry", "--run", run, "--reason", reason, pane_id=caller, code=0 if accepted else 3)
+    saved = queue_env.call("status", "--run", run)["run"]
+    closed = (saved["attempts"][-1]["closed"], saved["attempts"][-1]["retry_reason"])
+    assert closed == ((True, reason) if accepted else (False, None))
+    if accepted:
+        assert saved["stopped_reason"] is None
+        event = next(e for e in saved["events"] if e["action"] == "attempt_retried")
+        assert (event["attempt"], event["outcome"]) == (attempt["id"], None)
+    assert sum(c[:3] == ["herdr", "agent", "start"] for c in queue_env.data()["calls"]) == 1
+
+
+def test_retry_hands_over_worktree_of_attempt_without_result(queue_env: QueueEnv) -> None:
+    # #69の形: 実装の子がworktreeに作業を残し、結果を残さずにpaneが閉じられた。司令塔が照合して引き継ぐ。
+    run = queue_env.init()
+    attempt = queue_env.launch(run)
+    queue_env.ack(run, attempt)
+    work = queue_env.home / "issue-11-work"
+    queue_env.git("worktree", "add", "-q", "-b", "fix/issue-11-work", str(work), "HEAD")
+    spec = queue_env.root / "docs_draft/superpowers/2026-10-21-issue-11-design.md"
+    spec.parent.mkdir(parents=True)
+    spec.write_text("# 前の子のSpec\n")
+    lose_child(queue_env, attempt)
+    reason = "子は容量不足で止まり、paneが閉じられた。\n作業を引き継ぐ"
+    # 1つの--handoverに並べても、資源ごとに繰り返してもよい。司令塔のagentは並べて書いた（行動比較の場面8）。
+    queue_env.call("retry", "--run", run, "--reason", reason, "--handover", str(work), str(spec))
+    # 起動の前の検査は、引き継いだworktreeで止まらない。
+    relaunched = queue_env.launch(run)
+    for handed in (attempt["id"], reason, str(work), str(spec)):
+        assert handed in relaunched["prompt"]
+    # 引き継ぎは次のattemptが結果を残すまで。結果に残さなかったworkは、片付けの起動の前の検査で止まる。
+    queue_env.ack(run, relaunched)
+    queue_env.merge(relaunched)
+    queue_env.report(run, relaunched)
+    queue_env.child(relaunched, "done")
+    queue_env.call("advance", "--run", run)
+    finish_stage(queue_env, run, [])  # 持ち越し
+    blocked = queue_env.call("launch", "--run", run, code=3)
+    assert str(work) in blocked["reason"] and "Issue #11" in blocked["reason"]
+
+
+@pytest.mark.parametrize("case", ["missing", "unrelated_dir", "other_issue", "parent", "relative", "followup"])
+def test_retry_handover_refuses_unverified_paths(queue_env: QueueEnv, case: str) -> None:
+    # 引き継げるのは、実装の工程で、処理中のIssueの番号がパスかbranchに現れる、存在する絶対パスだけ。
+    if case == "followup":
+        run, attempt = queue_env.followup()
+    else:
+        run = queue_env.init()
+        attempt = queue_env.launch(run)
+        queue_env.ack(run, attempt)
+    work = queue_env.home / "issue-11-work"
+    path = {
+        "missing": queue_env.home / "issue-11-gone",
+        "unrelated_dir": queue_env.home / "plain-dir",
+        "other_issue": queue_env.home / "other-work",
+        "parent": queue_env.root,
+        "relative": Path("issue-11-work"),
+        "followup": work,
+    }[case]
+    if case == "unrelated_dir":
+        path.mkdir()
+    elif case == "other_issue":
+        queue_env.git("worktree", "add", "-q", "-b", "feat/issue-12-x", str(path), "HEAD")
+    elif case in ("relative", "followup"):
+        queue_env.git("worktree", "add", "-q", "-b", "fix/issue-11-work", str(work), "HEAD")
+    lose_child(queue_env, attempt)
+    queue_env.call("retry", "--run", run, "--reason", "r", "--handover", str(path), code=3)
+    assert queue_env.call("status", "--run", run)["run"]["attempts"][-1]["closed"] is False
+
+
+def test_handover_survives_retried_attempt_without_result(queue_env: QueueEnv) -> None:
+    # A: worktreeを残してstopped → retry → B: ack後に結果を残さずpaneが閉じられた → retry → C。
+    # Bは結果を残していないので、Aの引き継ぎはCまで続き、Cの依頼文にAとBが入る。Cが結果を残すと終わる。
+    run = queue_env.init()
+    first = queue_env.launch(run)
+    queue_env.ack(run, first)
+    work = stopped_with_worktree(queue_env, run, first)
+    queue_env.call("retry", "--run", run, "--reason", "テストの不具合を修正済み")
+    second = queue_env.launch(run)
+    queue_env.ack(run, second)
+    lose_child(queue_env, second)
+    reason = "引き継いだ子も結果を残さずに止まった。\n続けてやり直す"
+    queue_env.call("retry", "--run", run, "--reason", reason)
+    third = queue_env.launch(run)
+    for handed in (first["id"], second["id"], reason, str(work)):
+        assert handed in third["prompt"]
+    queue_env.ack(run, third)
+    queue_env.merge(third)
+    queue_env.report(run, third)
+    queue_env.child(third, "done")
+    queue_env.call("advance", "--run", run)
+    finish_stage(queue_env, run, [])  # 持ち越し
+    blocked = queue_env.call("launch", "--run", run, code=3)
+    assert str(work) in blocked["reason"] and "Issue #11" in blocked["reason"]
+
+
+def test_abandon_closes_prepared_attempt_after_version_change(queue_env: QueueEnv) -> None:
+    # 3a: 起動予定（prepared）を保存した後に版が変わった。splitを送っていないので閉じて起動し直す。
+    run = queue_env.init()
+    queue_env.interrupt_launch(run, "prepared")
+    saved = queue_env.call("status", "--run", run)["run"]["attempts"][-1]
+    skills = queue_env.root / ".agents/skills/issue-to-pr"
+    skills.mkdir(parents=True)
+    (skills / "SKILL.md").write_text("updated skills\n")
+    # 版の照合の例外にせず、閉じる操作の案内とともに止まる。
+    observed = queue_env.call("reconcile", "--run", run)
+    assert (observed["status"], observed["next"]) == ("blocked", "inspect")
+    queue_env.call("launch", "--run", run, code=3)
+    queue_env.call("abandon", "--run", run, "--reason", "版が変わった起動予定。\n起動し直す")
+    relaunched = queue_env.launch(run)
+    assert relaunched["id"] != saved["id"]
+    assert relaunched["version"]["helper_skills_sha256"] != saved["version"]["helper_skills_sha256"]
+    assert sum(c[:3] == ["herdr", "pane", "split"] for c in queue_env.data()["calls"]) == 1
+
+
+@pytest.mark.parametrize("case", ["agent_absent", "agent_found", "herdr_failure", "owner_alive"])
+def test_abandon_closes_splitting_attempt_only_without_child(queue_env: QueueEnv, case: str) -> None:
+    # 3b: splitの応答が失われた。startを送っていないので、名前のagentが居ないことを確かめて閉じる。
+    run = queue_env.init()
+    lose_split_response(queue_env, run)
+    attempt = queue_env.call("status", "--run", run)["run"]["attempts"][-1]
+    assert attempt["launch"] == "splitting"
+    caller = "w1:p1"
+    data = queue_env.data()
+    if case == "agent_found":
+        data["panes"]["w1:p8"] = pane("w1:p8", "unexpected-session", name=attempt["agent_name"])
+    if case == "herdr_failure":
+        data["fail"] = "herdr agent get " + attempt["agent_name"]
+        data["fail_stderr"] = '{"error":{"code":"server_error","message":"lookup failed"},"id":"cli:agent:get"}'
+    if case == "owner_alive":
+        caller = "w1:p9"
+        data["panes"][caller] = pane(caller, "another-controller")
+    queue_env.save(data)
+    accepted = case == "agent_absent"
+    reason = "splitが作ったpaneは無いと確認した。\n起動し直す"
+    queue_env.call("abandon", "--run", run, "--reason", reason, pane_id=caller, code=0 if accepted else 3)
+    saved = queue_env.call("status", "--run", run)["run"]["attempts"][-1]
+    assert (saved["closed"], saved["abandon_reason"]) == ((True, reason) if accepted else (False, None))
+    if accepted:
+        assert queue_env.launch(run)["launch"] == "submitted"
+        assert sum(c[:3] == ["herdr", "pane", "split"] for c in queue_env.data()["calls"]) == 2

@@ -53,6 +53,17 @@ helperが子の `blocks_next=false` の保持を確認済みにするのを、�
 
 変更前でも多くの回で `summary` に書いたので、差は5回中1回から0回への減少にとどまる。依頼文の2文は、子が `retained` の範囲を読み違えないように明記するために残す。#69の試運転で別のセッションのworktreeを `retained` に書いたのはCodexの子だったが、Codex・Piでは比べていない。後のIssueの照合を飛ばさないことは、helperの変更がモデルに依らず守る。
 
+## 2026-10-21 場面8・9と、閉じられないattemptの扱い（#93）
+
+`retry` を結果の無いattemptと投稿のある持ち越しに広げ、`--handover`・`end`・`stalled`・子の起動前のattemptの `abandon` を足した。helperが閉じる・終える条件を照合するので、文面を読み違えた司令塔が条件を外れて閉じることはない。文書の効果は、新しい会話のサブエージェント（Opus 5.5。SKILL.md・protocol.mdだけを読ませ、evals・docs_draft・tmpは読ませない）に場面8・9の次の操作と理由を答えさせて比べた。変更前は親main checkoutの文書（`407f97b`）、変更後はPRの文書。
+
+- 場面8・変更前（378秒）: ack済みで結果の無いattemptを閉じる手段も、worktree・Spec・Planを新しい子へ渡す手段も文書に無いとして、`inspect` のまま利用者へ報告して止まった。`abandon`・`retry`・`report` の代筆・state.jsonの編集・worktreeの削除はしないとした
+- 場面8・変更後（406秒）: 子が `agent_not_found`、子のプロセスが残っていない、worktreeの `status --porcelain` が空、マーカー付きPRが無い、資源が前の子の作業であることを確かめ、容量不足が解消したかを利用者に確かめてから、`retry --handover <worktree> <Spec> <Plan>` → `resume` → `reconcile` → `launch` とした。`end`・`abandon`・削除・別のモデルへの暗黙の切り替えはしないとした。複数のパスを1つの `--handover` に並べて書いたので、並べる書き方と繰り返す書き方の両方を受け付けるようにした
+- 場面9・変更前（604秒）: runを終える手段が文書に無いとして、blockingの判断を記録して利用者へ報告し、了承の後に新しいrunを `init` するとした。変更前のhelperでは、旧runが未完了なので `init` は拒否される
+- 場面9・変更後（292秒）: マーカー付きPRがあるので `retry` を使わず、`end` で終えて `status: ended`・`next: none` を確かめ、PR・worktree・branchを消さずに報告し、利用者が示した#12・#13で `init` して、新しいrunでPR #120をretainとして登録するとした
+
+場面8・9とも、変更前は手段が無く報告で止まり、変更後は文書のコマンドで続ける・終えるに進んだ。どちらも状態ファイルを編集せず、子をkillせず、資源を消さなかった。Codex・Piの司令塔では比べていない。`stalled`（受け入れ条件2）は場面に含めていない。helperが返す値で、司令塔は表の `wait` の行に従う。
+
 ## 実機
 
 ### 2026-10-19 PR #78 の確認

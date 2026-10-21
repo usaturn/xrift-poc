@@ -7,6 +7,7 @@ from uuid import uuid4
 from .external import agent_args, identity
 from .models import Attempt
 from .prompts import child_prompt
+from .publishing import inherited_effects
 from .storage import QueueError
 from .workflow import Workflow
 
@@ -34,12 +35,14 @@ def launch(work: Workflow) -> None:
             launch_args=agent_args(run.policy.agent_kind, run.policy.agent_args),
             launch="prepared",
         )
+        # retryで引き継いだ持ち越しの投稿は、このattemptの記録として照合する。同じkeyの投稿は照合だけになる。
+        attempt.effects = inherited_effects(run, attempt)
         attempt.prompt = child_prompt(run, attempt, work.path)
         run.attempts.append(attempt)
         run.event("launch_prepared", attempt=token)
         work.save()
     elif work.ext.version() != attempt.version:
-        raise QueueError("保存した起動予定から使用版が変わっています")
+        raise QueueError("保存した起動予定から使用版が変わっています。abandonで閉じてから起動し直してください")
     if attempt.launch == "prepared":
         attempt.launch = "splitting"
         work.save()

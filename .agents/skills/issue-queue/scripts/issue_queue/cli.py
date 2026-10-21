@@ -15,7 +15,7 @@ from .lifecycle import acknowledge, launch, submit
 from .models import Decision, Init, Result
 from .publishing import Publication, publish
 from .storage import QueueError, Store
-from .workflow import Workflow, initialize
+from .workflow import Workflow, ended_message, initialize
 
 
 def parser() -> argparse.ArgumentParser:
@@ -33,6 +33,7 @@ def parser() -> argparse.ArgumentParser:
         "resume",
         "abandon",
         "retry",
+        "end",
         "stop",
         "ack",
         "report",
@@ -51,8 +52,11 @@ def parser() -> argparse.ArgumentParser:
         if name == "resume":
             item.add_argument("--continue", dest="proceed", action="store_true")
             item.add_argument("--reason")
-        if name in {"abandon", "retry"}:
+        if name in {"abandon", "retry", "end"}:
             item.add_argument("--reason", required=True)
+        if name == "retry":
+            # 1つの--handoverに並べても、資源ごとに繰り返してもよい。
+            item.add_argument("--handover", type=Path, action="extend", nargs="+")
         if name == "queue":
             item.add_argument("--issues", nargs="+", type=int, required=True)
             item.add_argument("--reason", required=True)
@@ -84,8 +88,21 @@ def main() -> int:
                 path = store.path(args.run)
                 work = Workflow(store, ext, path, store.load(args.run))
             try:
-                # resume・abandon・retryは、旧ownerの不在を照合して呼び出し元が実行できる。
-                if args.command not in {"status", "init", "ack", "report", "publish", "resume", "abandon", "retry"}:
+                # 終えたrunは記録を見るコマンドだけを受け付ける。子のack・report・publishも記録しない。
+                if work.run.ended_reason is not None and args.command not in {"status", "reconcile", "wait"}:
+                    raise QueueError(ended_message(work.run.ended_reason), next_action="none")
+                # resume・abandon・retry・endは、旧ownerの不在を照合して呼び出し元が実行できる。
+                if args.command not in {
+                    "status",
+                    "init",
+                    "ack",
+                    "report",
+                    "publish",
+                    "resume",
+                    "abandon",
+                    "retry",
+                    "end",
+                }:
                     work.owner()
                 if args.command == "launch":
                     launch(work)
@@ -156,7 +173,9 @@ def main() -> int:
                 elif args.command == "abandon":
                     work.abandon(args.reason)
                 elif args.command == "retry":
-                    work.retry(args.reason)
+                    work.retry(args.reason, args.handover)
+                elif args.command == "end":
+                    work.end(args.reason)
                 elif args.command == "stop":
                     work.run.stop_after = args.after
                     work.run.event("stop_requested", after=args.after)
@@ -170,7 +189,7 @@ def main() -> int:
                             work.ext.herdr("agent", "wait", attempt.pane_id, "--timeout", "30000")
                         except QueueError:
                             pass
-                if args.command in {"reconcile", "wait", "advance", "resume"}:
+                if args.command in {"reconcile", "wait", "advance", "resume", "end"}:
                     state, next_action, reason = work.observe()
                 else:
                     state, next_action, reason = "ok", "reconcile", "記録を保存しました"

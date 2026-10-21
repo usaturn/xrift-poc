@@ -76,6 +76,8 @@ class Effect(Record):
     state: Literal["intent", "confirmed"] = "intent"
     url: str | None = None
     created_at: str = Field(default_factory=now)
+    # retryで前のattemptから写した投稿の記録なら、投稿したattemptのID。このattemptの投稿ではない。
+    inherited_from: str | None = None
 
 
 class Attempt(Record):
@@ -100,8 +102,10 @@ class Attempt(Record):
     closed: bool = False
     # 受領前に子が消えたattemptをabandonで閉じた理由。
     abandon_reason: str | None = None
-    # 終了結果を残して止まったattemptをretryで閉じた理由。同じ工程で次に結果を残すattemptへ作業を引き継ぐ。
+    # 止まったattemptをretryで閉じた理由。同じ工程で次に結果を残すattemptへ作業を引き継ぐ。
     retry_reason: str | None = None
+    # retryで司令塔が照合して引き継いだ資源のパス（worktreeはgit worktree listの形）。結果の無いattemptの作業を渡す。
+    handover: list[str] = Field(default_factory=list[str])
     merged_at: str | None = None
     pr_url: str | None = None
     finished_at: str | None = None
@@ -135,11 +139,13 @@ class Run(Record):
     paused: bool = False
     complete: bool = False
     stopped_reason: str | None = None
+    # 続けられないrunをendで終えた理由。終えたrunは進めず、新しいrunのinitを止めない。旧helperのrunには無い。
+    ended_reason: str | None = None
     observation: dict[str, Any] = Field(default_factory=dict)
     events: list[dict[str, Any]] = Field(default_factory=list[dict[str, Any]])
 
     def current(self) -> Attempt | None:
-        if self.complete:
+        if self.complete or self.ended_reason is not None:
             return None
         return next(
             (
@@ -150,12 +156,18 @@ class Run(Record):
             None,
         )
 
-    def stage_results(self, issue: int, phase: Phase) -> list[Attempt]:
-        """同じIssue・工程で結果を残したattemptを起動の順に返す。
+    def handovers(self, issue: int, phase: Phase) -> list[Attempt]:
+        """retryで閉じたattemptのうち、引き継ぎが続いているもの（同じIssue・工程で後のattemptが結果を残していない）。
 
-        ackの前にabandonで閉じたattemptは結果も作業も持たないので、引き継ぎの前後関係に数えない。
+        起動の順に返す。ackの前にabandonで閉じたattemptと、結果を残さずにretryで閉じたattemptは、
+        結果を残さないので引き継ぎを終わらせない。引き継いだ子が結果を残すと、その結果に残した資源が後を継ぐ。
         """
-        return [a for a in self.attempts if (a.issue, a.phase) == (issue, phase) and a.result is not None]
+        stage = [a for a in self.attempts if (a.issue, a.phase) == (issue, phase)]
+        return [
+            a
+            for index, a in enumerate(stage)
+            if a.retry_reason is not None and all(later.result is None for later in stage[index + 1 :])
+        ]
 
     def event(self, action: str, **values: Any) -> None:
         self.events.append({"at": now(), "action": action, **values})

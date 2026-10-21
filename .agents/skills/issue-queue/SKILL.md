@@ -32,12 +32,12 @@ queue init --input <方針JSONの絶対パス>
 |---|---|
 | `launch` | `queue launch --run <run>`。起動予定を保存して子を起動する。中断前に保存した `prepared` / `pane_created` は、所有を確認して未実行の操作から続ける |
 | `submit` | `queue submit --run <run>`。起動を照合し、未送信と確認できた依頼だけを送る |
-| `wait` | `queue wait --run <run>`。最長30秒のイベント待機の後で現在状態を再取得する。idleで即戻る場合はランタイムの待機を挟み、外部状態は60秒以内を目安に再確認する |
+| `wait` | `queue wait --run <run>`。最長30秒のイベント待機の後で現在状態を再取得する。idleで即戻る場合はランタイムの待機を挟み、外部状態は60秒以内を目安に再確認する。`status` が `stalled` なら、ack済みの子が結果を残さずにturnを終えている（バックグラウンドの処理を待っている場合もある）。利用者へ一度知らせて待機を続ける |
 | `advance` | `queue advance --run <run>`。終了を再確認し、所有paneを閉じて次の工程へ移る |
 | `update_main` | 工程の境界で親main checkoutが最新のorigin/mainより古い。下の「main checkoutの更新」に従って更新し、`queue reconcile` で照合し直す。`launch`・`advance` の拒否でも返る |
 | `resume` | 保存した停止位置を利用者へ報告する。続行指示があるときに `queue resume --run <run> --continue` |
 | `decision` / `inspect` | 理由・子・残存資源を報告する。成否不明の操作を再送しない |
-| `none` | 完了を報告する。runの記録は残す |
+| `none` | 完了（`complete`）または終了（`ended`）を報告する。runの記録は残す |
 
 `issue-to-pr --merge → review-carry-over-followup → repo-cleanup-after-merge` の3工程を直列に行う。スキルの内部記録とロックは、そのスキルのhelperに管理させる。外側の司令塔は子の承認・質問に答えず、マージ・投稿・削除の条件を緩めない。片付けの子に頼む整理は、今回のPRとIssueのために作られた資源だけを対象にし、別のセッションの作業を消さない。
 
@@ -55,7 +55,8 @@ checkoutの衝突、fetch・ghの失敗で更新できなければ、`--force`�
 queue status --run <run>
 queue resume --run <run>
 queue abandon --run <run> --reason <理由>
-queue retry --run <run> --reason <理由>
+queue retry --run <run> --reason <理由> [--handover <絶対パス> ...]
+queue end --run <run> --reason <理由>
 queue stop --run <run> --after followup
 ```
 
@@ -63,7 +64,13 @@ queue stop --run <run> --after followup
 
 子がackの前に終わった場合（子のpaneが閉じられた、別のagentに使われた、起動直後に止まった）は、子が動いていないことと、attemptのマーカーを持つPRが無いことを確かめてから `abandon` でattemptを閉じ、理由を残す。helperも同じ条件を照合し、使用版が変わった後でも閉じられる。この会話や別のkindのagentが子のpaneを使っていても閉じられる。子のpaneの保存したterminalに、この会話以外の同じkindのagentがいれば、名前の消えた子と区別できないので閉じない。paneは閉じず、ownerと判断待ちは変えない。旧ownerが不在なら続けて `resume` で引き継ぎ、判断待ちを解決してから `reconcile` → `launch` で同じ工程を新しいattemptとして起動する。ack済みの子は打ち切れない。失敗した子を自動で作り直す機能ではない。
 
-ack済みの子が `stopped`・`failed` の結果を残して止まり、利用者の続行指示があって原因を取り除いた後は、子の停止・残した資源・PRの有無を確かめてから `retry` でattemptを閉じ、理由を残す。helperは、呼び出し元がownerか旧ownerが不在であること、結果の終了処理とバックグラウンドの停止が確認済みであること、投稿の記録が無いこと、子と子のpaneに残る同じkindのagentが不在かidle・doneであること、attemptのマーカーを持つPRが無いことを照合する。使用版は照合しないので、helperやmainが更新された後でも閉じられる。paneは閉じず、ownerと判断待ちは変えない。続けて `resume`（旧ownerが不在なら引き継ぐ）→ 判断待ちの解決 → `reconcile` → `launch` で同じ工程を新しいattemptとして起動する。新しい子への依頼文には前の結果と残した資源が入り（その子がackの前に終わり、`abandon` で閉じて起動し直した子にも入る）、実装の子はissue-to-prの「issue-queueの引き継ぎ」で前のworktreeを引き継ぐ。前のattemptが残した資源は、作業を引き継いだattempt（ackの前に `abandon` で閉じた結果の無いattemptを除く、同じ工程の次のattempt）が結果を残すまで起動の前の検査で通す。止まった子の作業を消すかは利用者が決める。
+子を起動する前のattemptも `abandon` で閉じる。起動予定（`prepared`・`pane_created`）を保存した後に使用版が変わると、`reconcile` が `abandon` を案内するので、閉じてから同じ工程を起動し直す。`splitting`（splitの応答が失われた）は、作られたかもしれないpaneを利用者が調べた後に閉じる。helperは名前のagentが居ないことを照合し、paneは閉じない。
+
+ack済みの子が止まり、利用者の続行指示があって原因を取り除いた後は、子の停止・残した資源・PRの有無を確かめてから `retry` でattemptを閉じ、理由を残す。止まり方は、`stopped`・`failed` の結果を残した場合と、結果を残さずに終わった場合（容量不足・利用上限・クラッシュ・paneを閉じた）がある。helperは、呼び出し元がownerか旧ownerが不在であること、投稿の記録があればすべて読み戻せること、attemptのマーカーを持つPRが無いことを照合する。結果があれば、結果の終了処理とバックグラウンドの停止が確認済みで、子と子のpaneに残る同じkindのagentが不在かidle・doneであること。結果が無ければ、それらのagentが居ないこと。結果の無いidle・doneの子はバックグラウンドの処理の完了で再開しうるので、利用者が子のpaneで再開するか終了させてから使い、子のプロセスが残っていないことを `monitoring-long-tasks` で確かめる。使用版は照合しないので、helperやmainが更新された後でも閉じられる。paneは閉じず、ownerと判断待ちは変えない。続けて `resume`（旧ownerが不在なら引き継ぐ）→ 判断待ちの解決 → `reconcile` → `launch` で同じ工程を新しいattemptとして起動する。
+
+新しい子への依頼文には前の結果と残した資源が入り（その子がackの前に終わり、`abandon` で閉じて起動し直した子にも入る）、実装の子はissue-to-prの「issue-queueの引き継ぎ」で前のworktreeを引き継ぐ。結果の無い実装のattemptでは、司令塔が前の子の作業と確かめたworktree・Spec・Plan・作業領域を `--handover` で渡す（パスかbranchに処理中のIssueの番号が現れる、存在する絶対パスだけ）。worktreeに未commitの変更があると新しい子は引き継ぎで止まるので、先に利用者へ伝えて扱いを決めてもらう。持ち越しの投稿は次のattemptの記録に引き継がれ、同じkeyの投稿は照合だけになり、同じ内容や、記録した投稿の送信本文（末尾のマーカー付き）・その引用を別のkeyで送ると拒否される。前のattemptが残した資源と `--handover` の資源は、同じ工程の後のattemptが結果を残すまで起動の前の検査で通す（`abandon` で閉じたattemptと結果の無いattemptは引き継ぎを終わらせない）。止まった子の作業を消すかは利用者が決める。
+
+続けられないrun（マーカー付きのPRを残して子が終わった、残りを新しいrunで処理したい など）は、利用者の打ち切りの指示があるときだけ `end` で終える。helperは、呼び出し元がownerか旧ownerが不在であること、現在の子が動いていないこと（終了処理とバックグラウンドの停止を確認した結果があれば居る子がidle・done、結果が無いか、どちらかの停止を確認できない結果なら子が居ないこと）を照合して理由を記録する。PR・投稿・worktree・判断待ちには触れない。終えたrunは `status: ended`・`next: none` を返し、進める操作も子の `ack`・`report`・`publish` も受け付けない。新しいrunの `init` は止めないが、対象と順序は利用者の指示で決める。残ったPR・worktree・投稿は完全パス・URLで報告し、片付けは利用者が決める。`retry`・`end` は、helperの照合が通っても利用者の指示が無ければ使わない。
 
 `--after followup` は持ち越しの調査後、片付けの前で止める。未実施のcleanupを保存し、再開はそこから始める。片付け後に止める場合だけ `--after cleanup` を使う。試運転は最初のcleanup後に止まる。利用者が子のblockedを解消した後は、事実を `resume --continue --reason <理由>` に記録できる。失敗した子を自動再起動する機能ではない。
 
