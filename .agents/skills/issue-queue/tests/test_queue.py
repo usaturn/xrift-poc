@@ -1,5 +1,6 @@
 import fcntl
 import json
+import os
 import subprocess
 import sys
 import time
@@ -529,6 +530,22 @@ def test_saved_launch_resumes_with_saved_version_after_origin_moved(queue_env: Q
     resumed = queue_env.launch(run)
     assert (resumed["id"], resumed["launch"]) == (saved["id"], "submitted")
     assert resumed["version"] == saved["version"]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can read files regardless of their permissions")
+def test_cleanup_child_at_work_is_reconciled_without_reading_skill_files(queue_env: QueueEnv) -> None:
+    # 片付けの子は作業の中で親main checkoutを更新する。置き換え中の版の対象のファイルを読めない間も照合を止めない。
+    run, _ = queue_env.cleanup()
+    skills = queue_env.root / ".agents/skills/issue-to-pr"
+    skills.mkdir(parents=True)
+    unreadable = skills / "SKILL.md"
+    unreadable.write_text("updating skills\n")
+    unreadable.chmod(0)
+    try:
+        observed = queue_env.call("reconcile", "--run", run)
+    finally:
+        unreadable.chmod(0o600)
+    assert (observed["status"], observed["next"]) == ("waiting", "wait")
 
 
 def test_monitor_limit_on_cleanup_resumes_into_update(queue_env: QueueEnv) -> None:

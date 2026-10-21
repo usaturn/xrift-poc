@@ -533,15 +533,16 @@ class Workflow:
                 if state == "outdated":
                     return "ok", "update_main", outdated_message(inventory)
             return "ok", "launch", "次の工程を起動できます"
-        version = self.ext.version()
-        if attempt.launch in {"prepared", "pane_created"} and version != attempt.version:
+        if attempt.launch in {"prepared", "pane_created"} and self.ext.version() != attempt.version:
             # 子を起動する前のattempt。版の照合で止めず、閉じて起動し直す操作を案内する。
             return self.progress_barrier() or ("blocked", "inspect", LAUNCH_PLAN_OUTDATED)
         if attempt.launch == "prepared":
             return self.progress_barrier() or ("ok", "launch", "保存した起動予定の未実行部分を進められます")
         if attempt.launch == "splitting" or not attempt.pane_id:
             return "blocked", "inspect", SPLIT_UNKNOWN
-        if attempt.phase != "cleanup" and version != attempt.version:
+        # 片付けの子は作業の中で親main checkoutを更新する。子の作業中は版の対象のファイルを読まず、
+        # 置き換え中のファイルの読み取りの失敗で照合を止めない。
+        if attempt.phase != "cleanup" and self.ext.version() != attempt.version:
             raise QueueError("工程の途中でスキル・helper・mainの版が変わりました。境界で照合してください")
         pane = self.ext.pane(attempt.pane_id)
         unreported = attempt.acknowledged and attempt.result is None
