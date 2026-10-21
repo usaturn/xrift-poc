@@ -26,6 +26,12 @@ UNREPORTED_AGENT_EXITED = (
     "子が結果を残さずに終了しました（paneにagentがいません）。"
     "子の作業を確かめ、retryで同じ工程をやり直すかendでrunを終えてください"
 )
+# 子を起動する前のattempt。どちらもabandonで閉じ、同じ工程を新しいattemptとして起動し直せる。
+LAUNCH_PLAN_OUTDATED = "子の起動前に使用版が変わりました。abandonで閉じてから起動し直してください"
+SPLIT_UNKNOWN = (
+    "pane作成の成否不明です。所有を照合するまで再作成しません。"
+    "作られたかもしれないpaneを調べた後はabandonで閉じられます"
+)
 UNREPORTED_TURN_ENDED = (
     "子が結果を残さずにturnを終えています。バックグラウンドの処理を待っているか、止まっています。"
     "子のpaneを確かめてください"
@@ -144,9 +150,10 @@ class Workflow:
                 raise QueueError("元の司令塔がまだ存在します。古さを理由に引き継げません")
 
     def abandon(self, reason: str) -> None:
-        """受領前に子が消えたattemptを閉じる。同じ工程は次のlaunchで新しいattemptとして起動する。
+        """受領前に子が消えたattemptと、子を起動する前のattemptを閉じる。同じ工程は次のlaunchで新しいattemptとして起動する。
 
-        paneは閉じず、ownerも移さない。工程の境界の操作なので使用版は照合しない。
+        子を起動する前のattemptは、使用版の変わったprepared（splitを送っていない）と、pane作成の成否不明のsplitting
+        （startを送っていない）。paneは閉じず、ownerも移さない。工程の境界の操作なので使用版は照合しない。
         """
         if not reason.strip():
             raise QueueError("打ち切る理由を指定してください")
@@ -154,17 +161,26 @@ class Workflow:
         if caller != self.run.owner:
             self.check_takeover(caller)
         attempt = self.run.current()
-        if attempt is None or not attempt.pane_id:
-            raise QueueError("打ち切れるattemptがありません。pane作成前の起動予定はlaunchで続けてください")
-        if attempt.acknowledged or attempt.result is not None:
-            raise QueueError("受領済みのattemptは打ち切れません。子の結果と作業を確認してください")
-        named, in_pane = self.child_agents(attempt, caller)
-        if named is not None:
-            raise QueueError("子のagentがまだ存在します。停止を確認してから打ち切ってください")
-        if in_pane is not None:
-            raise QueueError("子のpaneで同じkindのagentが動いています。停止を確認してから打ち切ってください")
-        if self.marked_pr(attempt):
-            raise QueueError("このattemptのマーカーを持つPRがあります。打ち切らずに照合してください")
+        if attempt is None:
+            raise QueueError("打ち切れるattemptがありません")
+        if attempt.launch == "prepared":
+            # 使用版が同じなら、保存した起動予定をlaunchで続けられる。
+            if self.ext.version() == attempt.version:
+                raise QueueError("打ち切れるattemptがありません。pane作成前の起動予定はlaunchで続けてください")
+        elif attempt.launch == "splitting":
+            # 名前の子が居れば起動の経緯が記録と合わない。splitが作ったかもしれないpaneは閉じず、利用者が調べる。
+            if self.named_agent(attempt) is not None:
+                raise QueueError("子のagentが存在します。起動の経緯を調べてください")
+        else:
+            if attempt.acknowledged or attempt.result is not None:
+                raise QueueError("受領済みのattemptは打ち切れません。子の結果と作業を確認してください")
+            named, in_pane = self.child_agents(attempt, caller)
+            if named is not None:
+                raise QueueError("子のagentがまだ存在します。停止を確認してから打ち切ってください")
+            if in_pane is not None:
+                raise QueueError("子のpaneで同じkindのagentが動いています。停止を確認してから打ち切ってください")
+            if self.marked_pr(attempt):
+                raise QueueError("このattemptのマーカーを持つPRがあります。打ち切らずに照合してください")
         attempt.closed = True
         attempt.abandon_reason = reason
         self.run.event("attempt_abandoned", attempt=attempt.id, reason=reason)
@@ -513,13 +529,17 @@ class Workflow:
                 if state == "outdated":
                     return "ok", "update_main", outdated_message(inventory)
             return "ok", "launch", "次の工程を起動できます"
-        if attempt.phase != "cleanup" and self.ext.version() != attempt.version:
-            raise QueueError("工程の途中でスキル・helper・mainの版が変わりました。境界で照合してください")
+        version = self.ext.version()
+        if attempt.launch in {"prepared", "pane_created"} and version != attempt.version:
+            # 子を起動する前のattempt。版の照合で止めず、閉じて起動し直す操作を案内する。
+            return self.progress_barrier() or ("blocked", "inspect", LAUNCH_PLAN_OUTDATED)
         if attempt.launch == "prepared":
             return self.progress_barrier() or ("ok", "launch", "保存した起動予定の未実行部分を進められます")
-        pane = self.ext.pane(attempt.pane_id) if attempt.pane_id else None
-        if not attempt.pane_id:
-            return "blocked", "inspect", "pane作成の成否不明です。所有を照合するまで再作成しません"
+        if attempt.launch == "splitting" or not attempt.pane_id:
+            return "blocked", "inspect", SPLIT_UNKNOWN
+        if attempt.phase != "cleanup" and version != attempt.version:
+            raise QueueError("工程の途中でスキル・helper・mainの版が変わりました。境界で照合してください")
+        pane = self.ext.pane(attempt.pane_id)
         unreported = attempt.acknowledged and attempt.result is None
         if pane is None and not attempt.closing:
             if unreported:

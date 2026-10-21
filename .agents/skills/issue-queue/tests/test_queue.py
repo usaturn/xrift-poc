@@ -1688,3 +1688,50 @@ def test_handover_survives_retried_attempt_without_result(queue_env: QueueEnv) -
     finish_stage(queue_env, run, [])  # 持ち越し
     blocked = queue_env.call("launch", "--run", run, code=3)
     assert str(work) in blocked["reason"] and "Issue #11" in blocked["reason"]
+
+
+def test_abandon_closes_prepared_attempt_after_version_change(queue_env: QueueEnv) -> None:
+    # 3a: 起動予定（prepared）を保存した後に版が変わった。splitを送っていないので閉じて起動し直す。
+    run = queue_env.init()
+    queue_env.interrupt_launch(run, "prepared")
+    saved = queue_env.call("status", "--run", run)["run"]["attempts"][-1]
+    skills = queue_env.root / ".agents/skills/issue-to-pr"
+    skills.mkdir(parents=True)
+    (skills / "SKILL.md").write_text("updated skills\n")
+    # 版の照合の例外にせず、閉じる操作の案内とともに止まる。
+    observed = queue_env.call("reconcile", "--run", run)
+    assert (observed["status"], observed["next"]) == ("blocked", "inspect")
+    queue_env.call("launch", "--run", run, code=3)
+    queue_env.call("abandon", "--run", run, "--reason", "版が変わった起動予定。\n起動し直す")
+    relaunched = queue_env.launch(run)
+    assert relaunched["id"] != saved["id"]
+    assert relaunched["version"]["helper_skills_sha256"] != saved["version"]["helper_skills_sha256"]
+    assert sum(c[:3] == ["herdr", "pane", "split"] for c in queue_env.data()["calls"]) == 1
+
+
+@pytest.mark.parametrize("case", ["agent_absent", "agent_found", "herdr_failure", "owner_alive"])
+def test_abandon_closes_splitting_attempt_only_without_child(queue_env: QueueEnv, case: str) -> None:
+    # 3b: splitの応答が失われた。startを送っていないので、名前のagentが居ないことを確かめて閉じる。
+    run = queue_env.init()
+    lose_split_response(queue_env, run)
+    attempt = queue_env.call("status", "--run", run)["run"]["attempts"][-1]
+    assert attempt["launch"] == "splitting"
+    caller = "w1:p1"
+    data = queue_env.data()
+    if case == "agent_found":
+        data["panes"]["w1:p8"] = pane("w1:p8", "unexpected-session", name=attempt["agent_name"])
+    if case == "herdr_failure":
+        data["fail"] = "herdr agent get " + attempt["agent_name"]
+        data["fail_stderr"] = '{"error":{"code":"server_error","message":"lookup failed"},"id":"cli:agent:get"}'
+    if case == "owner_alive":
+        caller = "w1:p9"
+        data["panes"][caller] = pane(caller, "another-controller")
+    queue_env.save(data)
+    accepted = case == "agent_absent"
+    reason = "splitが作ったpaneは無いと確認した。\n起動し直す"
+    queue_env.call("abandon", "--run", run, "--reason", reason, pane_id=caller, code=0 if accepted else 3)
+    saved = queue_env.call("status", "--run", run)["run"]["attempts"][-1]
+    assert (saved["closed"], saved["abandon_reason"]) == ((True, reason) if accepted else (False, None))
+    if accepted:
+        assert queue_env.launch(run)["launch"] == "submitted"
+        assert sum(c[:3] == ["herdr", "pane", "split"] for c in queue_env.data()["calls"]) == 2

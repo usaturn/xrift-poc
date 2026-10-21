@@ -42,7 +42,7 @@ def launch(work: Workflow) -> None:
         run.event("launch_prepared", attempt=token)
         work.save()
     elif work.ext.version() != attempt.version:
-        raise QueueError("保存した起動予定から使用版が変わっています")
+        raise QueueError("保存した起動予定から使用版が変わっています。abandonで閉じてから起動し直してください")
     if attempt.launch == "prepared":
         attempt.launch = "splitting"
         work.save()
