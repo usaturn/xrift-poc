@@ -47,7 +47,7 @@ helperは毎回、親main checkoutをcwdとする新しいHerdr paneを作り、
 
 - `outcome`: success / stopped / failed。監視上限やcycle_limitはsuccessにしない。
 - `finalized`: 内部スキルの終了処理が完了したか。`background_stopped`: 追跡する処理の停止を確かめたか。
-- `retained`: `{ "path": "完全パス", "reason": "保持理由", "blocks_next": false }` の一覧。残した実装worktreeも必ず含める。担当・停止・マージと競合の有無を確認する。削除してよいという意味ではない。
+- `retained`: `{ "path": "完全パス", "reason": "保持理由", "blocks_next": false }` の一覧。今回のIssueのためにqueueの工程が作って残した資源を書き、残した実装worktreeも必ず含める。担当・停止・マージと競合の有無を確認する。削除してよいという意味ではない。削除せずに報告するだけの別のセッションの資源は含めず、`summary` に完全パスと理由を書く。helperがこの一覧を確認済みとして通すのは、その子と同じIssueの照合だけである（「確認していないworktree」）。
 - `urls`: 持ち越しで投稿し、読み戻しを確認したURLのすべて。
 - `issues`: 作成・集約した同repositoryのIssue URL。追加なしの空配列も正常。
 - `loop_run`: 実装は今回のloop/run.jsonの完全パスが必須。他工程はnull。

@@ -85,7 +85,8 @@ cleanupで整理するのは今回のPRとIssueのために作られたbranch・
         )
     }
 空のurls/issues/retainedも正常な値です。未完了の確認をtrueやsuccessにしない。
-実装worktreeなど残した資源はretainedに完全パス・保持理由・次工程を妨げるかを必ず記録する。
+retainedは、今回のIssueのためにqueueの工程（実装・持ち越し・片付け）が作って残した資源（実装worktreeなど）の一覧で、完全パス・保持理由・次工程を妨げるかを必ず記録する。
+削除せずに報告するだけの別のセッションの資源（worktree・branchなど）は、summaryに完全パスと理由を書く。
 実装はloop finish後に結果を残す。持ち越しは全投稿の読み戻しとSESSIONの後片付け後に残す。
 秘密公開、CI失敗、利用上限、承認待ち、cycle_limit/stoppedでは停止理由を報告し再試行しない。
 """
