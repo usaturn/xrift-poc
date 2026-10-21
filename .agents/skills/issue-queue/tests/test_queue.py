@@ -37,16 +37,34 @@ def test_launch_once_even_when_prompt_response_is_lost(queue_env: QueueEnv) -> N
     assert sum(c[:3] == ["herdr", "agent", "prompt"] for c in calls) == 1
 
 
-def test_long_idle_does_not_complete_or_close_pane(queue_env: QueueEnv) -> None:
+@pytest.mark.parametrize("state", ["idle", "done"])
+def test_child_idle_without_result_is_reported_apart_from_waiting(queue_env: QueueEnv, state: str) -> None:
+    # 結果の無いidleは、止まった子とバックグラウンドの処理を待つ子を区別できない。待機と区別して返し、待機は続ける。
     run = queue_env.init()
     attempt = queue_env.launch(run)
     queue_env.ack(run, attempt)
-    queue_env.child(attempt, "idle")
-    for _ in range(3):
+    queue_env.child(attempt, state)
+    for _ in range(2):
         observed = queue_env.call("reconcile", "--run", run)
-        assert observed["status"] == "waiting"
-        assert observed["next"] == "wait"
+        assert (observed["status"], observed["next"], observed["run"]["stopped_reason"]) == ("stalled", "wait", None)
+    # 長いidleでも完了にせず、paneを閉じない。
     queue_env.call("advance", "--run", run, code=3)
+    assert attempt["pane_id"] in queue_env.data()["panes"]
+    # バックグラウンドの処理の完了などで子が再開すれば、待機に戻る。
+    queue_env.child(attempt, "working")
+    assert queue_env.call("wait", "--run", run)["status"] == "waiting"
+
+
+def test_child_agent_exited_without_result_is_blocked_without_error(queue_env: QueueEnv) -> None:
+    # 子のagentが結果を残さずに終了し、paneにはshellだけが残る（クラッシュ・/exit）。
+    run = queue_env.init()
+    attempt = queue_env.launch(run)
+    queue_env.ack(run, attempt)
+    data = queue_env.data()
+    data["panes"][attempt["pane_id"]].update(name=None, agent=None, agent_session=None, agent_status="unknown")
+    queue_env.save(data)
+    observed = queue_env.call("reconcile", "--run", run)
+    assert (observed["status"], observed["next"]) == ("blocked", "inspect")
     assert attempt["pane_id"] in queue_env.data()["panes"]
 
 

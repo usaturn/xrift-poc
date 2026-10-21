@@ -18,6 +18,18 @@ from .storage import QueueError, Store
 Check = Literal["implement_launch", "cleanup_launch", "cleanup_finish"]
 MainState = Literal["branch", "current", "outdated"]
 MAIN_ON_BRANCH = "親main checkoutがbranchにいます。queueは更新しません。detached HEADに戻してから照合し直してください"
+# ack済みで結果の無いattemptの子の状態。閉じる操作（retry・end）は子の不在を照合してから受け付ける。
+UNREPORTED_PANE_MISSING = (
+    "子のpaneが見つかりません。子が結果を残さずに終わったか調べ、retryで同じ工程をやり直すかendでrunを終えてください"
+)
+UNREPORTED_AGENT_EXITED = (
+    "子が結果を残さずに終了しました（paneにagentがいません）。"
+    "子の作業を確かめ、retryで同じ工程をやり直すかendでrunを終えてください"
+)
+UNREPORTED_TURN_ENDED = (
+    "子が結果を残さずにturnを終えています。バックグラウンドの処理を待っているか、止まっています。"
+    "子のpaneを確かめてください"
+)
 
 
 def timestamp(value: str) -> datetime:
@@ -469,7 +481,10 @@ class Workflow:
         pane = self.ext.pane(attempt.pane_id) if attempt.pane_id else None
         if not attempt.pane_id:
             return "blocked", "inspect", "pane作成の成否不明です。所有を照合するまで再作成しません"
+        unreported = attempt.acknowledged and attempt.result is None
         if pane is None and not attempt.closing:
+            if unreported:
+                return "blocked", "inspect", UNREPORTED_PANE_MISSING
             return "blocked", "inspect", "子のpaneが見つかりません。再起動せず調査してください"
         if attempt.launch == "starting" or (attempt.identity is None and attempt.launch != "pane_created"):
             # startの応答が失われても、sessionが初回入力後に現れるagentでも、
@@ -480,6 +495,11 @@ class Workflow:
         if pane is not None and pane.get("agent_status") == "blocked":
             self.run.stopped_reason = "子がblockedです。司令塔は代わりに回答しません"
             return "blocked", "inspect", self.run.stopped_reason
+        if pane and attempt.identity and not pane.get("agent_session"):
+            # 子のagentが終了し、paneにはshellだけが残る（クラッシュ・/exit）。閉じる操作が子の不在を照合する。
+            if unreported:
+                return "blocked", "inspect", UNREPORTED_AGENT_EXITED
+            return "blocked", "inspect", "子のpaneにagentがいません。子の終了を調べてください"
         if pane and attempt.identity and identity(pane) != attempt.identity:
             raise QueueError("paneの担当が変わっています")
         if barrier := self.progress_barrier():
@@ -498,6 +518,9 @@ class Workflow:
         if not attempt.acknowledged:
             return "waiting", "wait", "依頼の受領を待っています。再送しません"
         if attempt.result is None:
+            if pane is not None and pane.get("agent_status") in {"idle", "done"}:
+                # 止まった子とバックグラウンドの処理の完了を待つ子を区別できないので、待機と分けて返し待機を続ける。
+                return "stalled", "wait", UNREPORTED_TURN_ENDED
             return "waiting", "wait", "明示的な終了結果を待っています"
         result = attempt.result
         if result.outcome != "success" or not result.finalized or not result.background_stopped:
