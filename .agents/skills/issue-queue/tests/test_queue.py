@@ -1303,3 +1303,51 @@ def test_retry_handover_survives_abandoned_relaunch(queue_env: QueueEnv, abandon
     queue_env.call("advance", "--run", run)
     blocked = queue_env.call("launch", "--run", run, code=3)
     assert str(work) in blocked["reason"] and "Issue #11" in blocked["reason"]
+
+
+def finish_stage(queue_env: QueueEnv, run: str, retained: list[dict[str, Any]]) -> None:
+    """今の工程の子を起動し、retainedを指定した成功の結果を残して次の工程へ進める。実装の工程はマージも再現する。"""
+    attempt = queue_env.launch(run)
+    queue_env.ack(run, attempt)
+    if attempt["phase"] == "implement":
+        queue_env.merge(attempt)
+    queue_env.report(run, attempt, retained=retained)
+    queue_env.child(attempt, "done")
+    queue_env.call("advance", "--run", run)
+
+
+@pytest.mark.parametrize("phase", ["implement", "followup", "cleanup"])
+def test_worktree_of_later_issue_retained_by_earlier_child_still_blocks(queue_env: QueueEnv, phase: str) -> None:
+    # #94: 別のセッションの#12のworktreeを、#11の子が削除せずに報告するためblocks_next=falseで残した。
+    other = queue_env.home / "other-session"
+    queue_env.git("worktree", "add", "-q", "-b", "feat/issue-12-other", str(other), "HEAD")
+    kept = [{"path": str(other), "reason": "別のセッションの作業。\n削除せずに報告", "blocks_next": False}]
+    run = queue_env.init()
+    for stage in ("implement", "followup", "cleanup"):
+        finish_stage(queue_env, run, kept if stage == phase else [])
+    blocked = queue_env.call("launch", "--run", run, code=3)
+    assert str(other) in blocked["reason"] and "Issue #12" in blocked["reason"]
+    assert blocked["next"] == "inspect"
+    assert not [a for a in blocked["run"]["attempts"] if a["issue"] == 12]
+
+
+def test_own_issue_worktree_retained_by_child_passes_cleanup_and_is_judged_later(queue_env: QueueEnv) -> None:
+    # 実装の子が自分のIssueのworktreeをblocks_next=falseで残す流れ。片付けの起動・終了の照合を通る。
+    run = queue_env.init()
+    attempt = queue_env.launch(run)
+    queue_env.ack(run, attempt)
+    work = queue_env.home / "issue-11-work"
+    queue_env.git("worktree", "add", "-q", "-b", "fix/issue-11-work", str(work), "HEAD")
+    queue_env.merge(attempt)
+    kept = [{"path": str(work), "reason": "実装worktree。\n片付けで整理", "blocks_next": False}]
+    queue_env.report(run, attempt, retained=kept)
+    queue_env.child(attempt, "done")
+    queue_env.call("advance", "--run", run)
+    finish_stage(queue_env, run, [])  # 持ち越し
+    finish_stage(queue_env, run, [])  # 片付け。起動と終了の照合でworkを通す
+    # 次のIssueの照合では確認済みにせず、番号に当たらないので止めずに無視して記録する。
+    assert queue_env.launch(run)["issue"] == 12
+    state = queue_env.call("status", "--run", run)["run"]
+    event = [e for e in state["events"] if e["action"] == "worktrees_ignored"][-1]
+    assert (event["check"], event["issue"]) == ("implement_launch", 12)
+    assert str(work) in [w["path"] for w in event["worktrees"]]

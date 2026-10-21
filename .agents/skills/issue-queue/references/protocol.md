@@ -74,7 +74,7 @@ helperは毎回、親main checkoutをcwdとする新しいHerdr paneを作り、
 
 ## 確認していないworktree
 
-実装の工程の起動・片付けの工程の起動・片付けの工程の終了の照合で、親main checkout、retainで登録したパス、結果に `blocks_next=false` で残されたパス、`retry` で引き継いだ資源（引き継いだattemptが結果を残すまで）以外のworktreeを判定する。処理中のIssueの番号Nについて、worktreeのパスか、`refs/heads/` を除いたbranch名に `issue-N` が番号の境界（直前が英数字でなく、直後が数字でない。大文字と小文字を区別しない）で現れるもの、結果に `blocks_next=true` で残されたものがあれば、`次工程を妨げるworktreeがあります` にパスと理由を並べて止まる。それ以外は中身を検査せずに無視し、runのイベントに残す。直前の `worktrees_ignored` と同じ内容なら重ねない。
+実装の工程の起動・片付けの工程の起動・片付けの工程の終了の照合で、親main checkout、retainで登録したパス、処理中のIssueの子が結果に `blocks_next=false` で残したパス、`retry` で引き継いだ資源（引き継いだattemptが結果を残すまで）以外のworktreeを判定する。別のIssueの子が `blocks_next=false` で残したパスは確認済みにせず、ほかのworktreeと同じく判定する。子が別のセッションの作業を `retained` に書いても、後のIssueの照合は飛ばさない。処理中のIssueの番号Nについて、worktreeのパスか、`refs/heads/` を除いたbranch名に `issue-N` が番号の境界（直前が英数字でなく、直後が数字でない。大文字と小文字を区別しない）で現れるもの、結果に `blocks_next=true` で残されたものがあれば、`次工程を妨げるworktreeがあります` にパスと理由を並べて止まる。それ以外は中身を検査せずに無視し、runのイベントに残す。直前の `worktrees_ignored` と同じ内容なら重ねない。
 
 ```json
 {

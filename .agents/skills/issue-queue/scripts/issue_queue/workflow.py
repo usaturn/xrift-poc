@@ -306,14 +306,16 @@ class Workflow:
             for kept in attempt.result.retained if attempt.result else []:
                 if kept.blocks_next:
                     blocking.setdefault(kept.path, kept.reason)
-                else:
+                elif attempt.issue == issue:
+                    # 子が確認済みにできるのは自分のIssueの照合だけ。別のIssueの子が残したものは、
+                    # 別のセッションの作業を書いたものでありうるので、ほかのworktreeと同じく判定する。
                     known.add(kept.path)
         known.update(handed - blocking.keys())
         problems: list[str] = []
         ignored: list[IgnoredWorktree] = []
         for worktree in inventory["worktrees"]:
             path = worktree["worktree"]
-            # 利用者のretainと子が保持して続けられるとした資源は、今と同じく通す。
+            # 利用者のretain、処理中のIssueの子が保持して続けられるとした資源、retryで引き継いだ資源は通す。
             if path in known:
                 continue
             branch = worktree["branch"].removeprefix("refs/heads/") if "branch" in worktree else None

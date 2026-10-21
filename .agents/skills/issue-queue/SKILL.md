@@ -75,7 +75,7 @@ ack済みの子が `stopped`・`failed` の結果を残して止まり、利用�
 
 判断待ちは `queue decision --run <run> --id <名前> --category blocking|retain|final --reason <理由>` で保存する。`blocking` は次へ進めない。`retain` は資源を保持して続行できる判断、`final` は最後にまとめて確認する判断。解決した事実は同じIDへ `--resolve` を付けて残す。既存の許可を復旧のたびに尋ね直さず、対象や操作の範囲を広げない。
 
-helperは、実装・片付けの工程の起動の前と片付けの工程の終了の照合で、確認していないworktreeを1つずつ判定する。処理中のIssueのworktree・branch（パスかbranch名に `issue-<番号>` が番号の境界で現れる）と、子が次工程を妨げる資源として残したworktreeだけで止め、パスと理由を返す。それ以外（別のIssueやセッションの作業、レビューの残骸、未commitの変更を持つworktreeを含む）は無視して進み、パス・HEAD・branch・判定の根拠をrunのイベント `worktrees_ignored` に残す。止まったworktreeは、担当・停止・マージと競合の有無を既存スキルで確かめ、保持して続けられる場合だけ `--category retain --path <絶対パス>` と確認理由を記録する。キューと無関係なopen PRは、担当と競合の有無を確かめてから `--category retain --pr <番号>` と確認理由を記録する。helperは確認した時点のPRのHEADを保存し、同じPRが同じHEADのままの間だけ通す。pathとPRは別の判断IDで記録する。未確認のopen PR、確認後にHEADが変わったPR、未解放のclaimがあれば実装・片付けを起動しない。保持の登録と無視の記録は、削除・マージの許可ではない。
+helperは、実装・片付けの工程の起動の前と片付けの工程の終了の照合で、確認していないworktreeを1つずつ判定する。処理中のIssueのworktree・branch（パスかbranch名に `issue-<番号>` が番号の境界で現れる）と、子が次工程を妨げる資源として残したworktreeだけで止め、パスと理由を返す。それ以外（別のIssueやセッションの作業、レビューの残骸、未commitの変更を持つworktreeを含む）は無視して進み、パス・HEAD・branch・判定の根拠をrunのイベント `worktrees_ignored` に残す。子が結果に `blocks_next=false` で残した資源を確認済みとして通すのは、その子と同じIssueの照合だけである。止まったworktreeは、担当・停止・マージと競合の有無を既存スキルで確かめ、保持して続けられる場合だけ `--category retain --path <絶対パス>` と確認理由を記録する。キューと無関係なopen PRは、担当と競合の有無を確かめてから `--category retain --pr <番号>` と確認理由を記録する。helperは確認した時点のPRのHEADを保存し、同じPRが同じHEADのままの間だけ通す。pathとPRは別の判断IDで記録する。未確認のopen PR、確認後にHEADが変わったPR、未解放のclaimがあれば実装・片付けを起動しない。保持の登録と無視の記録は、削除・マージの許可ではない。
 
 各周回ではIssue・PR・loop run・子の識別情報、所要時間、マージ検出時刻、判断待ち、保持資源、使用版を報告する。正常終了・停止・確認できないことを分ける。終了時も `reviews/`・`tmp/agents/`・remote branch を一括削除しない。
 
