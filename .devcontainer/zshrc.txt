@@ -160,7 +160,7 @@ function cod(){
     codex -c 'project_root_markers=[".devcontainer"]' --dangerously-bypass-approvals-and-sandbox "$@"
 }
 
-# 制作物（items/<name>・worlds/<name> の Git リポジトリ）に xrift-poc のスキルへのリンクを置く・外す。
+# 制作物（items/<name>・worlds/<name>。Git 未初期化のものを含む）に、xrift-poc のスキルと Pi の設定（.pi/）へのリンクを置く・外す。
 # 使い方: xrift-link [link|unlink] [dir]（既定は link と現在のディレクトリ）
 function xrift-link(){
     local root="${XRIFT_POC_ROOT:-}"
