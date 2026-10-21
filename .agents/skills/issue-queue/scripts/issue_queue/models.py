@@ -135,11 +135,13 @@ class Run(Record):
     paused: bool = False
     complete: bool = False
     stopped_reason: str | None = None
+    # 続けられないrunをendで終えた理由。終えたrunは進めず、新しいrunのinitを止めない。旧helperのrunには無い。
+    ended_reason: str | None = None
     observation: dict[str, Any] = Field(default_factory=dict)
     events: list[dict[str, Any]] = Field(default_factory=list[dict[str, Any]])
 
     def current(self) -> Attempt | None:
-        if self.complete:
+        if self.complete or self.ended_reason is not None:
             return None
         return next(
             (

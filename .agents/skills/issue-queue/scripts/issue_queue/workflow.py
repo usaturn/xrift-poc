@@ -48,6 +48,10 @@ def outdated_message(inventory: dict[str, Any]) -> str:
     )
 
 
+def ended_message(reason: str) -> str:
+    return f"終了したrunです（{reason}）。新しいrunはinitで作ってください"
+
+
 def initialize(store: Store, ext: External, request: Init) -> tuple[Path, Run]:
     if any(n <= 0 for n in request.issues) or len(set(request.issues)) != len(request.issues):
         raise QueueError("Issue番号は正の整数で、重複なく指定してください")
@@ -105,6 +109,8 @@ class Workflow:
     def progress_barrier(self) -> tuple[str, str, str] | None:
         if self.run.complete:
             return "complete", "none", "全Issueの処理が完了しました"
+        if self.run.ended_reason is not None:
+            return "ended", "none", ended_message(self.run.ended_reason)
         if self.run.paused:
             return "paused", "resume", "保存した境界で停止しています"
         if self.run.stopped_reason:
@@ -191,17 +197,62 @@ class Workflow:
             self.run.stopped_reason = None
         self.save()
 
+    def end(self, reason: str) -> None:
+        """続けられないrunを、子の停止を照合して理由とともに終える。終えたrunは新しいrunのinitを止めない。
+
+        attempt・pane・資源には触れず、ownerも移さない。次へ進めないので、PR・投稿・判断待ちは条件にしない。
+        """
+        if not reason.strip():
+            raise QueueError("終える理由を指定してください")
+        if self.run.complete or self.run.ended_reason is not None:
+            raise QueueError("完了または終了したrunは終えられません", next_action="none")
+        caller = self.ext.caller()
+        if caller != self.run.owner:
+            self.check_takeover(caller)
+        attempt = self.run.current()
+        if attempt is not None and attempt.launch != "prepared":
+            if attempt.launch in {"splitting", "pane_created"}:
+                # startを送っていないので、子は名前で見つからないはず。見つかれば起動の経緯を調べる。
+                if self.named_agent(attempt) is not None:
+                    raise QueueError("子のagentが存在します。停止を確認してから終えてください")
+            elif not self.child_stopped(attempt, caller):
+                raise QueueError("子が動いているか、結果を残さずに残っています。子の停止を確認してから終えてください")
+        self.run.ended_reason = reason
+        self.run.event(
+            "run_ended",
+            reason=reason,
+            issue=self.run.queue[self.run.index],
+            phase=self.run.phase,
+            attempt=attempt.id if attempt else None,
+            by=caller.model_dump(),
+        )
+        self.save()
+
+    def named_agent(self, attempt: Attempt) -> dict[str, Any] | None:
+        """名前で引いた子。不在はHerdrの構造化エラーのcodeの完全一致だけで判定する。接続失敗・別のcodeは不在にしない。"""
+        try:
+            return self.ext.herdr("agent", "get", attempt.agent_name)["agent"]
+        except CommandError as error:
+            if herdr_error_code(error.stderr) != "agent_not_found":
+                raise
+            return None
+
+    def child_stopped(self, attempt: Attempt, caller: Identity) -> bool:
+        """子が動いていないか。結果が無ければ子が居ないこと、結果があれば居る子がすべてidle・doneであること。
+
+        結果の無い子はidle・doneでも、バックグラウンドの処理の完了で再開しうるので止まったと数えない。
+        """
+        agents = [agent for agent in self.child_agents(attempt, caller) if agent is not None]
+        if attempt.result is None:
+            return not agents
+        return all(agent.get("agent_status") in {"idle", "done"} for agent in agents)
+
     def child_agents(self, attempt: Attempt, caller: Identity) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         """子でありうるagent。名前で見つかった子と、子のpaneに保存したterminalのまま残る同じkindのagent。
 
         不在はHerdrの構造化エラーのcodeの完全一致だけで判定する。接続失敗・別のcodeは不在にしない。
         """
-        try:
-            named: dict[str, Any] | None = self.ext.herdr("agent", "get", attempt.agent_name)["agent"]
-        except CommandError as error:
-            if herdr_error_code(error.stderr) != "agent_not_found":
-                raise
-            named = None
+        named = self.named_agent(attempt)
         pane = self.ext.pane(attempt.pane_id) if attempt.pane_id else None
         if (
             pane
@@ -395,6 +446,8 @@ class Workflow:
     def observe(self) -> tuple[str, str, str]:
         if self.run.complete:
             return "complete", "none", "全Issueの処理が完了しました"
+        if self.run.ended_reason is not None:
+            return "ended", "none", ended_message(self.run.ended_reason)
         inventory = self.ext.inventory()
         self.run.observation = {"at": now(), **inventory}
         attempt = self.run.current()
