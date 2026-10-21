@@ -42,6 +42,17 @@ baselineでの手動判断に対し、保存したrunとCLIの具体的な操作
 - 変更後（36秒）: 2章の4では引き継いだworktree・branchだけを止めずに残りを検査し、3章の「issue-queueの引き継ぎ」の1〜4（worktree・route・番号の照合、`git status` が空、`origin/main` のmerge、Specへの追記とcommit済みのTaskのテストの再実行）で続けた。新しいworktreeは作らず、前のattemptのマーカーは使わないとした
 - 変更後で、引き継いだworktreeに未commitの変更が1件ある変種（35秒）: 引き継ぎの2で止まり、変更をcommit・stash・破棄せずに報告した
 
+## 2026-10-21 場面6のretainedと、子の保持の範囲（#94）
+
+helperが子の `blocks_next=false` の保持を確認済みにするのを、その子と同じIssueの照合だけにした。司令塔側の行動比較はしていない。helperが照合するので、文面を読み違えた司令塔が範囲を広げることはない。
+
+子への依頼文の `retained` の行を、`retained` と `summary` に書くものを定める2文に直した（禁止文にせず、欄の中身を書く形）。場面6を写した状況（今回のPRの資源は整理済みで、別のセッションの2つのworktreeは見つけたが消していない）で、`report` に渡す結果JSONを新しい会話のサブエージェント（Opus 5.5、ツールを使わない）に書かせた。依頼文は変更前（`02080d0` のhelper）と変更後のhelperの `child_prompt` で描画し、本文のほかの部分は同じにした。
+
+- 変更前（5回、149〜405秒）: 別のセッションの2つを `retained` に入れたのは1回で、理由は「削除せずに報告する」対象をretainedで報告した、だった。4回は `summary` に書いた（「retainedに入れると今回の残骸と取り違えられ、後の片付けで消されるおそれ」）。remote branchは5回とも `summary` に書いた（パスで表せない）
+- 変更後（5回、138〜197秒）: 5回とも別のセッションの2つを `summary` に書き、`retained` に入れなかった。5回とも理由に、依頼文のretainedの定義（今回のIssueのためにqueueの工程が作って残した資源）か「別のセッションの資源はsummaryに書く」を挙げた。remote branchは4回がURLで `retained` に入れた（今回のIssueのために作った資源と読んだ。照合の対象はworktreeだけなので影響しない）
+
+変更前でも多くの回で `summary` に書いたので、差は5回中1回から0回への減少にとどまる。依頼文の2文は、子が `retained` の範囲を読み違えないように明記するために残す。#69の試運転で別のセッションのworktreeを `retained` に書いたのはCodexの子だったが、Codex・Piでは比べていない。後のIssueの照合を飛ばさないことは、helperの変更がモデルに依らず守る。
+
 ## 実機
 
 ### 2026-10-19 PR #78 の確認
