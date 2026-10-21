@@ -37,11 +37,15 @@ from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from types import ModuleType
-from typing import cast
+from typing import Literal, cast
 
 BLOCK_BEGIN = "# >>> xrift-poc project_link >>>"
 BLOCK_END = "# <<< xrift-poc project_link <<<"
 LINK_DIRS = (Path(".agents/skills"), Path(".claude/skills"))
+PI_DIR = Path(".pi")
+PI_FILES = ("APPEND_SYSTEM.md", "mcp.json", "settings.json")
+PI_IGNORE = PI_DIR / ".gitignore"
+PI_IGNORE_NOTE = "# xrift-link が置いた .pi/ のリンクを無視する。link・unlink のたびに作り直すので、手で編集しない"
 EXIT_ERROR = 1
 EXIT_USAGE = 2
 
@@ -230,6 +234,84 @@ def _live_entries(target: Path, source: Path) -> list[str]:
     return [line for entry in sorted(entries) for line in (entry, f"!{entry}/")]
 
 
+def _is_pi_link(path: Path, root: Path) -> bool:
+    """``path`` が、ルートの ``.pi/`` の同じ名前のファイルを指す、置いたリンクか。"""
+    return path.is_symlink() and Path(os.readlink(path)) == root / PI_DIR / path.name
+
+
+def _pi_ignore_state(target: Path) -> Literal["absent", "ours", "theirs"]:
+    """``.pi/.gitignore`` が無いか、このスクリプトのもの（1 行目が印）か、制作物のものか。"""
+    path = target / PI_IGNORE
+    if not path.exists() and not path.is_symlink():
+        return "absent"
+    if path.is_symlink() or not path.is_file():
+        return "theirs"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError, UnicodeDecodeError:
+        return "theirs"
+    return "ours" if lines[:1] == [BLOCK_BEGIN] else "theirs"
+
+
+def _sync_pi_ignore(target: Path, root: Path) -> None:
+    """``target`` の ``.pi/`` にある置いたリンクと自分自身を無視する ``.pi/.gitignore`` を作り直す。
+
+    ``info/exclude`` は全 worktree で共有され、否定行で守れるのはディレクトリだけなので、``.pi/`` の
+    ファイルのリンクをそこで無視すると、他の worktree の制作物自身の同名のファイルまで隠れる。リンクを置いた
+    worktree の中だけで無視し、リンクが無くなれば消す。制作物の ``.pi/.gitignore`` には触らない。
+    """
+    state = _pi_ignore_state(target)
+    if state == "theirs":
+        return
+    path = target / PI_IGNORE
+    names = [name for name in PI_FILES if _is_pi_link(target / PI_DIR / name, root)]
+    if not names:
+        if state == "ours":
+            path.unlink()
+        return
+    text = "\n".join([BLOCK_BEGIN, PI_IGNORE_NOTE, "/.gitignore", *(f"/{name}" for name in names)]) + "\n"
+    if state == "absent" or path.read_text(encoding="utf-8") != text:
+        _write_atomic(path, text)
+
+
+def _link_pi(target: Path, root: Path, report: Report) -> None:
+    """``target/.pi/`` に、ルートの ``.pi/`` にある設定のファイルへのリンクを置く。"""
+    names = [name for name in PI_FILES if (root / PI_DIR / name).is_file()]
+    if not names:
+        return
+    if _blocked_component(target, PI_DIR) is not None:
+        report.kept.append(f"{PI_DIR.as_posix()}: シンボリックリンクかディレクトリではないので、中に置かない")
+        return
+    if _pi_ignore_state(target) == "theirs":
+        report.kept.append(f"{PI_IGNORE.as_posix()}: 制作物のファイル。リンクを Git から外せないので置かない")
+        return
+    for name in names:
+        path = target / PI_DIR / name
+        relative = (PI_DIR / name).as_posix()
+        if path.is_symlink() or path.exists():
+            report.kept.append(f"{relative}: 既にある")
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.symlink_to(root / PI_DIR / name)
+        report.created.append(relative)
+    _sync_pi_ignore(target, root)
+
+
+def _unlink_pi(target: Path, root: Path, report: Report) -> None:
+    """``target/.pi/`` の、置いたリンクだけを消す。"""
+    directory = target / PI_DIR
+    if directory.is_symlink():
+        report.kept.append(f"{PI_DIR.as_posix()}: シンボリックリンク。中（制作物の外かもしれない）のリンクは外さない")
+        return
+    if not directory.is_dir():
+        return
+    for name in PI_FILES:
+        if _is_pi_link(directory / name, root):
+            (directory / name).unlink()
+            report.removed.append((PI_DIR / name).as_posix())
+    _sync_pi_ignore(target, root)
+
+
 def _hidden_notes(target: Path, entries: list[str], source: Path) -> list[str]:
     """共有の除外で隠れる利用者のファイル・リンクを、worktree の場所付きで報告する。"""
     notes: list[str] = []
@@ -270,6 +352,7 @@ def link(directory: Path, env_root: Path) -> Report:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.symlink_to(source / name, target_is_directory=True)
             report.created.append(relative)
+    _link_pi(target, env_root.resolve(), report)
     merged = _live_entries(target, source)
     if merged != entries:
         _write_atomic(exclude, _render(before, merged, after))
@@ -310,6 +393,7 @@ def unlink(directory: Path, env_root: Path) -> Report:
             report.removed.append(relative.as_posix())
         elif path.is_symlink() or path.exists():
             report.kept.append(f"{relative.as_posix()}: xrift-poc のスキルへのリンクではない")
+    _unlink_pi(target, env_root.resolve(), report)
     merged = _live_entries(target, source)
     if merged != entries:
         _write_atomic(exclude, _render(before, merged, after))
