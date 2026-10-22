@@ -100,7 +100,7 @@ Unverifiedは必要確認を自力で続ける。Skip/Resolved/Holdへ隠さな�
 
 Spec: `YYYY-MM-DD-<topic>-review-fixes-design.md`。全指摘と出典→判断対応、現行/base SHA、変更種類、重大度と再評価、状態/基準/理由、継承/変更/新根拠、未確認、Hold選択、必須と追加Fix、持ち越し、全読/実行範囲を残す。各Fixに原因/性質/同種範囲/検索結果、手法、採用しない変更、全violates変種・inconsistent記述の対象/受け入れ基準を書く。uncheckedなら不足と理由を書く。使用一覧、verdict件数、レビュアー表、plannerの正確なモデル、fix-checkの回数/ファイル/指摘、状況コメントURL、結果/停止理由も追記する。
 
-`superpowers:writing-plans` でTask別の担当ファイル・操作・受け入れコマンド・テスト要否/理由を書く。テストの採否は **AGENTS.md「テストの採用基準」**を参照し、文書の文言照合や運用値の写しを足さない。テストを省くTaskは実行/構造/行動比較等の代替確認を書く。追加の拒否には、受け入れ続ける実入力と挙動テストを挙げる。既存の仕組みの削除/統合と、新しい分岐追加を比較する。
+`superpowers:writing-plans` でTask別の担当ファイル・操作・受け入れコマンド・テスト要否/理由を書く。テストの採否は **AGENTS.md「テストの採用基準」**を参照し、文書の文言照合や運用値の写しを足さない。テストを省くTaskは実行/構造/行動比較等の代替確認を書く。追加の拒否には受け入れ続ける実入力を挙げ、テストにするかは採用基準で決める。既存の仕組みの削除/統合と、新しい分岐追加を比較する。
 
 推奨案・理由・代案・委任内で決めた範囲・停止条件を記録する。Spec/Planを出しただけで人間が承認したとは書かない。実装済みの再開でも採否・HEAD・必要確認を照合し、未確認を飛ばさない。
 
@@ -109,7 +109,7 @@ Spec: `YYYY-MM-DD-<topic>-review-fixes-design.md`。全指摘と出典→判断�
 `references/execution.md` を読み、既存runnerの `fix.implement` を通常requestで起動する。割当は設定・明示上書きのまま。selfなら司令塔が同じ完全依頼を実行する。外部担当は独立worktreeに限定し、元指摘/性質/Spec/Plan/担当ファイル/受け入れ条件を渡す。採否・統合・pushは司令塔が担当する。
 
 1. 対象PRがopen、計画HEADに基づくことを再確認。移動範囲は再確認し、証拠を再利用できなければ完了扱いにしない。新しいreview-fixes branch/PRを作らない。
-2. 採用したFixだけを実装。挙動を守るテストはRED→GREEN、文面変更は代替確認。問題は原因を調べて最小修正し、関連検証とrepository規則の正式入口を実行する。落ちたままcommit/pushしない。
+2. 採用したFixだけを実装。AGENTS.md「テストの採用基準」の「書くテスト」に当たるものだけRED→GREEN（不具合の再現テストも同じ基準で決める）、それ以外と文面変更は代替確認。問題は原因を調べて最小修正し、関連検証とrepository規則の正式入口を実行する。落ちたままcommit/pushしない。
 3. fetchして対象branchの先端を照合し、既存PRのhead branchにローカルcommit。基本は1サイクル1commit。自己確認で必要な追加commitは許容するが、commitの書換え・force pushで減らさない。
 4. `run_roles.py --phase self-review` **1回**でPR全体のローカルcommit再レビュー（pr-reviewの通常指定commit入口）と修正確認（review-verifyのfix_check）をconcurrency=2で動かす。再レビューは初回検出base→local HEAD、修正確認はpush済みHEAD→local HEADで、範囲が異なる。全入力/全変更ファイル全文/関連コード/関連テストを確認する。設定がself/混合なら未実行の依頼を司令塔が実行する。
 5. 起動前に司令塔がv2 planningの仮の版を `REVIEW_DIR/verified/<source HEAD12>.planning.json` に作る。必須キーを全部入れ、`outcome` は仮に `stopped`、`comment_id` はnull、`activities` は実施済みの工程だけ（`pre_push_review` は入れない）。`stage=pre_push_review` の呼出枠1件は `run_roles.py` が起動前に予約する。手で書き足さない（予約済みとして拒否され、その枠は消せない）。この件数を回数として記録する。失敗/中断でも消さず、別モデル・別HEAD・別phase名で2回目を起動しない。サイクルの最後に同じファイルを更新し、予約を消さない。fix-checkの `review_dir` は `references/execution.md` の独立staging（REVIEW_DIRではない）。
