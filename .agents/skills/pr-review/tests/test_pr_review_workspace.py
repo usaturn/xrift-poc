@@ -426,22 +426,33 @@ def test_reap_check_rejects_files_inside_nested_uninitialized_submodule(
     assert hidden.read_text(encoding="utf-8") == "keep me\n"
 
 
+# changed-destination は保存先と draft の不一致（`require_saved_review`）、untracked-after-check はロックの中で
+# 検査し直すこと（`_validate_reapable_session`。不一致の検査だけでは見つからない）を確かめる
+@pytest.mark.parametrize("change", ["changed-destination", "untracked-after-check"])
 def test_strict_cleanup_refuses_state_changed_after_successful_reap_check(
     created_session: dict[str, Any],
+    change: str,
 ) -> None:
-    """reap-check の後の変更をロックの中で検査し直さないと、事前の検査の結果のまま黙って消す。"""
+    """reap-check の後に変わった保存先・置かれたファイルを検査し直さないと、事前の検査の結果のまま黙って消す。"""
     result = created_session["result"]
     session_dir = Path(result["state_file"]).parent
+    worktree = Path(result["worktree"])
     saved = saved_session(created_session)
     assert is_reapable(result["state_file"])
-    Path(saved["destination"]).write_text("changed after preflight\n", encoding="utf-8")
+    if change == "changed-destination":
+        Path(saved["destination"]).write_text("changed after preflight\n", encoding="utf-8")
+    else:
+        (worktree / "late.txt").write_text("written after preflight\n", encoding="utf-8")
 
     with pytest.raises(workspace.WorkspaceError):
         workspace.cleanup(argparse.Namespace(state=result["state_file"], strict_reap=True))
 
     assert session_dir.is_dir()
-    assert Path(result["worktree"]).is_dir()
-    assert Path(saved["destination"]).read_text(encoding="utf-8") == "changed after preflight\n"
+    assert worktree.is_dir()
+    if change == "changed-destination":
+        assert Path(saved["destination"]).read_text(encoding="utf-8") == "changed after preflight\n"
+    else:
+        assert (worktree / "late.txt").read_text(encoding="utf-8") == "written after preflight\n"
 
 
 # --- Issue #547: 候補一覧の JSON（review-findings v1） ---------------------------------------------------------
