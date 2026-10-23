@@ -523,7 +523,17 @@ def test_statement_candidates_puts_frequent_terms_in_common_terms(tmp_path: Path
 
 def test_statement_candidates_finds_terms_containing_regex_characters(tmp_path: Path) -> None:
     """git grep -E に渡す語のエスケープが壊れると、正規表現の文字を含む語の文書が黙って候補から消える。"""
-    spans = ["load_all()", "cfg[key_name]", "^ANCHOR_X$", "a_b+c*d?", "x_y{2}|z", "path\\to_file", "conf.d_x"]
+    spans = [
+        "load_all()",
+        "cfg[key_name]",
+        "^ANCHOR_X$",
+        "a_b+c*d?",
+        "x_y{2}|z",
+        "path\\to_file",
+        "conf.d_x",
+        "[A-Z]_X",
+        "x(y)_z",
+    ]
     root = _repo(
         tmp_path,
         {
@@ -537,7 +547,8 @@ def test_statement_candidates_finds_terms_containing_regex_characters(tmp_path: 
     document = review_findings.statement_candidates(root, base, head, generated_at="2026-10-05T00:00:00Z")
 
     # コードスパンの中の識別子（load_all() の load_all など）も語になるので、
-    # スパン全体の語が正しい行に当たることだけを見る。
+    # スパン全体の語が正しい行に当たることだけを見る。[A-Z]_X・x(y)_z は部分の語を持たないので、
+    # git grep -E に渡すエスケープが外れると、その行だけが候補から消える。
     candidates = document["candidates"]
     expected_paths = [f"README.md:{2 * index + 1}" for index in range(len(spans))]
     assert [candidate["path"] for candidate in candidates] == expected_paths
