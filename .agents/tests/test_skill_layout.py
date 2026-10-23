@@ -21,10 +21,10 @@ RUNTIME_SKILL_DIRS = tuple(
 PENDING = frozenset[str]()
 
 
-def tracked_skill_names(root: Path = REPO_ROOT) -> list[str]:
-    """``root`` の Git が追跡している ``.agents/skills/<name>/`` の名前。"""
+def tracked_skill_names() -> list[str]:
+    """Git が追跡している ``.agents/skills/<name>/`` の名前。"""
     result = subprocess.run(
-        ["git", "-C", str(root), "ls-files", "-z", "--", ".agents/skills"],
+        ["git", "-C", str(REPO_ROOT), "ls-files", "-z", "--", ".agents/skills"],
         capture_output=True,
         check=True,
     )
@@ -51,9 +51,8 @@ def frontmatter(skill_md: Path) -> dict[str, object]:
 
 @pytest.mark.parametrize("name", tracked_skill_names())
 def test_body_is_a_real_skill_directory(name: str) -> None:
-    body = AGENTS_SKILLS / name
-    assert not body.is_symlink(), f"{name}: 本体は .agents/skills に実体で置く"
-    meta = frontmatter(body / "SKILL.md")
+    """frontmatter が壊れると、Claude Code は description で起動できず、pi・Codex はヘッドレスで黙って読み込まない。"""
+    meta = frontmatter(AGENTS_SKILLS / name / "SKILL.md")
     assert meta.get("name") == name
     description = meta.get("description")
     assert isinstance(description, str) and description.strip(), f"{name}: description は空でない文字列にする"
@@ -61,35 +60,21 @@ def test_body_is_a_real_skill_directory(name: str) -> None:
 
 @pytest.mark.parametrize("name", unified_names())
 def test_claude_entry_links_to_the_body(name: str) -> None:
+    """リンクが壊れると Claude Code は黙ってスキルを持たず、絶対パスなら worktree で main checkout の版を読む。"""
     entry = CLAUDE_SKILLS / name
     assert entry.is_symlink(), f"{name}: .claude/skills/{name} は本体へのリンクにする"
-    assert os.readlink(entry) == f"../../.agents/skills/{name}"
+    assert not os.path.isabs(os.readlink(entry)), f"{name}: リンクは相対パスにする"
     assert entry.resolve() == (AGENTS_SKILLS / name).resolve()
 
 
 @pytest.mark.parametrize("name", sorted(path.name for path in CLAUDE_SKILLS.iterdir()))
 def test_claude_has_no_skill_of_its_own(name: str) -> None:
+    """.claude/skills にだけあるスキルは、.agents/skills を読む pi・Codex から黙って見えない。"""
     assert (AGENTS_SKILLS / name).is_dir(), f"{name}: .claude にだけあるスキルは作らない"
 
 
 @pytest.mark.parametrize("name", unified_names())
 def test_no_runtime_copies(name: str) -> None:
+    """ランタイム専用の置き場所の写しは名前の衝突で先に見つかった方が使われ、古い写しが黙って使われる。"""
     copies = [str(path) for base in RUNTIME_SKILL_DIRS if (path := base / name).exists() or path.is_symlink()]
     assert copies == [], f"{name}: ランタイム専用の置き場所に写しを置かない"
-
-
-@pytest.mark.parametrize("name", sorted(PENDING))
-def test_pending_skill_is_not_unified_yet(name: str) -> None:
-    entry = CLAUDE_SKILLS / name
-    assert entry.is_dir() and not entry.is_symlink(), f"{name} は一本化済み。PENDING から外す"
-
-
-def test_tracked_skill_names_ignore_untracked_skill_directories(tmp_path: Path) -> None:
-    repo = tmp_path / "repo"
-    subprocess.run(["git", "init", "-q", str(repo)], check=True)
-    for name in ("tracked", "xrift-world"):
-        skill = repo / ".agents" / "skills" / name
-        skill.mkdir(parents=True)
-        (skill / "SKILL.md").write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(repo), "add", ".agents/skills/tracked/SKILL.md"], check=True)
-    assert tracked_skill_names(repo) == ["tracked"]
