@@ -212,6 +212,51 @@ def provenance(agent: str = "self", role: str = "verify", effort: str = "high") 
     }
 
 
+# 以下の 3 つ（と fix_check・HEAD・FIX）は、review-verify の tests/test_dispatch.py がこのファイルを読み込んで使う。
+
+
+def planning() -> dict[str, Any]:
+    return {
+        "schema": "review-findings/v1",
+        "kind": "planning",
+        "pr": {"repository": "usaturn/xrift-poc", "number": 542},
+        "reviewed_head": HEAD,
+        "planner": {"model": "claude-opus-5-5", "runtime": "claude-code"},
+        "verified_file": f"verified/{HEAD[:12]}.json",
+        "stages": {"decide_seconds": 600, "fix_seconds": 1200, "fix_check_seconds": [700]},
+        "fix_checks": [{"file": f"verified/{FIX[:12]}.fix-check.json", "blocking_fixes": 0}],
+        "outcome": "fixes_pushed",
+        "comment_id": 5987695309,
+    }
+
+
+def actor(agent: str = "self", role: str = "implement") -> dict[str, Any]:
+    return {"model": "example-model", "runtime": "pi", "provenance": provenance(agent, role)}
+
+
+def document_v2(kind: str = "verified") -> dict[str, Any]:
+    value = {"candidates": candidates, "verified": verified, "planning": planning}[kind]()
+    value["schema"] = "review-findings/v2"
+    owner = {"candidates": "reviewer", "verified": "verifier", "planning": "planner"}[kind]
+    value[owner]["provenance"] = provenance(
+        role={"candidates": "find", "verified": "verify", "planning": "decide"}[kind]
+    )
+    if kind != "planning":
+        value["timing"]["waiting_seconds"] = 12
+        value[owner]["provenance"]["skills"] = [copy.deepcopy(value["skill"])]
+    if kind == "verified":
+        for entry in value["inputs"]:
+            entry["provenance"] = provenance(entry["model"], "find")
+            entry["waiting_seconds"] = 10
+        for entry, original in zip(value["accuracy"]["reviewers"], value["inputs"], strict=True):
+            entry["provenance"] = copy.deepcopy(original["provenance"])
+        value["inputs"][1]["waiting_seconds"] = None
+    if kind == "planning":
+        value["activities"] = [{"stage": "implement", "actor": actor(), "seconds": 50.5, "waiting_seconds": 10}]
+        value["rework"] = []
+    return value
+
+
 def statement_candidates_document() -> dict[str, Any]:
     return {
         "schema": "review-findings/v1",
