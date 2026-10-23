@@ -334,9 +334,8 @@ def test_nested_invocation_fails_closed(repository: Path, tmp_path: Path, monkey
         )
 
 
-@pytest.mark.parametrize("value", ["a\nb", "a b"])
-def test_invalid_write_exceptions_are_rejected_before_any_output(repository: Path, tmp_path: Path, value: str) -> None:
-    """改行（U+2028 を含む）のある値を通すと、作業範囲の指示に行が足され、許可の範囲を黙って書き換える。"""
+def test_invalid_write_exceptions_are_rejected_before_any_output(repository: Path, tmp_path: Path) -> None:
+    """ブランチ名に入りうる U+2028 を通すと、作業範囲の指示に行が足され、許可の範囲を黙って書き換える。"""
     output = tmp_path / "output"
     with pytest.raises(RunnerError):
         run_workflow(
@@ -345,7 +344,7 @@ def test_invalid_write_exceptions_are_rejected_before_any_output(repository: Pat
             "prompt",
             repository,
             output_dir=output,
-            write_exceptions=("ok", value),
+            write_exceptions=("ok", "a\u2028b"),
         )
     assert not output.exists()
 

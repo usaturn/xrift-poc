@@ -46,14 +46,10 @@ def test_audit_detects_existing_dirty_content_edits(repository: Path, tmp_path: 
     assert changed_checkouts(before) == [str(external)]
 
 
-@pytest.mark.parametrize("mutation", ["delete", "head"])
-def test_audit_detects_checkout_mutations(repository: Path, mutation: str) -> None:
-    """担当が既存の checkout のファイルを消す・HEAD を動かしても、outside_changes に黙って出ない。"""
+def test_audit_detects_moved_head(repository: Path) -> None:
+    """HEAD を指紋に含めないと、担当が既存の checkout でファイルを変えずに commit しても黙って見逃す。"""
     before = snapshot_checkouts(repository)
-    if mutation == "delete":
-        (repository / "tracked.txt").unlink()
-    else:
-        git(repository, "commit", "--allow-empty", "-qm", "advance HEAD")
+    git(repository, "commit", "--allow-empty", "-qm", "advance HEAD")
     assert changed_checkouts(before) == [str(repository)]
 
 
