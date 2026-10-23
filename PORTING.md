@@ -10,13 +10,13 @@
 
 | 場所 | 内容 |
 |---|---|
-| `.devcontainer/` | Dev Container の定義、初期化（`initialize.bash`・`install_beforehand.bash`）、シェルの設定（`zshrc.txt`・`starship.toml`）、Herdr、pi と DSH のランチャー、`agent-runner` の設定、クリーンアップ、bash のテスト |
+| `.devcontainer/` | Dev Container の定義、初期化（`initialize.bash`・`install_beforehand.bash`）、シェルの設定（`zshrc.txt`・`starship.toml`）、Herdr、pi のランチャー、`agent-runner` の設定、クリーンアップ、bash のテスト |
 | `scripts/` | 検証の入口（`ci/verify-devenv.sh`）、pi のセットアップ、Claude Code のオンボーディングの補助 |
 | `tools/` | `devenv`（検証用の project）、`devenv_migration`（Dev Container のテスト。名前は移植元とそろえた）、`agent_runner`、`review_triage`、`test_support` |
 | `.agents/` | 共通スキル 14 個、補助スクリプト、レビューの記録の形式 |
 | `.claude/`・`.pi/`・`.cursor/rules/`・`.mcp.json`・`.github/workflows/ci.yml` | 各エージェントの設定と CI |
 
-## 移植しなかったもの
+## 移植しなかったもの・後から撤去したもの
 
 | 対象 | 理由 |
 |---|---|
@@ -24,12 +24,13 @@
 | `public/`、`.gitmodules`、`prepare_public_checkout`、`public/uv.lock` を使う Playwright の導入 | MaatLog のアプリ用 |
 | `tools/devenv_migration/tests/test_application_checkout.py`、`test_cutover_contract.py`、`tools/devenv_migration/evidence/` | MaatLog の `public/` と cutover の記録 |
 | ポート 8000 | MaatLog の sphinx-autobuild 用 |
+| DeepSeek Harness（DSH）の runtime・導入・ランチャー・設定・専用テスト | 当初移植したが #123 で撤去した。移植元の DSH 専用変更は今後取り込まない。Pi の DeepSeek と共通の runner 機能は対象外 |
 | `opencode.json` | OpenCode はセットアップで導入していない。設定ファイルだけ置くと導入済みと誤解される |
 | `.codex/.gitkeep` | 空のプレースホルダーで、設定の実体が無い |
 | `scripts/add_pi_skills_setting.py` | 共有している `~/.pi/agent/settings.json` に、このリポジトリのスキルを追加してしまう。セットアップからも呼ばれていない |
 | `.pi/APPEND_SYSTEM.md` の Response Persona の節 | 移植の方針として決めた（Spec 2 章） |
 | 廃止済みの pi 拡張の撤去処理（`install_pi_extensions` の撤去部分、`remove_pi_mcp_adapter`、`remove_pi_distill`）と `test_pi_mcp_adapter_migration.py` | 移植の方針として決めた（Spec 2 章）。検出と警告に置き換えた |
-| `.devcontainer/README.md` のうち、MaatLog の既存コンテナだけに関わる移行の節（「既存コンテナの移行」「npm への一本化と既存環境の移行」「Herdr サイドバーの設定移行」「herdr-pr-review からの移行」「pi-distill の撤去」「`public/` checkout の検査と復旧」） | 新しいリポジトリには移行元の状態が無い。共有ホームの `~/.dsh` に関わる「旧 settings.yaml からの移行」は残した |
+| `.devcontainer/README.md` のうち、MaatLog の既存コンテナだけに関わる移行の節（「既存コンテナの移行」「npm への一本化と既存環境の移行」「Herdr サイドバーの設定移行」「herdr-pr-review からの移行」「pi-distill の撤去」「`public/` checkout の検査と復旧」） | 新しいリポジトリには移行元の状態が無い。DSH の旧 settings.yaml の移行手順も #123 で撤去した |
 | スキルの `evals/` のうち、移植元で実行した日付付きの記録と、MaatLog のリポジトリを入力にした評価シナリオ | MaatLog 固有で、xrift-poc では再現できない。テストや `SKILL.md` が参照しているものは、下の「移植元の記録として残したもの」に挙げた |
 
 ## 移植元の記録として残したもの
@@ -69,15 +70,15 @@
 
 ## 改名した識別子と、残した目印
 
-コンテナ内で完結する識別子は `xrift-poc` に改名した。共有ホーム（bind mount している `~/.claude`・`~/.pi`・`~/.dsh` など）のファイルに書く目印は、改名すると同じ内容が 2 回書かれるため、そのまま残した。
+コンテナ内で完結する識別子は `xrift-poc` に改名した。共有ホーム（bind mount している `~/.claude`・`~/.pi` など）のファイルに書く目印は、改名すると同じ内容が 2 回書かれるため、そのまま残した。
 
 | 識別子 | 扱い |
 |---|---|
 | `MAATLOG_CLEANUP_*`、`maatlog_periodic_cleanup`、`~/.cache/maatlog` | `XRIFT_POC_CLEANUP_*`、`xrift_poc_periodic_cleanup`、`~/.cache/xrift-poc` に改名 |
-| `~/.local/share/maatlog/dsh-model-env.mjs`、プラグイン ID `maatlog-dsh-model-env` | `~/.local/share/xrift-poc/`、`xrift-poc-dsh-model-env` に改名（`~/.local/share` と `~/.local/bin` は mount していない） |
+| `~/.local/share/maatlog/dsh-model-env.mjs`、プラグイン ID `maatlog-dsh-model-env` | 移植時は `~/.local/share/xrift-poc/`、`xrift-poc-dsh-model-env` に改名。#123 でコードと導入を撤去した（共有データは変更しない） |
 | `/tmp` の接頭辞 `maatlog-pr-loop-`・`maatlog-agent-runner-`・`maatlog-pr-review-scratch-` | `xrift-poc-` に改名。`cleanup-workspace.bash` と配置の検査も合わせた |
 | `maatlog-devenv`（project 名）、`maatlog-review-triage/1`（User-Agent） | `xrift-poc-devenv`、`xrift-poc-review-triage/1` に改名 |
-| `~/.dsh/cordis.patch.yml` の `# BEGIN maatlog managed provider config` | 残した。`~/.dsh` は maatlog-poc のコンテナと共有している。xrift-poc 側で目印を変えると、同じ provider のブロックが共有ファイルに追記される |
+| `~/.dsh/cordis.patch.yml` の `# BEGIN maatlog managed provider config` | 移植時は共有ファイルへの重複追記を避けるため残した。#123 で mount と追記処理を撤去したが、ホストの共有データと目印は変更しない |
 | コードやコメント中の `#番号` | 変えていない |
 
 コードやコメント中の `#番号` は、特記が無い限り移植元の `usaturn/maatlog-poc` の Issue・PR を指す。
@@ -340,7 +341,7 @@ fixture の親を `XRIFT_POC_ROOT` にして実行した。最終レビューの
 - ホストのブラウザでのプレビュー
 - アカウントを使う `xrift login`・`xrift whoami`・アップロード（`xrift upload`）
 - `main` で CI の `devenv` をマージの必須条件にする設定（上の「CI をマージの条件にする」。初回の CI の後に利用者が行う）
-- Cursor CLI（`agent`）・Grok Build・DSH の読み込み: モデルに送信せずに確かめる方法が見つからなかった。`--help` に該当の確認コマンドが無い。Cursor・Grok は `.claude/skills`・`.agents/skills` を読む見込み、DSH は未確認。手動で確かめるときは、制作物の中で各エージェントを起動し、スキルの一覧（`/skills` など）に `xrift-world` と `repository-ownership` が出るかを見る
+- Cursor CLI（`agent`）・Grok Build の読み込み: モデルに送信せずに確かめる方法が見つからなかった。`--help` に該当の確認コマンドが無い。Cursor・Grok は `.claude/skills`・`.agents/skills` を読む見込み。手動で確かめるときは、制作物の中で各エージェントを起動し、スキルの一覧（`/skills` など）に `xrift-world` と `repository-ownership` が出るかを見る
 - Devin の指示（`AGENTS.md`）の読み込み
 - pi の指示の読み込みの実行（実装の確認だけ）
 
@@ -364,15 +365,15 @@ XRift CLI 0.25.0 で、親の main checkout の `worlds/issue-8-preview` と `it
 - 確認用サーバーは終了し、5173・5174 のポートが解放されたことを確かめた。その後、利用者がホストで確認し、ワールド（5173）は OK、アイテム（5174）は NG と報告した。5174 が Dev Containers で転送されていないためで、描画の成功をホストからの表示の成功とは扱っていない。
 - `devcontainer.json` の `forwardPorts` に5173はあるが、5174〜5179は無い。`portsAttributes` のラベルだけでは転送は保証されない。現在のコンテナでは VS Code の「ポート」→「ポートの転送」で5174を追加できるが、追加後のホスト表示は未確認。恒久対応は #59 に分けた。
 
-### Cursor CLI・Grok Build・DSH の読み込み
+### Cursor CLI・Grok Build の読み込み
 
 | 対象 | 版と確認方法 | 結果と限界 |
 |---|---|---|
 | Cursor CLI | `2026.10.16-e3cb207`、利用者の信頼承認後に `agent --print --trust --mode ask --output-format stream-json`。fixtureの未初期化・リンク済み独立Git・worktree・リンクなし対照と、実際の親・未初期化アイテムで確認 | 親の指示は、プロンプトに書いていないfixtureの親AGENTS.mdのマーカーを、ファイルを読まず正しく返したことで確認。親・リンク済み独立Git・そのworktreeでは両スキルのread成功イベントを観測した。未初期化の制作物とリンクなし対照では、モデルがネイティブの一覧に両スキルが無いと報告し、readも無かった。対応は #60 に分けた |
 | Grok Build | `1.0.62 (1474f9cbdd91)`、`grok inspect --json`。利用者の信頼承認後、一時HOMEの `trusted_folders.toml` で親・fixture・独立Git・worktreeを個別に信頼（共有ホームは不変更） | 全ケース終了コード0、`projectTrusted: true`。親と未初期化の制作物では親の指示・対象スキルを検出した。リンク済み独立Gitとそのworktreeはスキルあり・親指示なし。リンクなし対照では両方なし。独立Gitで親指示を渡す扱いは #56 の追加確認として記録した。inspectによる検出結果で、モデルが指示に従うことの確認ではない |
-| DSH | `0.2.0-rc.2` の導入済み `discoverBaselineInstructionFiles` / `loadBaselineInstructions` と `FileSystemSkillProvider.list/get` を実行。指示は既定の `.git` 境界・65536バイト上限。グローバル指示・スキルは一時ディレクトリへ隔離 | 親と Git 未初期化の制作物では親の指示・対象スキルを実際に読めた（指示の省略・切り詰めなし）。リンク済み独立Gitとそのworktreeでは対象スキルの本文は読めたが、親の指示は探索対象外。リンクなしの独立Git（対照）では両方読めない。対応は #56 に分けた |
 
-DSH の対象スキルは `repository-ownership` と `xrift-world`。指示は `AGENTS.md` / `CLAUDE.md` を確認した（同じ内容のファイルをローダーがまとめる場合を含む）。この確認は導入済みローダーの実行であり、ソースを読んだだけの確認ではない。一方、DSH のセッション全体やモデルへの注入・指示に従うことを検証したものでもない。
+DSH の読み込みも当時確認したが、#123 で DSH 自体を撤去したため現在の確認対象には含めない。
+DSH の移植コミットと変更履歴は上の表に残している。
 
 Cursor の初回は信頼未承認で終了コード1だったが、利用者の許可後に上記の範囲で再実行した。Cursor のread成功イベントには全行範囲と `contentBlobId` がある一方、本文は含まれず、生バイトやハッシュは照合していない。ネイティブの一覧自体のdumpも取得していないので、missingの原因は断定していない。未初期化fixtureの親に実際と同じ `.claude/skills` のリンクを置いた後もmissingで、実際の未初期化アイテムでも同じ結果だった。
 

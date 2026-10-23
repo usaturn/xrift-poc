@@ -123,7 +123,7 @@ test_install_places_all_launchers_with_regular_mode() {
     cp "${REPO_ROOT}/.devcontainer/pi-models.json" "${home}/.pi/agent/models.json"
     {
         printf '%s\n' 'step() { :; }' 'fail() { printf "%s\n" "$1" >&2; exit 1; }'
-        awk '/^step "Placing the launchers / { copy = 1 } /^step "Installing DeepSeek Harness"/ { copy = 0 } copy' \
+        awk '/^step "Placing the launchers / { copy = 1 } /^step "Installing the shared skills / { copy = 0 } copy' \
             "${REPO_ROOT}/.devcontainer/install_beforehand.bash"
     } | env HOME="$home" bash -e
     cmp -s "${REPO_ROOT}/.devcontainer/pi-superagents-exec.zsh" "${home}/.local/bin/pi-superagents-exec.zsh" \

@@ -106,7 +106,7 @@ xrift check --build
 - `.pi/` のリンクは、親の main checkout のファイルを指します。制作物から起動した Pi で project の設定を変える操作（`pi mcp add -l`・`pi install -l`、`/mcp` での有効・無効の切り替えなど）は、親のファイルを書き換えます。その制作物だけの設定にするときは、そのリンクを消して自分のファイルを置き、`xrift-link` を実行し直します
 - 制作物から起動した Pi に設定が効いていることは、制作物のルートで `pi mcp list` を実行し、`google-dev-knowledge` が出ることで確かめます
 - Codex は `cod` で起動します。独立した Git リポジトリの制作物から起動しても、親の `AGENTS.md` を読むよう `project_root_markers=[".devcontainer"]` を指定しています。この指定は codex-cli 0.162.1 で確かめました。将来の版で `project_root_markers` の意味が変わると、親の `AGENTS.md` を読めなくなるおそれがあるので、Codex を更新したら制作物から起動して確かめ直します。制作物が自前の `.devcontainer` を持つ場合は、その制作物のディレクトリがルートになり、親の `AGENTS.md` を読めません
-- Cursor CLI・Grok Build・DSH の読み込みは確かめていません。手動で確かめる手順は [PORTING.md](PORTING.md) の「未実施」にあります
+- Cursor CLI・Grok Build の読み込みは確かめていません。手動で確かめる手順は [PORTING.md](PORTING.md) の「未実施」にあります
 
 どの制作物の Git・Issue・PR を操作するかは、`uv run --no-project python "$XRIFT_POC_ROOT/.agents/scripts/route_target.py" <変更するパス>` で判定します。Git 未初期化の制作物は、祖先の xrift-poc に誤って振り分けず、操作を止めます。
 

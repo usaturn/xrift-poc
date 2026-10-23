@@ -8,7 +8,6 @@ mkdir -p \
   "${HOME}/.grok" \
   "${HOME}/.config/gh" \
   "${HOME}/.pi" \
-  "${HOME}/.dsh" \
   "${HOME}/.cursor" \
   "${HOME}/.config/gcloud" \
   "${HOME}/.local/share/devin" \

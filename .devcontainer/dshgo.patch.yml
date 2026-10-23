@@ -1,6 +1,0 @@
-# 起動時だけ適用する。provider の接続・認証設定は既存の DSH 設定を使う。
-- id: agent-default-model
-  config:
-    provider: opencode-go
-    model: deepseek-v4.1-flash
-    reasoningEffort: max

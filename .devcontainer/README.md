@@ -15,22 +15,20 @@ Herdr の復元手順は `.devcontainer/docs/herdr-session-cwd-restore.md` を�
 
 `devcontainer.json` は、ホストの次のディレクトリとファイルをコンテナにそのまま bind mount する。`initialize.bash` がホスト側で、無いものだけを作る（既存のものは変えない）。
 
-`~/.codex`・`~/.claude`・`~/.claude.json`・`~/.grok`・`~/.pi`・`~/.dsh`・`~/.local/share/devin`・`~/.config/devin`・`~/.local/share/cursor-agent`・`~/.config/gh`・`~/.cursor`・`~/.config/cursor`・`~/.config/gcloud`・`~/.xrift`
+`~/.codex`・`~/.claude`・`~/.claude.json`・`~/.grok`・`~/.pi`・`~/.local/share/devin`・`~/.config/devin`・`~/.local/share/cursor-agent`・`~/.config/gh`・`~/.cursor`・`~/.config/cursor`・`~/.config/gcloud`・`~/.xrift`
 
 - これらは maatlog-poc など、同じホームを mount する他のコンテナと共有になる。セットアップ（`install_beforehand.bash`）は共有のディレクトリに対して、次の 3 種類の操作をする
-  - 無いときだけ置く: `~/.pi/agent/models.json`、`~/.pi/agent/extensions/subagent.d/<launcher>/config.json`（`setup_pi_superagents.zsh --if-absent`）。`~/.dsh/cordis.patch.yml` は無ければ雛形を置き、あれば管理ブロックが無いときだけ追記する。既存の利用者の編集は書き換えない
+  - 無いときだけ置く: `~/.pi/agent/models.json`、`~/.pi/agent/extensions/subagent.d/<launcher>/config.json`（`setup_pi_superagents.zsh --if-absent`）。既存の利用者の編集は書き換えない
   - 導入・更新する（再実行のたびに実行し、共有のディレクトリを書き換える）:
     - Claude Code のマーケットプレイス `dashed/claude-marketplace` の追加と、プラグイン 3 種（`example-skills`・`web-quality-skills`・`ripgrep`）の導入（`~/.claude`）
     - `npx skills add ... -g` による `herdr`・`find-skills` のグローバルスキルの導入（`~/.claude`・`~/.pi`・`~/.grok`）。XRift スキルは `-g` を付けず、親のリポジトリ内（`.agents/skills`・`.claude/skills`）に導入するので、共有のディレクトリは書き換えない
     - pi の拡張の導入（`@teelicht/pi-superagents` と、`git:github.com/obra/superpowers`・`npm:@plannotator/pi-extension` など。`~/.pi`）
     - Devin のプラグイン `obra/superpowers` の導入（ログイン済みのときだけ。`~/.local/share/devin`・`~/.config/devin`）
-    - DSH のプラグインの追加（`web` プロファイルと pi-tui プロファイルに `@mars-sea/dsh-commandcode-provider`、pi-tui プロファイルに `@xmoon76/dsh-pi-tui`。`~/.dsh`）
     - Claude Code・Grok Build・Cursor CLI・Devin CLI・Codex CLI のインストーラの実行（各ツールの本体や設定が、mount 先に書かれることがある）
   - 所有権を直す: bind mount 先が root 所有で作られていたとき、そのディレクトリ自身だけを現在のユーザーに `chown` する（再帰しない）
 - `~/.config` そのものは bind mount していない（mount するのは上記の `~/.config/devin`・`~/.config/gh`・`~/.config/cursor`・`~/.config/gcloud` だけ）。次の設定はコンテナの中にだけあり、他のコンテナとは共有しない。リビルドすると消え、`postCreateCommand` の `install_beforehand.bash` がもう一度置く
   - 無いときだけ置く: `~/.config/agent-runner/config.toml`（`XDG_CONFIG_HOME` が絶対パスならその下）、`~/.config/herdr/config.toml`。同じコンテナで再実行しても、既存の編集は書き換えない
   - 毎回上書きする: `~/.config/starship.toml`。設定の元は `.devcontainer/starship.toml` で、コンテナの中で編集しても、セットアップの再実行やリビルドで雛形の内容に戻る。変更を残すときは `.devcontainer/starship.toml` を編集する
-- `~/.dsh/cordis.patch.yml` の目印 `# BEGIN maatlog managed provider config` は、maatlog-poc と同じ文字列のまま使う。変えると、同じ provider のブロックが共有のファイルに 2 回追記される
 - `~/.xrift` は XRift CLI の認証情報（`config.json`）の保存先。`initialize.bash` が新しく作るときは権限を 700 にする。既にあるディレクトリの権限と中身は変えない。ディレクトリ以外のもの（シンボリックリンクを含む）がある場合は、理由を表示して止まる
 - `containerEnv` の `XRIFT_POC_ROOT` に、親の main checkout のパス（`${containerWorkspaceFolder}`）を設定する。`route_target.py`・`project_link.py`・`xrift-link` が使う
 
@@ -48,7 +46,6 @@ Herdr の復元手順は `.devcontainer/docs/herdr-session-cwd-restore.md` を�
 | 5173 | XRift のプレビュー（Vite）。`npm run dev -- --host 0.0.0.0` |
 | 5174〜5179 | 複数のプロジェクトを同時に動かすときの Vite（`--port 5174` など） |
 | 3000 | `xrift login` のコールバック（CLI が `localhost:3000/callback` に固定している）。`requireLocalPort` により、ホスト側で使われていると転送が失敗する。使っているプロセスを止めてからやり直す |
-| 3080 | DSH の web |
 
 ## XRift の導入と作業ディレクトリ
 
@@ -307,7 +304,8 @@ PR レビュー（workflow `review` の role `inspect`）のレビュアーは�
 agents = ["claude-opus", "pi-gpt"]
 ```
 
-同じ役割に、同じ `model` の agent は並べられない（例: `pi-deepseek` と `dsh-ccd` はどちらも `deepseek/deepseek-v4.1-flash`）。
+同じ役割に、同じ `model` の agent は並べられない。例えば `pi-gpt` と同じモデルの担当を
+個人設定で別名にしても、`pi-gpt` と同時には割り当てられない。
 
 `codex` は、レビュアー（inspect）にも、レビュー修正の self-review・fix-check にも割り当てられない（#52）。
 codex の adapter は writes=false の役割を `codex exec -s read-only` で起動し、OS の sandbox がすべての書き込みを拒否する。
@@ -327,118 +325,15 @@ writes=false は claude-code・devin・pi と同じく runner の指示であり
 ほかの checkout の変更は、runner が `outside_changes` として報告する。
 Ask mode では pr-review の helper を実行できないことと、Cursor の sandbox の範囲・実機の確認は `tools/agent_runner/runtimes/cursor.rst` に記録した。
 
-### DSH の標準 headless
-
-DSH `0.2.1-rc.2` の `dsh --profile headless --patch <file> --json -` を使う
-`dsh` runtime を追加した。雛形の agent は `dsh-ccd`（Command Code GOAT）と
-`dsh-go`（OpenCode Go）である。個人設定に定義した workflow の
-`[workflows.<name>.assignments.<role>]` の `agents` に書くか、
-その workflow の `run` に `--assign <role>=dsh-ccd` を付けて選ぶ。
-既存の `dshccd` / `dshgo` と pi agent は変更しない。
-
-PR レビュー（workflow `review` の `inspect`）では、雛形の既定の構成に `dsh-ccd` が入っており、
-通常の PR 修正ループから利用できる。DSH だけにするときは、個人設定に次を指定する。
-追加の `--assign` や手動 DSH 起動は不要。
-
-```toml
-[workflows.review.assignments.inspect]
-agents = ["dsh-ccd", "dsh-go"]
-```
-
-pr-review は `--runtime dsh` を正式に扱い、自身の session 記録から正確なモデルを取得する。
-保存名は provider/model ごとに分離し、同じ経路の再レビューは既存 history・判断の記録を引き継ぐ。
-loop は通常 helper の prepare→complete→cleanup、成果 pair と実測 Identity の照合、after_run の成功を検査する。
-認証不足や後処理失敗、停止未確認を「指摘なし」や accepted にしない。
-DSH を PR 修正ループの司令塔にする対応は対象外で、`--controller-runtime dsh` は受け付けない。
-
-GitHub の照会は認証済み親で行う。loop と通常 runner の共通 `prepare-parent` が
-PR metadata・PR/参照 Issue の要件・コメント・Git bundle を固定 HEAD/base に結び付け、
-読み取り専用 snapshot の descriptor を Request.prompt に渡す。子に GitHub token は渡さない。
-子は digest/対象を照合してローカル bundle から private clone を作り、精読後に staged を返す。
-親が停止・実測 Identity・Request/draft と現在の PR HEAD を再確認して通常 save/cleanup を行う。
-staged や runner exit 0 はレビュー成功ではない。通常 runner の呼び方は
-[非対話入口](../.agents/skills/pr-review/references/noninteractive.md)を参照する。
-保存先と保存ロックへの書き込みの許可は `run_workflow` の `sandbox_write_paths` でだけ渡せる。
-CLI（`python -m tools.agent_runner run`）には渡す手段が無く、CLI から DSH をレビュアーにすると
-helper の書き込みが sandbox に拒否されて失敗する。DSH のレビュアーは PR 修正ループか、
-`sandbox_write_paths` を渡す Python の caller から使う。
-
-認証はそれぞれ `COMMANDCODE_API_KEY` / `OPENCODE_API_KEY` を起動元の環境に設定し、
-agent の `env` にその名前を指定する。値は TOML や argv に書かない。
-実行ごとに生成する環境変数参照を patch に設定するため、共有 credentials や
-プロジェクトの `.env` にある元のキーには fallback しない。
-`OPENCODE_GO_API_KEY` への fallback は無い。OpenCode Go の endpoint は catalog を使う。
-
-試行の保存先の `dsh/` に HOME（`home/`）・DSH_HOME（`state/`）・patch・
-`TMPDIR`（`tmp/`）を作り、共有 `~/.dsh` / `~/.pi` の profile、patch、
-追加プラグインを利用・上書きしない。起動元の `TMPDIR` も使わない。
-標準 headless に含まれる `llm-pi-ai` を使い、追加プラグインの導入は行わない。
-テレメトリ、セッション名用の追加モデル呼び出し、plugin inventory の送信を無効にする。
-
-`home/` は uv・npm・Go などのツールのキャッシュを置く使い捨ての領域で、
-停止確認後に削除し、保持しない。削除はリンクをたどらず、試行の `dsh/` の中にある
-自分の所有する実ディレクトリだけを対象にする。`home/` や `dsh/` がリンクなどに
-置き換わっていた場合や削除に失敗した場合は、成功にせず `sensitive_paths` に報告し、
-残った `home/` も次の保持物と同じく redact する。
-`state/`（セッションを含む）・patch・`tmp/`（DSH が 64 KB を超えるコマンド出力を
-書き出す一時ログを含む）の通常ファイルは保持し、停止確認後に秘密値を redact する。
-`tmp/` は子の `TMPDIR` なので、pytest の `*current` リンクやテストの fixture が作る
-リンク・FIFO も残る。これらは内容を持たず保持する意味が無いため、停止確認後に
-`tmp/` の中の通常ファイル以外（リンク・FIFO・socket など）を、エントリ自体だけ削除する。
-対象は、リンクをたどらずに開けた自分の所有する実ディレクトリの中の、自分の所有する
-同じデバイスのエントリに限り、リンク先や FIFO は開かない。権限は変えない。
-`state/`・patch の中のリンク・特殊ファイル、リンクなどに置き換わった `tmp/`、
-削除できなかったエントリ、停止未確認の `dsh/` は `sensitive_paths` に報告する。
-停止を確認できないあいだは `home/` も `tmp/` の中も削除しない。
-
-承認 policy は `never` とし、workspace-write のまま承認を必要とする操作を拒否する。
-Linux Dev Container では標準 sandbox-local の runnerCommand を使い、bubblewrap に
-attempt 所有の HOME/TMPDIR だけを追加 bind する。PR レビュー時は controller が確定した
-対象 PR の正式レビュー directory と保存ロックの通常ファイルだけも追加する。
-request/state/patch は読み取り専用 bind で、per-call の /tmp がそれらを隠さないようにする。
-共有 HOME・他 PR の保存先・共有 .git 全体は writable にしない。
-uv の UV_CACHE_DIR と UV_PROJECT_ENVIRONMENT は隔離 HOME 内へ固定する。
-Git 操作は対象 PR directory の Request ごとの `.staging/` に作る専用 clone 内で行い、
-親が通常 helper の保存・検査・cleanup を行う。正式保存先以外の新しい grant は加えない。
-追加 grant は起動前に固定し、read-only の呼び出しでは適用しない。
-bubblewrap 不在、不正 profile、リンク・欠落した grant は unconfined に fallback せず失敗する。
-拒否後に cache/cwd/sandbox を変えて再試行しない。
-承認待ちの入力には切り替えない。role の `writes` は共通仕様どおり指示であり、
-DSH を読み取り専用にする sandbox の保証ではない。
-対応 provider は上記の二つ。管理する起動設定の上書きを避けるため、
-`args` は空だけを受け付け、非空や未対応 provider は `launch_failed` で明示的に拒否する。
-`skill_sources` は role の `skills` を指定ファイルへの絶対パスとして prompt に反映し、
-見つからないスキルは標準 discovery に任せる（他 adapter と同じ仕様）。
-
-JSONL の `turn_end`、`final`、CLI の終了コードと既存 runner の停止確認を照合する。
-キー無しで空の `final` が出ても `awaiting_authentication` とし、成功扱いしない。
-ファイル名や行数に 401・403 を含むツールのエラーから回復して完了した試行を捨てないよう、
-ツールのエラー（`status` が `error` の `tool_result`）の文面からは承認の拒否だけを読み、
-認証待ちは `error` event・`turn_end` の reason と、events だけでは失敗の理由が分からないとき
-（`response_failed`）の stderr で判定する。
-JSON の payload は、最終応答の全文、または本文中の `` ```json `` フェンスを
-この順に読み、最初に object として読めたものにする（pi・Claude Code・Devin の adapter と同じ候補順）。
-空の object、重複したキーや `NaN` を含む JSON、フェンスに入っていない前置き付きの JSON は成功にしない。
-text の payload は最終応答をそのまま返す。
-自身の隔離 session.v4.jsonl の id/cwd と stdout の session_id を照合し、
-解決済み request header と assistant message source が一致する model/provider、同じ header の effort を観測する。
-`cli_version` は `null`、`skill_versions` は空。ログが無い一般用途は Identity の unknown/null を維持するが、
-通常の PR レビューでモデルが観測できなければ helper と loop は成功にしない。
-指定した設定値や親の `PI_PROVIDER` / `PI_MODEL` から推測しない。
-
 ### レビューの後処理
 
 雛形の workflow `review` は、run の終了後に後処理（`after_run`）として
-pr-review の `review_run.py finalize-parent --result <result.json>`、
-`attach-runner --result <result.json>` を順に呼ぶ。前者は DSH staged payload を親で保存・cleanup し、
-result.json の payload を更新する（プロセスの実測 state/exit は変えない）。
+pr-review の `review_run.py attach-runner --result <result.json>` を呼ぶ。
 各レビュアーの実行記録（`reviews/<owner>/<repo>/#<PR>-<branch>/runs/`）に、
 ランナーが観測した model・effort・session・CLI の版と試行の結果を書く（#601）。
 後処理が失敗・期限切れになっても run の終了コード・プロセスの実測 state は変わらず、
 標準出力の JSON summary の `after_run` に結果とログのパスが出る。
-止めるときは個人設定に次を書く。直接 runner を使う DSH caller は、run の後に
-finalize-parent と attach-runner を順に呼ぶ。loop は親保存を必ず行うため、この設定で止まるのは
-観測値の追記だけである。
+観測値の追記を止めるときは個人設定に次を書く。
 
 ```toml
 [workflows.review]
@@ -923,7 +818,7 @@ commandcode の 2 つのランチャを `setup_pi_commandcode_goat.zsh` が同�
 
 `devcontainer.json` は `PLANNOTATOR_REMOTE=1` と `PLANNOTATOR_PORT=19432-19441` を設定し、
 19432〜19441 の 10 ポートを個別に転送する。拡張は範囲内の空きポートを選ぶ。
-既存の XRift プレビュー（5173）、ログインのコールバック（3000）、DSH web（3080）、
+既存の XRift プレビュー（5173）、ログインのコールバック（3000）、
 `~/.pi` の bind mount とランチャー別 model tier の設定は変更しない。
 
 #### 既存コンテナへの反映
@@ -1109,553 +1004,70 @@ bash .devcontainer/test-pi-superagents.bash
 bash .devcontainer/test-pi-openai-codex.bash
 ```
 
-## DeepSeek Harness（dsh）（#282）
+## DSH 撤去後の移行（#123）
 
-`install_beforehand.bash` は [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
-（`dsh`）を `@deepseek-ai/dsh@0.2.1-rc.2` に固定して導入し、直後の `dsh --version` が
-指定版を返さなければ postCreate を失敗させる。既存の `pigo` / `pigod` /
-`piccg` / `piccd` と `~/.pi` の設定には影響しない。
+DeepSeek Harness（DSH）の導入・ランチャー・runner runtime は撤去した。
+Pi の DeepSeek 担当（`pi-deepseek`・`pigod`）とランチャー（`piccd`・`pigod`）、
+Claude Code の `ccdd`・`ccddg` は引き続き使える。既定の inspect は
+`devin-swe`・`pi-deepseek`・`claude-opus`・`pi-gpt` の 4 人である。
 
-対話起動は terminal profile の `pi-tui` が担う。`pi-tui` profile には
-`@xmoon76/dsh-pi-tui@0.5.3` と `@mars-sea/dsh-commandcode-provider@0.14.2` を
-導入する。web profile は従来どおり Command Code provider（同じ `@0.14.2`）だけを
-導入する。3 つの pin は `install_beforehand.bash` 先頭の `DSH_VERSION` /
-`DSH_PI_TUI_VERSION` / `DSH_COMMANDCODE_PROVIDER_VERSION` が単一の情報源である。
+### 個人設定の更新
 
-`dsh` の plugin 管理は PATH 上の `pnpm` を直接 spawn する。`pnpmVersion: "none"` は
-pnpm を導入しない指定のため、Node feature で `12.4.1` を明示導入している。
+セットアップは既存の個人設定を上書きしない。コンテナを作り直さず使う場合は、
+`~/.config/agent-runner/config.toml`（`XDG_CONFIG_HOME` を絶対パスで設定している場合は
+その下の `agent-runner/config.toml`）を利用者が編集する。
 
-`~/.dsh` は `devcontainer.json` で bind mount している。設定、plugin、credentials は
-ホスト側に残るため、リビルド後も両 profile の設定と plugin をそのまま使える。
-Web UI は `forwardPorts` の `3080`（dsh web の既定ポート）でホストから開ける。
+1. `[agents.dsh-ccd]`・`[agents.dsh-go]` と、個人で定義した `runtime = "dsh"` の担当の節を削除する。
+2. workflow の `agents`・`fallback` などにある DSH 担当の割り当てを削除する。
+   同じモデルを使う場合は `dsh-ccd` を `pi-deepseek` に置き換えられる。
+3. `[workflows.review]` の `after_run` から `review_run.py finalize-parent` を呼ぶコマンドだけを外し、
+   `attach-runner` は残す。配列は雛形とマージせず丸ごと置き換わるため、古い配列を残すと
+   撤去済みのコマンドを呼び続ける。雛形と同じ後処理を使うなら、個人設定の `after_run` 自体を外す。
 
-### 起動とセッション
+担当のテーブルは雛形と再帰的にマージするため、割り当てだけを外しても DSH の担当の定義は残る。
+DSH の runtime が 1 つでも定義されていると `check`・`list`・`run` はすべて
+`{"error":"invalid_value"}`（終了コード 2）で止まる。PR 修正ループなども同じ設定を読む。
+エラーには担当名が出ないので、上の手順で個人設定全体を確認する。
+この個人設定の整理は、撤去前の版を使っている間にも行える。
 
-```bash
-dsh --profile pi-tui
-```
-
-終了は `Ctrl+C` を 2 回押す。セッションの再開は ID を指定する。
-
-```bash
-dsh --profile pi-tui --session <session-id>
-```
-
-### 接続先別の TUI ランチャー（#524）
-
-PATH 上の `dshccd` / `dshgo` は pi の alias ではなく、DeepSeek Harness の
-`dsh --profile pi-tui` を起動する。新規セッションの既定は次のとおり。
-
-| コマンド | provider | model | reasoningEffort | 必要な環境変数 |
-| --- | --- | --- | --- | --- |
-| `dshccd` | `commandcode` | `deepseek/deepseek-v4.1-flash` | `max` | `COMMANDCODE_API_KEY` |
-| `dshgo` | `opencode-go` | `deepseek-v4.1-flash` | `max` | `OPENCODE_API_KEY` |
-
-使うシェルで対象のキーを export してから起動する。キー未設定・空文字の対話起動は
-必要な環境変数名を表示して終了し、別 provider へ切り替えない。キーの値は
-ランチャー、patch、ログへ保存・出力しない。キーを扱うシェルで `set -x` を使わない。
+移行後は、親のルートで次を実行する。
 
 ```bash
-dshccd
-dshgo
+uv run --project tools/devenv python -m tools.agent_runner check
+uv run --project tools/devenv python -m tools.agent_runner list
 ```
 
-DSH の対応引数はそのまま転送する。値に空白がある場合は引用する。
-DSH 本体の `--patch` / `--dump-config` などは、pi-tui の `--session` / `--preset`
-より前に置く（DSH は最初の app 引数以降を pi-tui へ渡す）。
-作業ディレクトリ、シェルの環境変数、終了コードも引き継ぐ。
-ただし、外側の pi のメタデータ（`PI_PROVIDER` / `PI_MODEL` / `PI_SESSION_ID` /
-`PI_SESSION_FILE` / `PI_SUBAGENT_SESSION` / `PI_REASONING_LEVEL`）は起動時に除去する。
+### 既存コンテナの更新
+
+利用者による **Dev Containers: Rebuild Container** を推奨する。
+個人設定に残したい変更は事前に控え、再作成後の設定へ必要な節だけ戻す。
+新しいコンテナでは DSH と pnpm を導入せず、`~/.dsh` の bind mount とポート 3080 の転送も行わない。
+`install_beforehand.bash` を再実行するだけでは既存の DSH は削除されない。
+
+作り直さない場合は、このコンテナ内で動いている DSH を終了してから、利用者が次を実行する。
+コンテナ内に配置した DSH 本体と専用ランチャーだけが対象である。
 
 ```bash
-dshccd --preset minimal
-dshgo --session '<session-id>'
-dshccd --help                     # キー不要
-dshgo --version                   # キー不要
+npm uninstall -g @deepseek-ai/dsh
+rm -f -- "${HOME:?}/.local/bin/dshccd" "${HOME:?}/.local/bin/dshgo" \
+  "${HOME:?}/.local/bin/dsh-launcher.bash" \
+  "${HOME:?}/.local/bin/dshccd.patch.yml" "${HOME:?}/.local/bin/dshgo.patch.yml" \
+  "${HOME:?}/.local/bin/dsh-model-env.patch.yml" \
+  "${HOME:?}/.local/share/xrift-poc/dsh-model-env.mjs"
+command -v dsh dshccd dshgo
 ```
 
-`--session` で再開したセッションは保存済みのモデル選択・reasoning effort を優先する。
-コマンド名は新規セッションの既定を選ぶだけで、保存済みの別 provider へ強制移行しない。
-保存済み選択が無いセッションでは、ランチャーの既定が使われる。
-再開時もランチャーに対応するキーの確認は行う。保存された provider が異なる場合は、
-その provider のキーも必要になる。セッション中の選択確認・変更は `/model` を使う。
-
-`~/.local/bin` に配置したコマンドは、隣の `dsh-launcher.bash` とコマンド別の
-`dshccd.patch.yml` / `dshgo.patch.yml`、共通の `dsh-model-env.patch.yml` を使う。
-patch は `agent-default-model` だけを上書きし、provider の接続設定は既存の
-managed block を再利用する。`~/.dsh/cordis.patch.yml` や profile の保存設定を
-書き換えず、交互・同時起動でも接続先選択が干渉しない。追加の `--patch` を指定した
-場合は、その追加指定が優先される。Web UI、既存の pi ランチャー・認証・設定には
-影響しない。
-
-コンテナ作成・リビルドでは 7 ファイルを毎回配置する。リビルドしない既存環境では、
-更新済みの親リポジトリのルートで次を実行する。DSH と pi-tui / Command Code plugin
-が未導入なら、先にこの節の「更新と復旧」の pin 指定手順で導入する。
-`~/.local/bin` は `zshrc.txt` で PATH に追加済みである。
-
-```bash
-(
-  set -euo pipefail
-  mkdir -p "$HOME/.local/bin" "$HOME/.local/share/xrift-poc"
-  for asset in dshccd dshgo dsh-launcher.bash; do
-    install -m 0755 ".devcontainer/$asset" "$HOME/.local/bin/$asset"
-  done
-  for asset in dshccd.patch.yml dshgo.patch.yml; do
-    install -m 0644 ".devcontainer/$asset" "$HOME/.local/bin/$asset"
-  done
-  install -m 0644 .devcontainer/dsh-model-env.mjs "$HOME/.local/share/xrift-poc/dsh-model-env.mjs"
-  sed "s|__PLUGIN_PATH__|$HOME/.local/share/xrift-poc/dsh-model-env.mjs|" \
-    .devcontainer/dsh-model-env.patch.yml > "$HOME/.local/bin/dsh-model-env.patch.yml"
-  chmod 0644 "$HOME/.local/bin/dsh-model-env.patch.yml"
-)
-```
-
-実効設定はキー不要で確認できる。次は選択の 3 項目だけを表示し、既存設定に
-保存された認証情報を含む可能性のある dump 全体を表示・保存しない。
-`--dump-default-config` は bundle 雛形だけを見るため、ランチャーの patch は適用しない。
-`--dump-config-schema` もキー不要で利用できる。
-
-```bash
-for launcher in dshccd dshgo; do
-  printf '%s\n' "$launcher"
-  env -u COMMANDCODE_API_KEY -u OPENCODE_API_KEY "$launcher" --dump-config | awk '
-    /^- id: agent-default-model$/ { inside = 1; next }
-    inside && /^- / { inside = 0 }
-    inside && /^    (provider|model|reasoningEffort): / { print }
-  '
-done
-```
-
-モデル事実を渡すプラグインの行も同じ dump に出る。`name` が配置済みの
-`~/.local/share/xrift-poc/dsh-model-env.mjs` を指していることを確認する。
-
-```bash
-dshccd --dump-config | grep -A2 '^- id: xrift-poc-dsh-model-env'
-```
-
-### API トークン
-
-API key はリポジトリにも `~/.dsh/` 配下にも保存しない。使うシェルで export して
-から `dsh` を起動する（`pigo` / `piccd` と同じ値を使う）。
-
-```bash
-export OPENCODE_API_KEY='...'
-export COMMANDCODE_API_KEY='...'
-```
-
-Command Code のキーは TUI の `/settings` → Command Code から設定することもできる。
-
-### 接続設定（managed block）
-
-provider と既定モデルの設定は home レベルの patch 層
-`~/.dsh/cordis.patch.yml` の managed block に定義する。home レベルの patch 層は
-全 profile に効く。block は初回だけコピーまたは追記され、編集の有無によらず
-以後のリビルドでは更新されない。block の範囲は次の 2 つのマーカーで示す。
-変更する場合はバックアップを取り、マーカーを残して必要な設定だけを編集する。
-
-```text
-# BEGIN maatlog managed provider config — rebuilds do not update this block.
-# END maatlog managed provider config
-```
-
-block の中身は次の 3 entry である。
-
-- `- id: llm-pi-ai`。OpenCode Go 経路の `opencode-go` provider を
-  `apiKeyEnv: OPENCODE_API_KEY` と `models: [{id: deepseek-v4.1-flash}]` で定義する。
-  provider レベルの `baseURL` は書かない。エンドポイント
-  （`https://opencode.ai/zen/go/v1`）は pi-ai catalog が持っており、`baseURL` を
-  書くと catalog の解決を上書きして 404 になる。
-- `- id: llm-commandcode`。Command Code GOAT を
-  `apiKeyEnv: COMMANDCODE_API_KEY` と `apiBase: https://api.commandcode.ai`、
-  `webSearch: false` で定義する。`apiBase` には API root を書き、
-  `/provider/v1` は書かない。provider がリクエスト時に `/provider/v1/...` を
-  付加するため、書くと二重付加になる。
-- `- id: agent-default-model`。全体の既定として `provider: opencode-go` /
-  `model: deepseek-v4.1-flash` / `reasoningEffort: max` を選ぶ。Command Code
-  plugin には effort の設定項目が無く、リクエストに渡された値だけを使うため、
-  Command Code のモデルを選んだセッションの effort は UI 側の選択で決まる。
-
-DeepSeek 独自の `dsh_plugin_packages` を止める
-`- id: plugin-package-inventory-deepseek`（`enabled: false`）の無効化 entry は
-managed block の外に置く。この plugin は settings の section を登録せず、
-`settings.yaml` に書いても無視されるため、無効化は `~/.dsh/cordis.patch.yml` の
-patch 層で行う。`install_beforehand.bash` は `dsh --profile web --dump-config` と
-`dsh --profile pi-tui --dump-config` で解決後の構成を確認し、無効化や provider
-設定が無ければ postCreate を失敗させる。
-
-### モデルの切替
-
-セッション中の切替は TUI の `/model` で行う。一覧には
-`opencode-go/deepseek-v4.1-flash` と `commandcode/deepseek/deepseek-v4.1-flash` が
-出る。起動直後の既定は `agent-default-model` の OpenCode Go 経路である。
-一覧に出る `deepseek-official` は公式 DeepSeek API 用の未設定の既定カタログであり、本 Issue の対象外である。
-グローバルな既定を変える場合は `~/.dsh/cordis.patch.yml` のバックアップを取り、
-managed block 内の `agent-default-model` を編集する（TUI の settings form からは
-上書きできない）。編集後もリビルドでは内容が変わらないため、雛形との差分を記録しておく。
-雛形の更新を取り込むときは、バックアップと差分確認の後にマーカー間を手動で
-差し替える。block の外にある利用者設定と inventory 無効化 entry は残す。
-
-### 実行中モデルの取得（pi-model-name）（#577）
-
-pi の bash ツールは `PI_PROVIDER` / `PI_MODEL` を注入するが、DSH の pi-tui は DSH の
-bash ツールと shell 環境レジストリ（`@deepseek-ai/dsh-shell-env`）を使うため、その
-変数を注入しない。`dshccd` / `dshgo` の共通起動処理は、親から継承した pi の
-モデル・セッション・reasoning のメタデータを除去してから DSH を起動する。
-外側の pi の値を DSH の現在値として扱わず、DSH の事実が無いときもその値で代用しない。
-`dshccd` / `dshgo` は起動 patch で `dsh-model-env` プラグイン
-（`~/.local/share/xrift-poc/dsh-model-env.mjs`）を挿入し、モデル向けシェルへ次の事実を
-渡す。
-
-| 変数 | 意味 |
-| --- | --- |
-| `DSH_PROVIDER` | そのシェル呼び出しの provider |
-| `DSH_MODEL` | そのシェル呼び出しの model id |
-| `DSH_REASONING_EFFORT` | 経路が effort を宣言している場合だけ入る |
-
-値は呼び出し元エージェントのセッションが持つ現在のリクエストヘッダ
-（`agent.session.requestHeader()`）からシェル呼び出しごとに解決する。固定値・保存
-設定・セッション履歴は使わないため、`/model` の切替、`--session` での再開、subagent の
-いずれでも、そのシェル呼び出しの経路が返る。`~/.dsh` 配下の patch・profile は
-書き換えず、この層はランチャー経由の起動にだけ効く。
-
-TUI の bash ツール内で確認する。
-
-```bash
-printf '%s/%s\n' "$DSH_PROVIDER" "$DSH_MODEL"
-"$(git rev-parse --show-toplevel)/.agents/skills/pi-model-name/scripts/print-pi-model.sh"
-```
-
-`pi-model-name` スキルは、`PI_*` が無く `DSH_SHELL=1` のとき `DSH_*` をランタイムが
-提示した事実として読む（`--json` の `provenance` は `dsh-runtime`）。事実が無ければ
-推測せず exit 2 で停止する。次は事実が入らない。
-
-- agent を持たないシェル実行
-- pi-tui の `minimal` プリセット（永続 bash ツールは `DSH_*` を注入しない）
-- ランチャー経由ではない起動（`dsh --profile pi-tui` を直接起動し、同等の patch を
-  重ねていない場合）
-
-既存コンテナでは「接続先別の TUI ランチャー」の手順で 7 ファイルを配置し直し、
-新しい `dshccd` / `dshgo` を起動して確認する。起動済みセッションには遡って効かない。
-
-### 実効設定の確認
-
-解決後の構成は `--dump-config` で確認する。次の entry が見えること。
-
-```bash
-dsh --profile pi-tui --dump-config   # llm-pi-ai / llm-commandcode / agent-default-model が見える
-dsh --profile pi-tui --dump-config | grep -A4 'plugin-package-inventory-deepseek'
-                                     # config の enabled: false が見える
-```
-
-### 旧 settings.yaml からの移行
-
-0.2.0 の初回起動は、旧 `~/.dsh/settings.yaml` をアクティブな profile の
-`cordis.patch.yml` に一度だけ取り込み、旧ファイルを `settings.yaml.imported` に
-改名する。`install_beforehand.bash` は旧ファイルがある環境では警告を出すだけで、
-編集も削除もしない。警告が出たら次の順で移行する。
-
-1. `~/.dsh/settings.yaml.imported` ができていることを確認する。まだ無ければ
-   `dsh` を一度起動してから終了する（取り込みは初回起動時に起きる）。
-2. 取り込み先の patch から、旧 `llm-deepseek`（OpenCode Go 向け）の entry を
-   削除する。protocol が合わないためで、OpenCode Go へは `llm-pi-ai` 経由で
-   接続する。取り込み先は次で探す。
-
-   ```bash
-   grep -rl 'id: llm-deepseek' ~/.dsh --include='*.yml'
-   ```
-
-3. `~/.dsh/cordis.patch.yml` に managed block が無ければ、リビルド時に自動追記
-   される。リビルドしない場合は手動で追記する。
-
-次の手順は block が未追加のときだけ適用し、既存ファイルは先にバックアップする。
-既存 block の更新には使わない。空ファイルや `[]` / `null` / `{}` 等の空表記は
-雛形で初期化し、コメントのみ、または空表記とコメントが混在する場合も行全体の
-コメントを残す。適用後に構成を確認する。
-
-```bash
-(
-  set -euo pipefail
-  target="$HOME/.dsh/cordis.patch.yml"
-  template=".devcontainer/dsh-cordis.patch.yml"
-  if [ ! -f "$target" ]; then
-    mkdir -p "$HOME/.dsh"
-    cp "$template" "$target"
-  elif ! grep -qF '# BEGIN maatlog managed provider config' "$target"; then
-    cp "$target" "$target.bak"
-    remaining="$(grep -vE '^[[:space:]]*(#|$)' "$target" || true)"
-    if [ -z "$remaining" ] && grep -qE '^[[:space:]]*#' "$target"; then
-      { printf '\n'; cat "$template"; } >> "$target"
-    elif [ -z "$remaining" ] || ! printf '%s\n' "$remaining" | \
-      grep -qvE '^[[:space:]]*(\[[[:space:]]*\]|\{[[:space:]]*\}|[Nn][Uu][Ll][Ll]|~)[[:space:]]*(#.*)?$'; then
-      if grep -qE '^[[:space:]]*#' "$target"; then
-        if ! initialized="$(mktemp "$target.XXXXXX")"; then
-          echo "Failed to prepare the commented dsh cordis.patch.yml." >&2
-          exit 1
-        fi
-        if ! { grep -E '^[[:space:]]*#' "$target" && cat "$template"; } > "$initialized" ||
-          ! mv "$initialized" "$target"; then
-          rm -f "$initialized"
-          echo "Failed to initialize the commented empty dsh cordis.patch.yml." >&2
-          exit 1
-        fi
-      else
-        cp "$template" "$target"
-      fi
-    else
-      { printf '\n'; awk '/# BEGIN maatlog managed provider config/,/# END maatlog managed provider config/' \
-        "$template"; } >> "$target"
-    fi
-  fi
-  grep -c '# BEGIN maatlog managed provider config' ~/.dsh/cordis.patch.yml  # 1 と表示される
-  dsh --profile pi-tui --dump-config | grep -F 'llm-pi-ai'
-)
-```
-
-### 更新と復旧
-
-#### 0.2.1-rc.2 への更新（#95）
-
-2026-10-20 に、次の組合せを隔離環境で確認した。
-
-| パッケージ | 採用版 | 選定理由 |
-| --- | --- | --- |
-| `@deepseek-ai/dsh` | `0.2.1-rc.2` | [更新対象のリリース](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.1-rc.2) |
-| `@xmoon76/dsh-pi-tui` | `0.5.3` | `engines.dsh: >=0.2.1-rc.2`。実際の両ランチャーが起動・終了できた |
-| `@mars-sea/dsh-commandcode-provider` | `0.14.2` | `engines.dsh: 0.2.0-rc.2 \|\| 0.2.1-rc.2`。公開日時は 2026-10-18 11:11 UTC で、選定時に 1 日を超えていた |
-
-provider の 0.14.3 / 0.14.4 は選定時点で公開から 1 日未満だったため採用しない。
-pi-tui 0.5.3 は公開から 1 日未満であり、pnpm 12.4.1 がその profile の
-`pnpm-workspace.yaml` に `minimumReleaseAgeExclude` を追加した。
-これは pnpm の公開後の待機時間に関する設定で、DSH の互換性検査は有効なままである。
-後日の導入では公開後の経過時間により追加されない場合がある。
-第三者 plugin のファイルや `engines.dsh` は書き換えない。
-
-profile 単体の `pnpm peers check` は DSH 側の依存を missing peer として報告する
-（終了コード 1）。今回の必須 peer は DSH 本体側に対応版があり、
-`plugin add` の互換性検査、両 profile の構成解決、TUI 起動は成功した。
-profile に DSH 本体の依存を重複導入して警告を消す操作は行わない。
-
-native script の許可は引き続き `@deepseek-ai/dsh-subprocess-local` / `koffi` /
-`node-pty` の 3 件だけとする。旧版・新版とも `@google/genai` と `protobufjs` の
-script は許可されない旨の警告が出たが、許可対象を増やさずに導入・起動できた。
-
-dsh 本体と 2 つの plugin の版を変える場合は、3 つの pin
-（`DSH_VERSION` / `DSH_PI_TUI_VERSION` / `DSH_COMMANDCODE_PROVIDER_VERSION`）を
-同時に更新し、Dev Containers: Rebuild Container で反映する。
-`dsh plugin --profile pi-tui -- update` は使わない。install script は dsh 本体の版だけを確認し、plugin は pin 指定の `plugin add` を実行し直す。手動 update は pin と実導入版をずらすため使わない。
-
-変更前に DSH を終了し、`~/.dsh` の複製を残す。バックアップにも認証情報が入るため、
-公開・共有しない。以下は通常の `~/.dsh` を使う場合の手順である。
-Dev Container を使う場合はホストのターミナルで実行する。コンテナ内の HOME 直下に
-置いたバックアップは bind mount の対象ではなく、Rebuild 後に残らない。
-読めないファイルがあるなどで複製に失敗したときは、途中までの複製を消して 0 以外で終わり、
-パスを表示しない。原因を直してから実行し直す。
-
-```bash
-DSH_BACKUP="$(
-  set -euo pipefail
-  backup="$(mktemp -d "$HOME/.dsh-backup-XXXXXX")"
-  if ! { chmod 700 "$backup" && cp -a "$HOME/.dsh" "$backup/dsh"; }; then
-    rm -rf -- "${backup:?}"
-    exit 1
-  fi
-  printf '%s\n' "$backup"
-)" && printf 'DSH backup: %s\n' "$DSH_BACKUP"
-```
-
-Rebuild 後は `dsh --version` と両 profile の `--dump-config` を確認する。
-更新対象はグローバルの実行ファイルと、web / pi-tui profile の依存定義・lockfile・
-`node_modules` である。home patch の管理ブロックは未登録の場合だけ追加する。
-認証情報、保存済みセッション、独自 profile、既存 patch のコメント・独自設定は保持する。
-#95 ではダミーの既存データを置き、旧版からの更新・同じ新版の再適用・旧版への復旧後に
-その内容が変わっていないことを確認した。独自に追加した第三者 plugin の互換性は
-各 plugin の対応版も確認する。
-
-新版の headless はキーが無いと認証エラーになる。runner は従来どおり試行ごとに
-キーを渡し、共有 credentials や作業ディレクトリの `.env` を参照しない。
-保存セッションの identity 取得、bash へのモデル環境変数、sandbox の制限については
-下記の隔離検証で確認した。
-
-plugin を消してしまった場合は、pin 指定で入れ直す。
-
-```bash
-npm install -g --allow-scripts=@deepseek-ai/dsh-subprocess-local,koffi,node-pty "@deepseek-ai/dsh@0.2.1-rc.2"
-dsh plugin --profile web add "@mars-sea/dsh-commandcode-provider@0.14.2"
-dsh plugin --profile pi-tui -- add "@xmoon76/dsh-pi-tui@0.5.3"
-dsh plugin --profile pi-tui -- add "@mars-sea/dsh-commandcode-provider@0.14.2"
-```
-
-#### 旧版への復旧
-
-DSH を終了してから、更新前の組合せに戻す。
-Rebuild でも旧版を維持する場合は、3 つの pin を順に `0.2.0-rc.2` / `0.5.0` /
-`0.12.2` に戻してから Rebuild する。現在のコンテナだけを戻す場合は次を実行する。
-
-```bash
-npm install -g --allow-scripts=@deepseek-ai/dsh-subprocess-local,koffi,node-pty "@deepseek-ai/dsh@0.2.0-rc.2"
-dsh plugin --profile web add "@mars-sea/dsh-commandcode-provider@0.12.2"
-dsh plugin --profile pi-tui -- add "@xmoon76/dsh-pi-tui@0.5.0"
-dsh plugin --profile pi-tui -- add "@mars-sea/dsh-commandcode-provider@0.12.2"
-dsh --version                     # 0.2.0-rc.2
-dsh --profile web --dump-config
-dsh --profile pi-tui --dump-config
-```
-
-設定まで戻す必要がある場合は、停止したコンテナのホスト側でバックアップを復元する。
-`~/.dsh` は bind mount のため、コンテナ内でディレクトリ自体を移動しない。
-現在の設定も別名で残してから復元し、バックアップ後のセッションや設定が必要なら
-残したコピーから個別に戻す。認証情報を含むバックアップの内容をログへ出さない。
-次の block は、バックアップを HOME の下へ複製し終えてから、現在の `~/.dsh` を退避して
-入れ替える。バックアップや現在の `~/.dsh` が無いときと、複製・退避に失敗したときは、
-途中までの複製を消し、現在の `~/.dsh` をそのまま残して 0 以外で終わる。
-退避した後に入れ替えに失敗したときは、退避した設定の場所をエラー出力に表示して
-0 以外で終わる。
-
-```bash
-# ホスト側。DSH_BACKUP には先ほど表示されたバックアップの絶対パスを設定する。
-DSH_REPLACED="$(
-  set -euo pipefail
-  test -d "${DSH_BACKUP:?}/dsh"
-  test -d "$HOME/.dsh"
-  replaced="$(mktemp -d "$HOME/.dsh-before-restore-XXXXXX")"
-  if ! { cp -a "$DSH_BACKUP/dsh" "$replaced/restore" && mv "$HOME/.dsh" "$replaced/dsh"; }; then
-    rm -rf -- "${replaced:?}/restore"
-    rmdir -- "${replaced:?}"
-    exit 1
-  fi
-  if ! mv "$replaced/restore" "$HOME/.dsh"; then
-    printf 'DSH restore failed. Previous DSH settings: %s\n' "$replaced/dsh" >&2
-    exit 1
-  fi
-  printf '%s\n' "$replaced"
-)" && printf 'Previous DSH settings: %s\n' "$DSH_REPLACED"
-```
-
-### 検証
-
-自動テストは親 worktree の root で実行する。API key は要らない。
-
-```bash
-./scripts/ci/verify-devenv.sh
-```
-
-dsh 関連だけを先に確認するときは次を実行する。
-
-```bash
-uv sync --project tools/devenv --locked
-uv run --project tools/devenv --no-sync pytest -c tools/devenv/pyproject.toml --rootdir . tools/devenv_migration/tests/test_dsh_devcontainer.py tools/devenv_migration/tests/test_dsh_launchers.py tools/devenv_migration/tests/test_dsh_model_env.py tools/agent_runner/tests/adapters/dsh/ -v
-```
-
-`test_dsh_model_env.py` は導入済みの実 dsh と実 `@deepseek-ai/dsh-shell-env` を、
-依存を持たない一時 profile で起動し、`DSH_PROVIDER` / `DSH_MODEL` の登録と解決を
-確認する。モデルの API 呼び出しは不要で、既存の `~/.dsh` は使わない。
-
-現在の環境での読み取り専用確認は次の block を使う。設定を変更せず、API key は
-要らず、実セッションも開始しない。
-
-```bash
-dsh --version                     # 0.2.1-rc.2 と表示される
-dsh --profile pi-tui --dump-config
-                                  # llm-pi-ai / llm-commandcode / agent-default-model が見える
-dsh --profile web --dump-config | grep -A4 'plugin-package-inventory-deepseek'
-                                  # config の enabled: false が見える
-```
-
-隔離環境の統合確認は次の block を使う。一時ディレクトリに dsh 本体と 2 つの
-plugin を入れ、home patch の雛形を置いて解決後の構成を確認する。現在の
-`~/.dsh/` には触れず、API key は要らず、実セッションも開始しない。
-いずれかのコマンドが失敗したときと、web / pi-tui のどちらかの構成に必要な entry が
-無いときは、block は 0 以外で終わる。
-
-```bash
-TMP_DSH="$(mktemp -d /tmp/dsh-verify-XXXXXX)"
-(
-  set -euo pipefail
-  test -d "${TMP_DSH:?}"
-  mkdir -p "$TMP_DSH/home" "$TMP_DSH/cwd" "$TMP_DSH/tmp"
-  dsh_verify() (
-    cd "$TMP_DSH/cwd"
-    env -i HOME="$TMP_DSH/home" DSH_HOME="$TMP_DSH/home/.dsh" \
-      TMPDIR="$TMP_DSH/tmp" PATH="$TMP_DSH/prefix/bin:$PATH" \
-      npm_config_cache="$TMP_DSH/npm-cache" "$@"
-  )
-  dsh_verify npm install -g --prefix "$TMP_DSH/prefix" --no-audit --no-fund \
-    --allow-scripts=@deepseek-ai/dsh-subprocess-local,koffi,node-pty \
-    @deepseek-ai/dsh@0.2.1-rc.2
-  dsh_verify dsh --version            # 0.2.1-rc.2
-  dsh_verify dsh plugin --profile web add @mars-sea/dsh-commandcode-provider@0.14.2
-  dsh_verify dsh plugin --profile pi-tui -- add @xmoon76/dsh-pi-tui@0.5.3
-  dsh_verify dsh plugin --profile pi-tui -- add @mars-sea/dsh-commandcode-provider@0.14.2
-  cp .devcontainer/dsh-cordis.patch.yml "$TMP_DSH/home/.dsh/cordis.patch.yml"
-  for profile in web pi-tui; do
-    dump="$TMP_DSH/${profile}-dump.yml"
-    dsh_verify dsh --profile "$profile" --dump-config > "$dump"
-    for needle in 'id: llm-pi-ai' 'opencode-go' 'id: llm-commandcode' \
-      'apiBase: https://api.commandcode.ai' 'provider: opencode-go'; do
-      if ! grep -qF -- "$needle" "$dump"; then
-        printf 'Missing %s config entry: %s\n' "$profile" "$needle" >&2
-        exit 1
-      fi
-    done
-    if ! awk '
-      /^- id: plugin-package-inventory-deepseek$/ { inside = 1; next }
-      inside && /^- / { inside = 0 }
-      inside && /^[[:space:]]+enabled: false$/ { found = 1 }
-      END { exit found ? 0 : 1 }
-    ' "$dump"; then
-      printf 'Missing disabled %s config for plugin-package-inventory-deepseek\n' "$profile" >&2
-      exit 1
-    fi
-  done
-)
-```
-
-確認後、一時ディレクトリが不要なら `rm -rf -- "${TMP_DSH:?}"` で削除する。
-
-Dev Container を使わないローカル環境では、`pnpm` を用意したうえで次の順に
-手動で導入する。既に `~/.dsh/` 側にファイルがある場合はコピーしない。
-
-```bash
-npm install -g --allow-scripts=@deepseek-ai/dsh-subprocess-local,koffi,node-pty @deepseek-ai/dsh@0.2.1-rc.2
-mkdir -p ~/.dsh
-[ -f ~/.dsh/cordis.patch.yml ] || cp .devcontainer/dsh-cordis.patch.yml ~/.dsh/cordis.patch.yml
-dsh plugin --profile web add @mars-sea/dsh-commandcode-provider@0.14.2
-dsh plugin --profile pi-tui -- add @xmoon76/dsh-pi-tui@0.5.3
-dsh plugin --profile pi-tui -- add @mars-sea/dsh-commandcode-provider@0.14.2
-```
-
-### ランチャーの起動確認
-
-#95 では新版を一時 HOME / DSH_HOME / prefix に導入し、外部ネットワークを遮断して
-両ランチャーを疑似端末（PTY）から起動した。`dshccd` は
-`commandcode/deepseek/deepseek-v4.1-flash @max`、`dshgo` は
-`opencode-go/deepseek-v4.1-flash @max` のフッター表示と正常終了を確認済み。
-非実用のダミーキーを使い、プロンプトは送信していない。実 API の認証・応答を
-確認したものではなく、既存の `~/.dsh` / `~/.pi` は変更していない。
-
-さらに両 provider の標準 headless adapter をローカルの偽 API と接続し、
-日本語・改行を含む入力、JSON 応答、保存セッションからの provider / model / effort の
-取得、bash の作業領域内への書き込みと外側への書き込み拒否を確認した。
-キー無し・HTTP 401 は `awaiting_authentication` となり、PI のモデル環境変数や
-作業ディレクトリの `.env` のキーは採用しなかった。実 model-env plugin を追加した
-別の試行でも、両 provider の bash で選択中の `DSH_PROVIDER` / `DSH_MODEL` /
-`DSH_REASONING_EFFORT` を確認した。
-
-### 実 API と実環境での手動確認（未確認）
-
-次の項目は実 API キーまたは手元の実環境での確認が要り、#95 では実施していない。
-未確認の項目はこの節に残し、確認が済んだら「未確認」を日付・実施者付きの
-「確認済み」に書き換えてコミットする。
-
-- [未確認] `dshccd` / `dshgo` の TUI の bash ツールで `DSH_PROVIDER` / `DSH_MODEL` が
-  入り、`.agents/skills/pi-model-name/scripts/print-pi-model.sh` が provider/model を
-  返すこと。`/model` で切り替えた後に値が追随すること。plugin の登録・解決と
-  agent 不在時の取りこぼしは `test_dsh_model_env.py` で確認する
-- [未確認] `dshccd` / `dshgo` から実 API キーで対話し、表のモデルで応答が返ること。
-  キー不要の stub 検証と隔離 profile の実 `--dump-config` は自動テストで確認する。
-  実際の API 認証・応答、実セッションの再開、Dev Container の実 rebuild は別途手動確認する
-- [未確認] TUI の `/model` の一覧に Command Code のモデル群と
-  opencode-go が並ぶこと
-- [未確認] `dsh web --no-open` が port 3080 で待ち受けること。確認後は Ctrl-C で
-  止め、API key を含むログを残さないこと
-
+最後のコマンドは何も表示せず終了コード 1 になるのが期待値である。表示された場合はその配置先を確認する。
+この手動撤去では現在のコンテナの mount とポート転送は変わらない。取り除くにはコンテナの再作成が必要である。
+
+ホストの `~/.dsh` は maatlog-poc などと共有している。中身、`cordis.patch.yml` の管理ブロック、
+`~/.dsh-backup-*`・`~/.dsh-before-restore-*` のバックアップは削除・編集しない。
+
+### 過去のレビュー記録
+
+既存の `reviews/` は今回削除しない。`runtime: "dsh"` や `runner_run_id` を含む記録は引き続き読み取れる。
+残っている `.staging/`・`parent-pr-data` も自動では削除しない。
+片付ける場合は、利用者が対象を確認し、その資源を使った PR 修正ループの run が終了して
+`finish` または `recover` でロックを解放済みであることを確かめる。
+削除前には起点がシンボリックリンクでないことと、対象の所有者・保存先を確認し、
+過去の記録や他のセッションの資源をまとめて削除しない。
