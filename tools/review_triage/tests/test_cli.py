@@ -357,7 +357,9 @@ def test_dry_run_with_allow_file_marks_states_but_sends_nothing(ws: Workspace) -
     """--live を付けない実行でも、許可済みの state を Jev へ送る。"""
     assert _run(_args(ws, "first")) == EXIT_OK
     allow = _allow_file(ws, ws.tmp / "first")
-    assert _run(_args(ws, "second", "--allow-file", os.fspath(allow)), transport=RefusingTransport()) == EXIT_OK
+    # キーがあれば送れる状態にする。キーが無いと、送ろうとしても client が no_key で止まり、送信の退行が見えない
+    argv = _args(ws, "second", "--allow-file", os.fspath(allow))
+    assert _run(argv, environ={API_KEY_ENV: KEY}, transport=RefusingTransport()) == EXIT_OK
     out = ws.tmp / "second"
     assert any(record.allowed for record in _records(out))
     assert _run_record(out).counts.calls_made == 0
@@ -391,7 +393,10 @@ def test_run_writes_only_the_output_directory(ws: Workspace, monkeypatch: pytest
 
 def test_live_sends_only_approved_states(ws: Workspace, capsys: pytest.CaptureFixture[str]) -> None:
     """許可していない state を Jev へ送る、または API キーを出力ファイル・標準エラーに書く。"""
-    allow = _dry_and_allow(ws)
+    assert _run(_args(ws, "dry")) == EXIT_OK
+    # 許可待ちの state を 1 件だけ許可ファイルから外し、その state を送らないことを確かめる
+    withheld = "gamma-model/active/L-1"
+    allow = _allow_file(ws, ws.tmp / "dry", skip=frozenset({withheld}))
     transport = FakeTransport()
     argv = _args(ws, "live", "--live", "--allow-file", os.fspath(allow))
     assert _run(argv, environ={API_KEY_ENV: KEY}, transport=transport) == EXIT_OK
@@ -402,6 +407,7 @@ def test_live_sends_only_approved_states(ws: Workspace, capsys: pytest.CaptureFi
     sent = {frozenset(outcome.finding_ids) for outcome in outcomes}
     approved = _allowed_hashes(allow)
     assert sent == {frozenset(record.finding_ids) for record in _records(out) if record.content_sha256 in approved}
+    assert all(withheld not in finding_ids for finding_ids in sent)
     assert KEY not in capsys.readouterr().err
     for path in out.iterdir():
         assert KEY not in path.read_text(encoding="utf-8"), path.name
