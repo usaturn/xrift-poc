@@ -4,26 +4,17 @@ set -u
 
 readonly GITLEAKS_VERSION="8.30.1"
 readonly GITLEAKS_ARCHIVE_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
-# DeepSeek Harness は Developer Preview のため、#95 で互換性を確認した組に固定する。
-readonly DSH_VERSION="0.2.1-rc.2"
 # 2026-10-10 に npm の latest で確認した版。更新は README の手順で確かめてから変える。
 readonly XRIFT_CLI_VERSION="0.25.0"
 # 2026-10-18 に npm の latest で確認した版。更新は README の手順で確かめてから変える。
 readonly CTX7_CLI_VERSION="0.8.0"
-readonly DSH_PI_TUI_VERSION="0.5.3"
-# engines.dsh が対象版を含み、公開から 1 日を超えた版を採用する。
-readonly DSH_COMMANDCODE_PROVIDER_VERSION="0.14.2"
-readonly DSH_NATIVE_SCRIPT_ALLOWLIST="@deepseek-ai/dsh-subprocess-local,koffi,node-pty"
-readonly DSH_TERMINAL_PROFILE="pi-tui"
-readonly DSH_MANAGED_BLOCK_BEGIN="# BEGIN maatlog managed provider config"
-readonly DSH_MANAGED_BLOCK_END="# END maatlog managed provider config"
 
 # postCreate の出力は、途中でコンテナが止まると残らない。どのステップまで進んだかを
 # 後から追えるよう、各ステップの開始を必ず1行で出し、失敗は ERROR 行を残して
 # 打ち切る（2026-09-13 のリビルド中断インシデント）。継続してよい処理
 # （workspace cleanup）だけを明示的に続行させるため、スクリプト全体には set -e を
 # 付けない。
-readonly STEP_TOTAL=32
+readonly STEP_TOTAL=30
 STEP_NUMBER=0
 
 step() {
@@ -53,97 +44,6 @@ ensure_user_writable_dir() {
         sudo chown "$(id -u):$(id -g)" "$dir" || return 1
     fi
     [ -w "$dir" ]
-}
-
-# pi-tui profile の dump-config に TUI bundle と Command Code provider が
-# 解決されていることを確認する。$1: profile 名, $2: dump-config 出力。
-assert_dsh_terminal_profile_entries() {
-    local profile="$1"
-    local config="$2"
-    local needle
-    for needle in "@xmoon76/dsh-pi-tui" "@mars-sea/dsh-commandcode-provider"; do
-        if ! printf '%s\n' "${config}" | grep -qF "${needle}"; then
-            echo "dsh --profile ${profile} is missing ${needle}; check the profile plugin list." >&2
-            return 1
-        fi
-    done
-}
-
-# ~/.dsh/cordis.patch.yml を用意する。無ければ雛形をコピーし、既存ファイルには
-# managed block が無いときだけ追記する。既存の利用者編集は書き換えない。
-ensure_dsh_cordis_patch() {
-    local target="${HOME}/.dsh/cordis.patch.yml"
-    local template=".devcontainer/dsh-cordis.patch.yml"
-    local remaining block initialized
-    if [ ! -f "${target}" ]; then
-        if ! cp "${template}" "${target}"; then
-            echo "Failed to place dsh cordis.patch.yml." >&2
-            return 1
-        fi
-        return 0
-    fi
-    if grep -qF "${DSH_MANAGED_BLOCK_BEGIN}" "${target}"; then
-        return 0
-    fi
-    remaining="$(grep -vE '^[[:space:]]*(#|$)' "${target}" || true)"
-    if [ -z "${remaining}" ] && grep -qE '^[[:space:]]*#' "${target}"; then
-        if ! { printf '\n' && cat "${template}"; } >> "${target}"; then
-            echo "Failed to initialize the commented dsh cordis.patch.yml." >&2
-            return 1
-        fi
-        return 0
-    fi
-    # 空の表記揺れ（`[ ]`・`[] # comment`・`null`・`~`）も雛形で置換する。
-    # 完全一致の `[]` だけを見ると、残りは追記経路へ落ちて root node の後に
-    # block sequence が続く壊れた YAML になる。marker が入ると次回以降
-    # short-circuit して修復不能になるため、ここで正規化して判定する。
-    if [ -z "${remaining}" ] || ! printf '%s\n' "${remaining}" | grep -qvE '^[[:space:]]*(\[[[:space:]]*\]|\{[[:space:]]*\}|[Nn][Uu][Ll][Ll]|~)[[:space:]]*(#.*)?$'; then
-        if grep -qE '^[[:space:]]*#' "${target}"; then
-            # 空 root は除去し、行全体のコメントは雛形の前に残す。
-            # 組み立てに失敗しても元ファイルを失わないよう、同じディレクトリで準備する。
-            if ! initialized="$(mktemp "${target}.XXXXXX")"; then
-                echo "Failed to prepare the commented dsh cordis.patch.yml." >&2
-                return 1
-            fi
-            if ! { grep -E '^[[:space:]]*#' "${target}" && cat "${template}"; } > "${initialized}" ||
-                ! mv "${initialized}" "${target}"; then
-                rm -f "${initialized}"
-                echo "Failed to initialize the commented empty dsh cordis.patch.yml." >&2
-                return 1
-            fi
-        elif ! cp "${template}" "${target}"; then
-            echo "Failed to replace the empty dsh cordis.patch.yml." >&2
-            return 1
-        fi
-        return 0
-    fi
-    if ! block="$(awk -v begin="${DSH_MANAGED_BLOCK_BEGIN}" -v end="${DSH_MANAGED_BLOCK_END}" '
-        index($0, begin) == 1 { inside = 1 }
-        inside { print }
-        $0 == end { inside = 0 }
-    ' "${template}")" || [ -z "${block}" ]; then
-        echo "Failed to extract the managed provider block from ${template}." >&2
-        return 1
-    fi
-    if ! printf '\n%s\n' "${block}" >> "${target}"; then
-        echo "Failed to append the managed provider block to ${target}." >&2
-        return 1
-    fi
-}
-
-# home patch の provider 設定が解決後の構成に現れていることを確認する。
-# $1: profile 名, $2: dump-config 出力。
-assert_dsh_provider_entries() {
-    local profile="$1"
-    local config="$2"
-    local needle
-    # 既定モデルと API root は利用者が変更できるため、雛形の値ではなく entry の存在を見る。
-    for needle in "- id: llm-pi-ai" "opencode-go" "- id: llm-commandcode" "- id: agent-default-model"; do
-        if ! printf '%s\n' "${config}" | grep -qF -- "${needle}"; then
-            echo "dsh --profile ${profile} is missing provider config entry: ${needle}." >&2
-            return 1
-        fi
-    done
 }
 
 install_pinned_gitleaks() {
@@ -203,7 +103,6 @@ for dir in \
     "${HOME}/.codex" \
     "${HOME}/.grok" \
     "${HOME}/.pi" \
-    "${HOME}/.dsh" \
     "${HOME}/.cursor" \
     "${HOME}/.xrift"; do
     if ! ensure_user_writable_dir "$dir"; then
@@ -513,139 +412,6 @@ step "Writing the pi-superagents launcher configs"
 # zsh scripts/setup_pi_superagents.zsh を実行して反映する。
 if ! zsh scripts/setup_pi_superagents.zsh --if-absent; then
     fail "Failed to set up pi-superagents launcher configs."
-fi
-
-step "Installing DeepSeek Harness"
-# DeepSeek Harness（dsh）は pi と並行して使う（#282）。dsh の plugin 管理は PATH 上の
-# pnpm を直接 spawn するため、devcontainer.json の Node feature で pnpm を明示導入
-# している（pnpmVersion "none" は導入省略）。
-install_deepseek_harness() {
-    echo "Installing DeepSeek Harness ${DSH_VERSION}..."
-    if ! npm install -g --allow-scripts="${DSH_NATIVE_SCRIPT_ALLOWLIST}" "@deepseek-ai/dsh@${DSH_VERSION}"; then
-        echo "DeepSeek Harness installation failed." >&2
-        exit 1
-    fi
-    if ! command -v dsh >/dev/null 2>&1; then
-        echo "DeepSeek Harness installation completed without placing dsh on PATH." >&2
-        exit 1
-    fi
-    # 想定と違う版が入ると Developer Preview の仕様差を踏むため fail-loud にする。
-    if ! dsh_version="$(dsh --version)"; then
-        echo "dsh --version failed." >&2
-        exit 1
-    fi
-    if [ "${dsh_version//[[:space:]]/}" != "${DSH_VERSION}" ]; then
-        echo "Unexpected dsh version: ${dsh_version} (expected ${DSH_VERSION})." >&2
-        exit 1
-    fi
-    # ~/.dsh は devcontainer.json で bind mount している。ホスト側に存在しない場合は
-    # Docker が root 所有で作成するため、以降の dsh が書き込めるよう所有権を直す。
-    ensure_user_writable_dir "${HOME}/.dsh" || {
-        echo "Failed to prepare writable directory: ${HOME}/.dsh." >&2
-        exit 1
-    }
-    if [ -f "${HOME}/.dsh/settings.yaml" ]; then
-        echo "Warning: ${HOME}/.dsh/settings.yaml is a legacy settings file." >&2
-        echo "DeepSeek Harness 0.2.0 imports it into the active profile on first boot." >&2
-        echo "See .devcontainer/README.md for migration steps." >&2
-    fi
-    if ! ensure_dsh_cordis_patch; then
-        exit 1
-    fi
-    # Command Code provider は web と "${DSH_TERMINAL_PROFILE}" の両 profile に導入する。plugin add は導入済みなら
-    # lockfile 一致で成功する（冪等）ため、rebuild のたびに実行して欠落を検出する。
-    if ! dsh plugin --profile web add "@mars-sea/dsh-commandcode-provider@${DSH_COMMANDCODE_PROVIDER_VERSION}"; then
-        echo "Failed to add the Command Code provider to the dsh web profile." >&2
-        exit 1
-    fi
-    # terminal profile は plugin 一覧が独立しているため、TUI と Command Code
-    # provider を明示的に追加する。導入済みなら lockfile 一致で成功する（冪等）。
-    if ! dsh plugin --profile "${DSH_TERMINAL_PROFILE}" -- add "@xmoon76/dsh-pi-tui@${DSH_PI_TUI_VERSION}"; then
-        echo "Failed to add the pi-tui bundle to the dsh ${DSH_TERMINAL_PROFILE} profile." >&2
-        exit 1
-    fi
-    if ! dsh plugin --profile "${DSH_TERMINAL_PROFILE}" -- add "@mars-sea/dsh-commandcode-provider@${DSH_COMMANDCODE_PROVIDER_VERSION}"; then
-        echo "Failed to add the Command Code provider to the dsh ${DSH_TERMINAL_PROFILE} profile." >&2
-        exit 1
-    fi
-    # 既に別内容の cordis.patch.yml を持つ環境では無効化が入らない。効いていない
-    # 設定を silent に通すと「設定したつもり」を再生産するため、解決後の構成を見て
-    # fail-loud にする。
-    if ! dsh_config="$(dsh --profile web --dump-config)"; then
-        echo "dsh --profile web --dump-config failed." >&2
-        exit 1
-    fi
-    # 当該 entry のブロック内だけを見る。次の top-level entry（行頭の "- "）で
-    # 抜けるので、隣の plugin の enabled で通ってしまうことがない。
-    if ! printf '%s\n' "${dsh_config}" | awk '
-        /^- id: plugin-package-inventory-deepseek$/ { inside = 1; next }
-        inside && /^- / { inside = 0 }
-        inside && /^[[:space:]]+enabled: false$/ { found = 1 }
-        END { exit found ? 0 : 1 }
-    '; then
-        echo "dsh still enables plugin-package-inventory-deepseek; check ${HOME}/.dsh/cordis.patch.yml." >&2
-        exit 1
-    fi
-    if ! assert_dsh_provider_entries web "${dsh_config}"; then
-        exit 1
-    fi
-    if ! dsh_terminal_config="$(dsh --profile "${DSH_TERMINAL_PROFILE}" --dump-config)"; then
-        echo "dsh --profile ${DSH_TERMINAL_PROFILE} --dump-config failed." >&2
-        exit 1
-    fi
-    if ! assert_dsh_terminal_profile_entries "${DSH_TERMINAL_PROFILE}" "${dsh_terminal_config}"; then
-        exit 1
-    fi
-    if ! assert_dsh_provider_entries "${DSH_TERMINAL_PROFILE}" "${dsh_terminal_config}"; then
-        exit 1
-    fi
-}
-install_deepseek_harness
-
-# 起動時だけ既定モデルを選ぶ。共有 ~/.dsh の patch / profile は書き換えない。
-# dsh-model-env.mjs は実行中 provider / model を DSH_* としてシェルへ渡すプラグイン
-# （#577）。ランチャーの patch から絶対パスで読み込むため、~/.local/share へ置く。
-install_dsh_launchers() {
-    local asset generated
-    local dsh_model_env_dir="${HOME}/.local/share/xrift-poc"
-    local dsh_model_env_plugin="${dsh_model_env_dir}/dsh-model-env.mjs"
-    if ! mkdir -p "${HOME}/.local/bin" "${dsh_model_env_dir}"; then
-        echo "Failed to create the DSH launcher directories." >&2
-        return 1
-    fi
-    for asset in dshccd dshgo dsh-launcher.bash; do
-        if ! install -m 0755 ".devcontainer/${asset}" "${HOME}/.local/bin/${asset}"; then
-            echo "Failed to place ${asset}." >&2
-            return 1
-        fi
-    done
-    for asset in dshccd.patch.yml dshgo.patch.yml; do
-        if ! install -m 0644 ".devcontainer/${asset}" "${HOME}/.local/bin/${asset}"; then
-            echo "Failed to place ${asset}." >&2
-            return 1
-        fi
-    done
-    if ! install -m 0644 ".devcontainer/dsh-model-env.mjs" "${dsh_model_env_plugin}"; then
-        echo "Failed to place dsh-model-env.mjs." >&2
-        return 1
-    fi
-    # patch 中の __PLUGIN_PATH__ を実際の配置先へ置換する。途中で切れた patch を
-    # 残さないよう、同じディレクトリで組み立ててから置き換える。
-    if ! generated="$(mktemp "${HOME}/.local/bin/dsh-model-env.patch.yml.XXXXXX")"; then
-        echo "Failed to prepare dsh-model-env.patch.yml." >&2
-        return 1
-    fi
-    if ! sed "s|__PLUGIN_PATH__|${dsh_model_env_plugin}|" ".devcontainer/dsh-model-env.patch.yml" > "${generated}" ||
-        ! chmod 0644 "${generated}" ||
-        ! mv "${generated}" "${HOME}/.local/bin/dsh-model-env.patch.yml"; then
-        rm -f "${generated}"
-        echo "Failed to place dsh-model-env.patch.yml." >&2
-        return 1
-    fi
-}
-step "Placing the DSH launchers (dshccd / dshgo)"
-if ! install_dsh_launchers; then
-    fail "Failed to place the DSH launchers."
 fi
 
 step "Installing the shared skills (herdr / find-skills)"

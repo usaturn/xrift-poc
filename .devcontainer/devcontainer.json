@@ -8,7 +8,6 @@
 		"source=${localEnv:HOME}/.claude.json,target=/home/vscode/.claude.json,type=bind,consistency=cached",
 		"source=${localEnv:HOME}/.grok,target=/home/vscode/.grok,type=bind,consistency=cached",
 		"source=${localEnv:HOME}/.pi,target=/home/vscode/.pi,type=bind,consistency=cached",
-		"source=${localEnv:HOME}/.dsh,target=/home/vscode/.dsh,type=bind,consistency=cached",
 		"source=${localEnv:HOME}/.local/share/devin,target=/home/vscode/.local/share/devin,type=bind,consistency=cached",
 		"source=${localEnv:HOME}/.config/devin,target=/home/vscode/.config/devin,type=bind,consistency=cached",
 		"source=${localEnv:HOME}/.local/share/cursor-agent,target=/home/vscode/.local/share/cursor-agent,type=bind,consistency=cached",
@@ -52,9 +51,8 @@
 		// 常駐インストールする必要はなく、既定 (false) の corepack 経由に戻す。
 		"installYarnUsingApt": false,
 		"version": "24",
-		// #282: dsh plugin は PATH 上の pnpm を直接 spawn する。pnpmVersion "none" は
-		// 導入省略のため、plugin 0.10.6 との組み合わせを隔離検証した 12.4.1 を明示する。
-		"pnpmVersion": "12.4.1",
+		// CLI と依存の導入は npm を使うため、pnpm は導入しない。
+		"pnpmVersion": "none",
 		"nvmVersion": "latest"
 		}
 	},
@@ -65,17 +63,15 @@
 	// 5173: XRift のプレビュー（Vite）。複数のプロジェクトは 5174 以降を使う。
 	// 3000: xrift login のコールバック（CLI が localhost:3000/callback に固定している）。
 	//       ホスト側で使われていたら別のポートへ振り替えずに失敗させる（requireLocalPort）。
-	// 3080: DSH の web（#282）。
 	// 19432-19441: Pi / Superpowers の Plannotator レビュー用。空きポートを選ぶ。
 	"forwardPorts": [
-		5173, 3000, 3080,
+		5173, 3000,
 		19432, 19433, 19434, 19435, 19436, 19437, 19438, 19439, 19440, 19441
 	],
 	"portsAttributes": {
 		"5173": { "label": "XRift preview (Vite)" },
 		"5174-5179": { "label": "XRift preview (Vite, additional projects)" },
-		"3000": { "label": "xrift login callback", "requireLocalPort": true },
-		"3080": { "label": "DSH web" }
+		"3000": { "label": "xrift login callback", "requireLocalPort": true }
 	},
 
 	// Use 'postCreateCommand' to run commands after the container is created.

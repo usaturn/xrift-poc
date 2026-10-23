@@ -16,12 +16,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
-import itertools
 import json
 import os
 import re
 import shutil
-import stat
 import subprocess
 import sys
 import tempfile
@@ -332,8 +330,7 @@ class RerunPart(StrictModel):
     ended_at: str | None = None
     seconds: float | None = None
     batch: BatchInfo | None = None
-    # runner が結果を返した直後に記録する runner の run ID（batch.run_id と同じ値）。後処理の失敗や中断で batch を
-    # 記録できなくても、.staging/<run>/ に残ったセッションを報告できるように残す（#71）。この欄より前の記録には無い
+    # 旧 cycle の互換欄。新しいレビューでは書かず、読取り・再保存で元の値を保つ。
     runner_run_id: str | None = None
     after_run_started: bool = False
     after_run: list[dict[str, Any]] | None = None
@@ -349,8 +346,7 @@ class ReviewPart(StrictModel):
     ended_at: str | None = None
     seconds: float | None = None
     batch: BatchInfo | None = None
-    # runner が結果を返した直後に記録する runner の run ID（batch.run_id と同じ値）。後処理の失敗や中断で batch を
-    # 記録できなくても、.staging/<run>/ に残ったセッションを報告できるように残す（#71）。この欄より前の記録には無い
+    # 旧 cycle の互換欄。新しいレビューでは書かず、読取り・再保存で元の値を保つ。
     runner_run_id: str | None = None
     after_run_started: bool = False
     after_run: list[dict[str, Any]] | None = None
@@ -719,7 +715,7 @@ def load_assignments(
 ) -> dict[str, dict[str, Any]]:
     """雛形 < 個人設定 < --assign で読み込み、review の inspect と fix の各役割の有効な割り当てを返す。
 
-    run_roles.py が設定だけで拒否する fix の割り当て（DSH の self-review・fix-check など）は、レビューや implement の
+    run_roles.py が設定だけで拒否する fix の割り当ては、レビューや implement の
     後の run_roles の呼び出しを待たずにここで止める（#675）。判定と理由は run_roles の関数を使い、規則を写さない。
     writes=false の役割を読み取り専用で起動する担当（codex）は、inspect・self-review・fix-check の helper の書き込みが
     できないので止める（#52）。判定は runner の read_only_assignments を使う。
@@ -741,7 +737,7 @@ def load_assignments(
         raise LoopError(2, "config", f"workflows.fix に {', '.join(missing)} の割り当てが無い")
     try:
         run_roles.project(fix_config, "implement")
-        run_roles.reject_dsh_review_agents(run_roles.project(fix_config, "self-review"))
+        run_roles.project(fix_config, "self-review")
     except (ConfigError, run_roles.RoleInputError) as error:
         raise LoopError(
             2,
@@ -889,37 +885,6 @@ def find_reusable(review_dir: Path, pr: PrRef, head: str) -> list[ReusedReview]:
 # --- レビュアー ---------------------------------------------------------------------------------------------------
 
 
-def review_config_without_github_tokens(config: Config) -> Config:
-    """PR APIs run in the parent; keep LLM credentials and other runtimes unchanged."""
-    safe = config.model_copy(deep=True)
-    for agent in safe.agents.values():
-        if agent.runtime == "dsh":
-            agent.env = [name for name in agent.env if name not in {"GH_TOKEN", "GITHUB_TOKEN"}]
-    return safe
-
-
-def review_write_paths(run: RunRecord, runtimes: Mapping[str, str]) -> tuple[Path, ...]:
-    """Controller-owned grants, never roots inferred from the agent's prompt/config."""
-    if "dsh" not in runtimes.values():
-        return ()
-    directory = Path(run.review_dir)
-    try:
-        if directory.resolve(strict=True) != directory or not directory.is_dir():
-            raise ValueError("review directory must be canonical")
-        parent = directory.parents[3]
-        common = Path(git_output(parent, "rev-parse", "--path-format=absolute", "--git-common-dir"))
-        lock = common / "pr-review-save.lock"
-        descriptor = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-        try:
-            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-                raise ValueError("save lock must be a regular file")
-        finally:
-            os.close(descriptor)
-        return directory, lock
-    except (OSError, ValueError, subprocess.SubprocessError) as error:
-        raise LoopError(5, "sandbox", "DSH の必要保存先を安全に準備できない") from error
-
-
 def review_write_exceptions(run: RunRecord) -> tuple[str, ...]:
     """inspect のレビュアーに、runner の作業範囲の指示への例外として載せる書き込み先。
 
@@ -944,45 +909,6 @@ def review_write_exceptions(run: RunRecord) -> tuple[str, ...]:
     )
 
 
-def discard_parent_input(path: Path) -> None:
-    """この review が作った親入力を消す。リンクはたどらない。
-
-    使うのは、まだどのレビュアーにも渡していないとき（同じサイクルで作り直せるように）と、確定したレビューで
-    DSH の試行に失敗・却下が無かったとき（settle_parent_input）だけ。消せなければ残る。やり直しの親準備は
-    既存のディレクトリを拒否するので、黙って上書きはしない。
-    """
-    shutil.rmtree(path, ignore_errors=True)
-
-
-def settle_parent_input(
-    path: Path, batch: BatchResult, entries: Sequence[ReviewerEntry], runtimes: Mapping[str, str]
-) -> list[str]:
-    """確定したレビューの親入力を、DSH の試行に失敗・却下が無ければ消す。残ったパスを返す。
-
-    失敗・却下した DSH の試行に渡した入力は、残ったセッションや requests/ の写しと合わせて調べる材料なので残す。
-    受け付けたレビュアーがいない、または runtime を判定できない試行があるときも残す。
-    """
-    if not path.exists() and not path.is_symlink():
-        return []
-    if _dsh_attempts_accepted(batch, entries, runtimes):
-        discard_parent_input(path)
-    return [str(path)] if path.exists() or path.is_symlink() else []
-
-
-def _dsh_attempts_accepted(batch: BatchResult, entries: Sequence[ReviewerEntry], runtimes: Mapping[str, str]) -> bool:
-    """受け付けたレビュアーがいて、DSH の試行がどれも、受け付けた結果の最後の試行である。"""
-    if not any(entry.verdict == "accepted" for entry in entries):
-        return False
-    for item, entry in zip(batch.results, entries, strict=True):
-        for index, attempt in enumerate(item.attempts):
-            runtime = runtimes.get(attempt.agent_id)
-            if runtime is None:
-                return False
-            if runtime == "dsh" and (entry.verdict != "accepted" or index != len(item.attempts) - 1):
-                return False
-    return True
-
-
 def reviewer_prompt(
     *,
     tool_root: Path,
@@ -990,7 +916,6 @@ def reviewer_prompt(
     head: str,
     comments_file: Path,
     runtimes: Mapping[str, str],
-    parent_pr_data: dict[str, str] | None = None,
 ) -> str:
     """全レビュアーに同じものを渡す依頼文。値は末尾の JSON ブロックに置く。"""
     parameters = {
@@ -1001,7 +926,6 @@ def reviewer_prompt(
         "skill": str(tool_root / ".agents/skills/pr-review/SKILL.md"),
         "helper": str(tool_root / ".agents/skills/pr-review/scripts/review_run.py"),
         "runtimes": dict(sorted(runtimes.items())),
-        "parent_pr_data": parent_pr_data,
     }
     return (
         "あなたは PR 修正ループのレビュアーとして、pr-review を非対話で 1 回だけ実行する。"
@@ -1015,7 +939,7 @@ def reviewer_prompt(
         "2. prepare には `--pr <pr_url>`、`--runtime <runtimes の、自分の Request.agent_id の値>`、"
         "`--request <起動した cwd の親にある request.json>`、`--records-comments <records_comments>` を渡す。"
         "モデル名は pr-review のランタイムごとの規則に従う"
-        "（Codex/DSH headless は省略、Pi は PI_PROVIDER と PI_MODEL を確かめる）。"
+        "（Codex は省略、Pi は PI_PROVIDER と PI_MODEL を確かめる）。"
         "`--review-commit` は付けない。complete も起動した cwd から呼ぶ。\n"
         "3. prepare が返した reviewed_head が pr_head と違うときは、レビューせずに fail で終える"
         "（PR の HEAD が動いた）。\n"
@@ -1026,10 +950,6 @@ def reviewer_prompt(
         "レビュー対象（prepare が作る review worktree の追跡ファイルを含む）・どの checkout の追跡ファイル・"
         "他のレビュアーの成果を変えないという意味で、"
         "冒頭に列挙された例外（helper が管理する実行記録・セッション・保存・ロックなど）はこれに当たらない。\n"
-        "DSH は隔離 HOME/cache/temp と controller が許可した正式保存先・保存ロックだけが追加の書き込み対象。"
-        "DSH prepare は Request 内の parent_pr_data を使い、GitHub API/token/remote fetch を呼ばない。"
-        "DSH complete の staged は親が停止確認後に HEAD を再照合して保存・cleanup する。"
-        "保存は通常の helper を bash から呼び、sandbox の拒否は設定変更や別経路で再試行しない。\n"
         "5. 最後に complete か fail の JSON を 1 回だけ返す。途中に説明文を出さない。"
         "ランタイムが devin のときだけ、その JSON を 1 つの json コードフェンスで囲む。\n\n"
         "```json\n" + json.dumps(parameters, ensure_ascii=False, indent=2) + "\n```\n"
@@ -1060,9 +980,7 @@ def summarize_attempt(attempt: Attempt) -> AttemptSummary:
     )
 
 
-def verify_reviewer(
-    result: Result, *, pr: PrRef, head: str, review_dir: Path, expected_runtime: str | None = None
-) -> ReviewerEntry:
+def verify_reviewer(result: Result, *, pr: PrRef, head: str, review_dir: Path) -> ReviewerEntry:
     """runner の外側の結果と pr-review の payload・成果 2 件を照合する。失敗を指摘 0 件にしない。"""
     attempt = result.attempts[-1] if result.attempts else None
     entry = ReviewerEntry(
@@ -1134,44 +1052,6 @@ def verify_reviewer(
         findings.check_pair(markdown, document)
     except (OSError, ValueError) as error:
         return reject("artifacts", f"成果 2 件の検査に失敗した: {str(error)[:200]}")
-    if expected_runtime == "dsh" or document["reviewer"]["runtime"] == "dsh":
-        reviewer = document["reviewer"]
-        metadata = reviewer["provenance"]
-        identity = attempt.identity
-        if (
-            reviewer["runtime"] != "dsh"
-            or reviewer != payload.get("reviewer")
-            or payload.get("timing") != document["timing"]
-        ):
-            return reject("artifacts", "DSH の成果と payload の reviewer/timing が一致しない")
-        if (
-            not identity.model
-            or not identity.provider
-            or not identity.session_id
-            or (reviewer["model"], metadata["provider"], metadata["effort"], metadata["session_id"])
-            != (identity.model, identity.provider, identity.effort or "unknown", identity.session_id)
-        ):
-            return reject("artifacts", "DSH のモデル識別が runner の実測値と一致しない")
-        if any(metadata[key] != getattr(request, key) for key in ("run_id", "request_id", "agent_id", "role")):
-            return reject("artifacts", "DSH reviewer の実行情報が request と一致しない")
-        # 識別行は最初の見出しより前の冒頭だけで数える。本文での引用は冒頭の識別行ではない
-        preamble = itertools.takewhile(lambda line: not line.startswith("## "), markdown.splitlines())
-        headers = [line for line in preamble if line.startswith("- レビュアー:")]
-        if headers != [f"- レビュアー: {identity.model}（ランタイム: dsh）"]:
-            return reject("artifacts", "DSH の本文冒頭のモデル識別が実測値と一致しない")
-        blocks = re.findall(r"<!-- pr-review:execution -->\s*```json\s*\n(.*?)\n```", markdown, re.DOTALL)
-        try:
-            execution = json.loads(blocks[0]) if len(blocks) == 1 else None
-        except ValueError:
-            execution = None
-        if (
-            not isinstance(execution, dict)
-            or cast(dict[str, Any], execution).get("reviewer") != reviewer
-            or cast(dict[str, Any], execution).get("timing") != document["timing"]
-        ):
-            return reject("artifacts", "DSH の本文の実行情報が候補一覧と一致しない")
-        if cleanup != "success":
-            return reject("artifacts", "DSH review の cleanup が成功していない")
     active = len(cast(list[Any], document["findings"]))
     if payload.get("active_findings") != active:
         return reject("artifacts", "payload の active_findings が候補一覧と一致しない")
@@ -1684,26 +1564,24 @@ def _review_runs(review: ReviewPart) -> list[ReviewPart | RerunPart | ProbeRun]:
 
 
 def _review_retained(review: ReviewPart) -> list[str]:
-    """サイクルの 1 回目と再実行（と各確認）の、回収で残した runner の出力・親入力と、レビュアーが報告した残存パス。"""
+    """サイクルの 1 回目と再実行（と各確認）の、回収で残した runner の出力と、レビュアーが報告した残存パス。"""
     parts = _review_runs(review)
     paths = [path for part in parts if part.cleanup is not None for path in part.cleanup.retained]
     paths += [path for _, entry in _review_attempts(review) for path in entry.retained_paths]
     return list(dict.fromkeys(paths))
 
 
-def _kept_parent_inputs(run_dir: Path, cycles: Sequence[CycleRecord]) -> list[str]:
-    """各サイクルのディレクトリにいま残っている親入力（1 回目と再実行）の完全パス。中身は読まず、消さない。
-
-    記録（cleanup.retained）ではなく実在で決めるので、settle_parent_input に届かなかった経路（後処理の失敗・
-    中断）で残ったものも拾い、消えたものは報告しない。
-    """
-    paths: list[str] = []
-    for cycle in cycles:
-        for prefix in ("", "rerun-"):
-            path = cycle_dir(run_dir, cycle.cycle) / f"{prefix}parent-pr-data"
-            if path.exists() or path.is_symlink():
-                paths.append(str(path))
-    return paths
+def _cleanup_retained(cycles: Sequence[CycleRecord]) -> list[str]:
+    """各サイクルの回収で残した記録済みのパス。過去の値も探索・削除せず保つ。"""
+    return list(
+        dict.fromkeys(
+            path
+            for cycle in cycles
+            for part in _review_runs(cycle.review)
+            if part.cleanup is not None
+            for path in part.cleanup.retained
+        )
+    )
 
 
 def _review_outside_changes(review: ReviewPart) -> list[str]:
@@ -1712,77 +1590,10 @@ def _review_outside_changes(review: ReviewPart) -> list[str]:
     return list(dict.fromkeys(path for part in parts if part.batch is not None for path in part.batch.outside_changes))
 
 
-# runner の Identifier（tools/agent_runner/models.py）と同じ形。記録が壊れていても .staging/ の外を見ない
-_RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
-
-
-def _review_run_ids(review: ReviewPart) -> list[tuple[Literal["first", "rerun"], str]]:
-    """サイクルの 1 回目と再実行の runner の run ID。短い確認は保存先に書けず、セッションを作らないので含めない。
-
-    runner が結果を返した直後の記録（runner_run_id）と、検査の後の batch の両方を見る（どちらも同じ値。
-    runner_run_id より前の記録には batch しか無く、後処理の失敗や中断では batch が無い）。
-    """
-    parts: list[tuple[Literal["first", "rerun"], ReviewPart | RerunPart]] = [("first", review)]
-    if review.rerun is not None:
-        parts.append(("rerun", review.rerun))
-    found: list[tuple[Literal["first", "rerun"], str]] = [
-        (attempt, run_id)
-        for attempt, part in parts
-        for run_id in (part.runner_run_id, part.batch.run_id if part.batch is not None else None)
-        if run_id is not None
-    ]
-    return list(dict.fromkeys(found))
-
-
-def _staging_sessions(review_dir: Path, run_id: str) -> list[tuple[str | None, Path]]:
-    """DSH のレビュアーの pr-review が ``.staging/<run_id>/<request>/<agent>/`` に残したものと、その <agent> の名前。
-
-    セッションは <agent>/ の直下に作られる（pr-review の pr_review_parent.staging_root）。名前と種類だけを見て、
-    中身は読まず、リンクはたどらない。たどらない項目（<agent>/ の直下の項目と、上の階層のディレクトリでない項目）は
-    そのパスで返す。一覧を読めないディレクトリと、UTF-8 で表せない名前（出力の JSON に書けない）の項目を含む
-    ディレクトリは、中に残ったものがありうるので、そのディレクトリのパスで返す。無いディレクトリと空の
-    ディレクトリからは何も返さない。<agent> より上の階層のものの名前は None。並びは名前の順。
-    """
-    found: list[tuple[str | None, Path]] = []
-
-    def walk(directory: Path, agent: str | None, depth: int) -> None:
-        try:
-            with os.scandir(directory) as listing:
-                entries = sorted(listing, key=lambda entry: entry.name)
-        except FileNotFoundError, NotADirectoryError:
-            return
-        except OSError:
-            found.append((agent, directory))
-            return
-        unprintable = False
-        for entry in entries:
-            try:
-                entry.name.encode("utf-8")
-            except UnicodeEncodeError:
-                unprintable = True
-                continue
-            try:
-                descend = depth < 2 and entry.is_dir(follow_symlinks=False)
-            except OSError:
-                descend = False
-            if descend:
-                walk(Path(entry.path), entry.name if depth == 1 else None, depth + 1)
-            else:
-                found.append((agent, Path(entry.path)))
-        if unprintable:
-            found.append((agent, directory))
-
-    if _RUN_ID.fullmatch(run_id):
-        walk(review_dir / ".staging" / run_id, None, 0)
-    return found
-
-
 def _reviewer_retained(run: RunRecord, cycles: Sequence[CycleRecord]) -> list[dict[str, Any]]:
     """レビュアーの pr-review が残したパスごとの、観測（observed）と、いまの状態。
 
-    観測は 2 種類ある。レビュアーが payload の retained_paths で報告したパス（source: payload）と、この run が
-    起動したレビュー（1 回目・再実行）の .staging/<run>/ に、いま残っている DSH のセッション（source: staging。
-    payload が指さないものや、payload を読まない runner の段階の失敗のものを含む。報告されたパスには重ねない）。
+    レビュアーが payload の retained_paths で報告したパス（source: payload）を集約する。
     loop はこれらを所有しないので消さない。中身は読まず、名前と種類・lstat と tool_root の worktree の登録だけを
     見る。絶対パスでない値（pr_ref の ref 名など）は、どのリポジトリのものか分からないので確かめない（null）。
     """
@@ -1792,11 +1603,6 @@ def _reviewer_retained(run: RunRecord, cycles: Sequence[CycleRecord]) -> list[di
             for path in entry.retained_paths:
                 observed.setdefault(path, []).append(
                     {"cycle": cycle.cycle, "agent": entry.actual_agent, "attempt": attempt, "source": "payload"}
-                )
-        for attempt, run_id in _review_run_ids(cycle.review):
-            for agent, session in _staging_sessions(Path(run.review_dir), run_id):
-                observed.setdefault(
-                    str(session), [{"cycle": cycle.cycle, "agent": agent, "attempt": attempt, "source": "staging"}]
                 )
     if not observed:
         return []
@@ -1875,7 +1681,7 @@ def _review_batch(
     adapter_loader: Callable[[str], Adapter],
     tmp_root: Path | None,
 ) -> tuple[BatchResult, list[ReviewerEntry]]:
-    """runner の 1 回の実行（起動 → 親の確定・後処理 → 検査 → 回収）。part は 1 回目か再実行の記録。
+    """runner の 1 回の実行（起動 → 後処理 → 検査 → 回収）。part は 1 回目か再実行の記録。
 
     途中で止まっても part の記録から同じ段を再開し、レビュアーを起動し直さない。戻り値は runner の結果と
     検査した記録。回収できずに残ったパスは part.cleanup に残す。
@@ -1911,13 +1717,12 @@ def _review_batch(
                     "finish", "--run", str(run_dir), "--abort=external: レビュー前に PR の HEAD が動いた"
                 ),
             )
-        config = review_config_without_github_tokens(load_review_config(run))
+        config = load_review_config(run)
         if rerun is not None:
             # 受け付けなかった実担当だけを、同じ role の期限で起動し直す。fallback や別モデルへは切り替えない
             config.workflows["review"].assignments["inspect"] = Assignment(agents=list(rerun.agents), fallback=[])
         inspect = config.workflows["review"].assignments["inspect"]
         runtimes = {name: config.agents[name].runtime for name in [*inspect.agents, *inspect.fallback]}
-        write_paths = review_write_paths(run, runtimes)
         work.mkdir(exist_ok=True)
         if rerun is None:
             comments_file = work / "comments.json"
@@ -1925,29 +1730,6 @@ def _review_batch(
         else:
             # 同じサイクルの計画の前なので、判断の記録は 1 回目と同じ。同じ入力を渡す
             comments_file = Path(cast(str, cycle.review.comments_file))
-        parent_pr_data = None
-        parent_input = work / f"{prefix}parent-pr-data"
-        if "dsh" in runtimes.values():
-            try:
-                # 既存のディレクトリは拒否する。作りかけの領域は prepare_parent が自分で片付ける
-                parent_pr_data = review_entry.prepare_parent(
-                    argparse.Namespace(
-                        pr=run.pr.url,
-                        output_dir=str(parent_input),
-                        source_root=None,
-                        review_commit=None,
-                        records_comments=str(comments_file),
-                        parent_root=str(Path(run.review_dir).parents[3]),
-                        api_runner=github.runner,
-                    )
-                )
-                snapshot = review_entry.parent_data.load(review_entry.workspace, parent_pr_data, run.pr.url)
-                if snapshot["target"]["head_sha"] != cycle.head:
-                    raise ValueError("PR head changed during parent preparation")
-            except review_entry.FAILURES as error:
-                if parent_pr_data is not None:
-                    discard_parent_input(parent_input)
-                raise LoopError(5, "parent_preparation", str(error)) from error
         parent = Path(tempfile.mkdtemp(prefix=TMP_PREFIX, dir=tmp_root))
         resource = Resource(path=str(parent), cycle=cycle.cycle, state="created")
         output_dir = _output_dir(resource)
@@ -1963,7 +1745,6 @@ def _review_batch(
             head=cycle.head,
             comments_file=comments_file,
             runtimes=runtimes,
-            parent_pr_data=parent_pr_data,
         )
         try:
             batch = run_workflow(
@@ -1975,7 +1756,6 @@ def _review_batch(
                 concurrency=len(inspect.agents),
                 output_dir=output_dir,
                 adapter_loader=adapter_loader,
-                sandbox_write_paths=write_paths,
                 write_exceptions=review_write_exceptions(run),
             )
         except (ConfigError, RunnerError) as error:
@@ -1988,8 +1768,6 @@ def _review_batch(
                 ) from error
             # runner が何も作らずに拒否した（設定・入れ子の起動など）。何も起動していないので、やり直せる状態に戻す
             parent.rmdir()
-            if parent_pr_data is not None:
-                discard_parent_input(parent_input)
             resource.state = "removed"
             resource.reason = f"runner が起動の前に拒否した（{type(error).__name__}）"
             part.output_dir = None
@@ -2003,20 +1781,12 @@ def _review_batch(
                 "原因（設定・入れ子の起動など）を直してから review をやり直す",
                 next_command=command("review", "--run", str(run_dir)),
             ) from error
-        # 親の確定より前に runner の結果を残す。途中で止まっても、再開が同じ親の確定から続ける
+        # 後処理より前に runner の結果を残す。途中で止まっても同じ後処理から続ける
         write_json(output_dir / "result.json", batch)
-    if part.runner_run_id is None:
-        # 回収は runner の出力（result.json）を消すので、batch を記録する前に止まっても
-        # .staging/<run>/ を引けるように残す
-        part.runner_run_id = batch.run_id
-        save_cycle(run_dir, cycle)
     config = load_review_config(run)
     if part.after_run is None:
         if part.after_run_started:
             raise LoopError(7, "after_run", "前回の後処理の停止・結果が未確認。再実行せず recover で回収する")
-        # 新規・再開とも、停止済みの staged だけを親が同じ検査で正式成果に確定する（確定済みは触らない）
-        review_entry.finalize_parent_batch(batch)
-        write_json(output_dir / "result.json", batch)
         part.after_run_started = True
         save_cycle(run_dir, cycle)
         reports = run_after_run(
@@ -2050,7 +1820,6 @@ def _review_batch(
             pr=run.pr,
             head=cycle.head,
             review_dir=review_dir,
-            expected_runtime=config.agents[item.actual_agent].runtime if item.actual_agent in config.agents else None,
         )
         for item in batch.results
     ]
@@ -2061,13 +1830,6 @@ def _review_batch(
     write_json(result_copy, batch)
     resource = next((item for item in run.resources if _output_dir(item) == output_dir), None)
     retained = cleanup_output(Path(run.tool_root), resource, batch) if resource is not None else [str(output_dir)]
-    # 親の確定・後処理・検査が済み、親入力を読む処理はもう無い
-    retained += settle_parent_input(
-        work / f"{prefix}parent-pr-data",
-        batch,
-        entries,
-        {name: agent.runtime for name, agent in config.agents.items()},
-    )
     part.batch = BatchInfo(
         run_id=batch.run_id,
         state=batch.state,
@@ -2185,7 +1947,7 @@ def _run_probe(
         save_cycle(run_dir, cycle)
 
     if probe.output_dir is None:
-        config = review_config_without_github_tokens(load_review_config(run))
+        config = load_review_config(run)
         config.roles[PROBE_ROLE] = Role(writes=False, deadline_seconds=PROBE_DEADLINE_SECONDS, result_shape="json")
         config.workflows[PROBE_WORKFLOW] = Workflow(
             assignments={PROBE_ROLE: Assignment(agents=list(probe.agents), fallback=[])}
@@ -2374,7 +2136,7 @@ def recover(run_dir: Path, *, operator_confirmed_stopped: str | None = None) -> 
             {
                 *retained,
                 *(resource.path for resource in run.resources if resource.state != "removed"),
-                *_kept_parent_inputs(run_dir, cycles),
+                *_cleanup_retained(cycles),
             }
         ),
         "reviewer_retained": _reviewer_retained(run, cycles),
@@ -2443,8 +2205,12 @@ def finish(run_dir: Path, *, abort: str | None = None) -> dict[str, Any]:
         "result": run.result.model_dump(mode="json"),
         "cycles": [_cycle_summary(cycle) for cycle in existing],
         "lock_released": released,
-        "retained": [resource.path for resource in run.resources if resource.state == "retained"]
-        + _kept_parent_inputs(run_dir, existing),
+        "retained": list(
+            dict.fromkeys(
+                [resource.path for resource in run.resources if resource.state == "retained"]
+                + _cleanup_retained(existing)
+            )
+        ),
         # 停止を確認できない資源が無いと確かめた後（上の audit_resources）に、報告された残存パスの状態を見る
         "reviewer_retained": _reviewer_retained(run, existing),
     }

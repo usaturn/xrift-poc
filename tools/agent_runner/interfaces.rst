@@ -237,11 +237,6 @@ runner はバッチの終わりに、identity・payload と同じ秘密の値で
 すべて先頭 200 文字（``tools.agent_runner.models.DIAGNOSIS_TEXT_CHARS``）に切る。切ってから伏せ字にすると、
 境界で切れた秘密の先頭が残りうるのでこの順にする。stdout/stderr は実行中にも伏せ字にされている。
 
-dsh の adapter は、stdout のイベント列（``error`` イベント、``status`` の ``step_start`` / ``step_end`` の
-``usage.inputTokens`` / ``turn_end`` の ``reason``（``LlmFailure`` の code / message / status））と、
-試行のセッションの記録（``session.v4.jsonl``）の最後の完全な記録の type と time から作る。判定（state）は
-診断と独立で、診断を作れなければ null にして判定はそのまま返す。ほかの adapter は今は null を返す。
-
 期限と保持
 ----------
 
@@ -350,7 +345,7 @@ run は同期で全依頼の終了・停止確認まで待つ。
 API は既存 asyncio event loop 内からは呼ばない。
 ``write_exceptions`` は、呼び出し側が作業範囲の指示（``Work in this worktree only`` と ``writes=...``）への
 例外として許可するものの列。runner は空でなければ、その 2 行の直後に見出しと ``- <値>`` の行を順に置くだけで、
-内容を解釈・強制しない（sandbox ではない。DSH の ``sandbox_write_paths`` とは別）。
+内容を解釈・強制しない（sandbox ではない）。
 ただし、例外を実行できない担当（``read_only_assignments`` が返す担当）が writes=false の役割にいれば、
 何も作らずに invalid_input で止まる（CLI の ``--write-exception`` も同じ）。例外の無い run では止めない。
 例えば PR レビューの loop と review-fix-planning の self-review は、pr-review の helper が書く実行記録・保存先・保存ロックなどを、

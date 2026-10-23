@@ -62,23 +62,6 @@ provider = "google-vertex"
 effort = "high"
 env = ["HOME", "PATH", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"]
 
-# DSH 標準 headless。共有 profile と追加プラグインは読み込まない。
-[agents.dsh-ccd]
-runtime = "dsh"
-command = ["dsh"]
-model = "deepseek/deepseek-v4.1-flash"
-provider = "commandcode"
-effort = "max"
-env = ["PATH", "COMMANDCODE_API_KEY"]
-
-[agents.dsh-go]
-runtime = "dsh"
-command = ["dsh"]
-model = "deepseek-v4.1-flash"
-provider = "opencode-go"
-effort = "max"
-env = ["PATH", "OPENCODE_API_KEY"]
-
 # codex exec --json。実測既定モデルは gpt-6.1-sol（openai）。
 # writes=false を -s read-only で起動するので、inspect・self-review・fix-check には割り当てられない（#52）。
 [agents.codex]
@@ -144,14 +127,9 @@ writes = false
 deadline_seconds = 2700
 result_shape = "json"
 
-# PR レビューの後処理。DSH の staged 成果は親で HEAD を再照合して保存し、実行記録へ観測値を書く。
-# 直接 runner を使う DSH caller は prepare-parent の descriptor を Request.prompt に渡す。
-# loop は親保存を必ず実行する。個人設定の after_run = [] は観測値の追記だけを止める。
+# PR レビューの後処理。実行記録へランナーの観測値を書く。
 [workflows.review]
 after_run = [[
-  "uv", "run", "--project", "tools/devenv", "--locked", "python",
-  ".agents/skills/pr-review/scripts/review_run.py", "finalize-parent", "--result", "{result}",
-], [
   "uv", "run", "--project", "tools/devenv", "--locked", "python",
   ".agents/skills/pr-review/scripts/review_run.py", "attach-runner", "--result", "{result}",
 ]]
@@ -159,9 +137,9 @@ after_run = [[
 # workflow の割り当て既定値（#565）。
 # review の inspect（レビュアー）は固定しない。依頼ごとに --assign inspect=agent-a,agent-b で選ぶ。
 # いつも使う構成は、個人設定のこの節の agents を書き換える。
-# 下の 5 人は指定が無いときの既定値で、移植元（agent-workspace #657）と同じ構成にした。性能の順位ではない。
+# 下の 4 人は指定が無いときの既定値で、性能の順位ではない。
 [workflows.review.assignments.inspect]
-agents = ["devin-swe", "dsh-ccd", "claude-opus", "pi-gpt"]
+agents = ["devin-swe", "pi-deepseek", "claude-opus", "pi-gpt"]
 
 [workflows.fix.assignments.implement]
 agents = ["claude-opus"]

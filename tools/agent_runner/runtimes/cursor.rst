@@ -132,7 +132,7 @@ cwd は、親の ``tmp/agents/`` の下に作った一時リポジトリの link
 設定の ``sandbox.mode`` は ``enabled`` のままだった。``--sandbox`` は利用者の設定に残らない
 （CLI は実行のたびに ``cli-config.json`` のキャッシュの項目を書き直すが、``sandbox``・``approvalMode``・``permissions`` は変えなかった）。
 
-PR レビューの担当は、親の ``reviews/`` の保存先と uv のキャッシュ（HOME の下）に書き、DSH 以外は PR の取得にネットワークを使う
+PR レビューの担当は、親の ``reviews/`` の保存先と uv のキャッシュ（HOME の下）に書き、PR の取得にネットワークを使う
 （``review_run.helper_write_exceptions``）。sandbox の中ではこれらが拒否されるので、adapter は ``writes = false`` の役割を
 ``--sandbox disabled`` で起動する。``-f`` が sandbox を外すことは文書に無く、版によって変わりうるので、この挙動に頼らずに明示する。
 CLI は自動更新される（版ごとに ``~/.local/share/cursor-agent/versions/`` に置かれ、``agent`` の symlink が切り替わる。

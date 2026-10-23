@@ -11,7 +11,7 @@ postCreate は再実行されないため、どのステップまで進んだの
 - 失敗したステップは `ERROR` 行を残して exit 非ゼロで打ち切り、後続ステップを走らせない
 - 外部コマンドを呼ぶステップは必ず失敗判定を持つ（失敗を成功扱いにする経路を残さない）
 
-完走と打ち切りの両方は、`sudo` / `apt` / `npm` / `curl` / `pi` / `dsh` などを
+完走と打ち切りの両方は、`sudo` / `apt` / `npm` / `curl` / `pi` などを
 fake に差し替えた一時 HOME で実際にスクリプトを走らせて検証する。
 """
 
@@ -68,7 +68,7 @@ def _declared_step_labels() -> list[str]:
 
 
 def _launchers() -> list[Path]:
-    """`.devcontainer/` にある拡張子の無い実行ファイル（pi / DSH のランチャー）。"""
+    """`.devcontainer/` にある拡張子の無い実行ファイル（pi のランチャー）。"""
     launchers = sorted(
         path for path in DEVCONTAINER_DIR.iterdir() if path.is_file() and not path.suffix and os.access(path, os.X_OK)
     )
@@ -83,39 +83,6 @@ def _write_executable(path: Path, body: str) -> None:
     path.write_text(body)
     path.chmod(0o755)
 
-
-# inventory は無効のまま、provider 設定と terminal bundle は解決済みという
-# happy-path の dump。install script の fail-loud 検証を通過させる。
-DUMP_CONFIG_DISABLED = """\
-- id: agent
-  name: '@deepseek-ai/dsh-agent'
-- id: plugin-package-inventory-deepseek
-  name: '@deepseek-ai/dsh-plugin-package-inventory-deepseek'
-  config:
-    enabled: false
-# == @xmoon76/dsh-pi-tui
-- id: tui-app
-  name: '@xmoon76/dsh-pi-tui'
-# == @mars-sea/dsh-commandcode-provider
-- id: llm-commandcode
-  name: '@mars-sea/dsh-commandcode-provider'
-  config:
-    apiKeyEnv: COMMANDCODE_API_KEY
-    apiBase: https://api.commandcode.ai
-    webSearch: false
-- id: llm-pi-ai
-  config:
-    providers:
-      opencode-go:
-        apiKeyEnv: OPENCODE_API_KEY
-        models:
-          - id: deepseek-v4.1-flash
-- id: agent-default-model
-  config:
-    provider: opencode-go
-    model: deepseek-v4.1-flash
-    reasoningEffort: max
-"""
 
 # FAKE_FAIL_ON に「コマンド名 引数」の一部を指定すると、一致した呼び出しだけを失敗させる。
 FAIL_HOOK = """\
@@ -202,24 +169,6 @@ for arg in "$@"; do
     case "${arg}" in
     --version)
         printf '%s\\n' "${FAKE_CTX7_VERSION}"
-        exit 0
-        ;;
-    esac
-done
-exit 0
-"""
-
-DSH = """\
-#!/bin/bash
-printf 'dsh %s\\n' "$*" >> "${FAKE_CALLS}"
-for arg in "$@"; do
-    case "${arg}" in
-    --version)
-        printf '%s\\n' "${FAKE_DSH_VERSION}"
-        exit 0
-        ;;
-    --dump-config)
-        cat "${FAKE_DSH_DUMP_CONFIG}"
         exit 0
         ;;
     esac
@@ -337,7 +286,6 @@ def _run_installer(
         ("claude", NOOP),
         ("npm", NPM),
         ("pi", PI),
-        ("dsh", DSH),
         ("xrift", XRIFT),
         ("cp", CP),
         ("python3", PYTHON3),
@@ -360,9 +308,6 @@ def _run_installer(
     ):
         (stub_dir / name).write_text(_stub(tool))
 
-    dump_config = tmp_path / "dump-config.yml"
-    dump_config.write_text(DUMP_CONFIG_DISABLED)
-
     env = {
         **os.environ,
         "HOME": str(home),
@@ -374,11 +319,9 @@ def _run_installer(
         "PATH": f"{bin_dir}:{base_path}",
         "FAKE_CALLS": str(tmp_path / "calls.log"),
         "FAKE_STUB_DIR": str(stub_dir),
-        "FAKE_DSH_VERSION": _pinned_version("DSH_VERSION"),
         "FAKE_XRIFT_VERSION": _pinned_version("XRIFT_CLI_VERSION"),
         # fake の `ctx7 --version` の出力。既定はスクリプトが固定した版。
         "FAKE_CTX7_VERSION": ctx7_version if ctx7_version is not None else _pinned_version("CTX7_CLI_VERSION"),
-        "FAKE_DSH_DUMP_CONFIG": str(dump_config),
         # workspace cleanup は dry-run に固定し、テストから実ファイルを消させない。
         "XRIFT_POC_CLEANUP_TMP_ROOT": str(tmp_path / "cleanup"),
         "XRIFT_POC_CLEANUP_MIN_AGE_DAYS": "0",

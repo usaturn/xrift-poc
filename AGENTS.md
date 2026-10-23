@@ -100,19 +100,13 @@ xrift-poc は、XRift のワールドとアイテムを作るための開発環�
 | Superpowers の Spec / Plan | `docs_draft/superpowers/` |
 | Superpowers の SDD の作業領域（executing-plans・subagent-driven-development の ledger・brief・実装担当の報告・review の差分・テストのログ） | `tmp/agents/<topic>.XXXXXX/`（Plan ごとに `agent_tmp.py mkdir <topic>` で作る。手順は `.agents/sdd-workspace.md`） |
 | PR レビュー結果 | `reviews/<owner>/<repo>/#<PR>-<branch>/`（親の PR も制作物の PR も親の main checkout に置く。保存先は pr-review helper が決める。PR 修正ループも同じ場所に保存し、ループ自身の記録は `loop/` に置く） |
-| DSH のレビュアーの作業領域 | pr-review helper のセッションは `reviews/<owner>/<repo>/#<PR>-<branch>/.staging/<run>/<request>/<agent>/`（`<run>` は runner の run ID）。PR 修正ループの helper が DSH のレビュアーに渡す入力（`parent-pr-data`）は `reviews/<owner>/<repo>/#<PR>-<branch>/loop/<run_id>/cycle-<n>/parent-pr-data/`（再実行は `rerun-parent-pr-data/`） |
-| 使い捨ての git worktree とその作業領域 | `/tmp`（DSH 以外のレビュアーの pr-review helper のセッション、review-fix-planning の `mktemp -d`、PR 修正ループの runner の出力と所有 worktree `${TMPDIR:-/tmp}/xrift-poc-pr-loop-XXXXXX/`） |
+| 使い捨ての git worktree とその作業領域 | `/tmp`（レビュアーの pr-review helper のセッション、review-fix-planning の `mktemp -d`、PR 修正ループの runner の出力と所有 worktree `${TMPDIR:-/tmp}/xrift-poc-pr-loop-XXXXXX/`） |
 | 消えても困らない中間出力 | `/tmp`、Claude Code の scratchpad |
 
 - `/tmp` 直下に固定名のファイルを作らない。`/tmp` を使う場合も `mktemp -d` などで一意のディレクトリを作り、その中に置く
 - `tmp/agents/` のセッションディレクトリは、不要と確認できた時点で作成したスキル自身が消す。消せなかったものは最終報告に完全パスを書く。`tmp/agents/` 以外の `tmp/` 直下（人の置いたファイルを含む）には触らない
 - issue-to-pr の `RUN_DIR` は、依頼ごとに `implement_task.py cleanup` で片付け、残したもの（`retained`）は完全パスを報告する（同スキルの手順 5）。`/tmp` に置かないのは、担当のログと残したものを、ledger と最終報告から後で参照するためである
 - Superpowers の SDD の作業領域は、superpowers の既定の置き場所（`git rev-parse --show-toplevel` の下の `.superpowers/sdd/`）に作らない。superpowers には置き場所を変える設定が無く、feature worktree の中に作ると、Plan の作業領域を消しても `.superpowers/sdd/.gitignore` が残り、repo-cleanup-after-merge の手順 4 でその worktree の片付けが止まる。どこで実行するときも、`sdd-workspace` と、内部でそれを使う `task-start`・`task-done` を使わず、`task-brief`・`review-package` には出力先（最後の引数）を渡す。スキル・拡張機能（Pi の `/sp-implement`・`/sp-implement-parallel` など）の指示が既定の置き場所を指しても、この規則を優先する。代わりの手順、片付けの時点、誤って作ったときの扱いは `.agents/sdd-workspace.md` に定義する
-- DSH のレビュアーの作業領域は `/tmp` に置けない。DSH の sandbox（`tools/agent_runner/dsh_sandbox.py`）はツールの呼び出しごとに `/tmp` を新しい tmpfs にするので、ホストの `/tmp` は DSH から見えず、DSH が `/tmp` に書いたものは次の呼び出しで消える。DSH に書き込みを許すのは、隔離した HOME・TMPDIR と runner の worktree（runner と loop が停止の後に消すか回収する）と、loop が渡す保存先（PR のレビューディレクトリ）と保存ロックだけである。helper のセッションは呼び出しをまたいで使い、DSH が止まった後に loop の helper が確定するので、保存先の中に置く
-- DSH のレビュアーの作業領域の片付け
-  - helper のセッション: レビューを保存できたら、loop の helper（`review_run.py` の `finalize_parent_batch`）がセッションと、空になった `.staging/` の階層を消す。保存できなかったセッション（レビュアーが同じ試行の中で作り直して放棄したものを含む）は残る。PR 修正ループの `finish`・`status`・`recover` は、その run が起動したレビューの `.staging/<run>/` に残っているセッションを、レビュアーが報告したかどうかにかかわらず `reviewer_retained` に完全パスと今の状態で出す。runner が結果を返す前に止まったレビューのものは出ない（探し方は `pr-review-fix-loop` の `references/records.md` の 6 章）
-  - loop の helper が渡す入力: そのレビュー（1 回目か再実行）が確定し、受け付けたレビュアーがいて、DSH の試行に失敗・却下が無ければ、loop が消す（`loop.py` の `settle_parent_input`）。DSH の試行が失敗・却下された、または確定する前に止まったレビューの入力は、そのレビュアーに渡した証拠として残す。残した入力は、run を終える `finish`・`recover` の出力の `retained` に、いま残っているものの完全パスで載る。受け付けたレビュアーがいて `review` が正常に返ったときは、その出力の `retained` にも載る
-  - 残ったものは loop と司令塔が消さない。利用者が原因を確かめ、レビュアーを起動したループの run（または runner の caller）が終わった（`finish` か `recover` でロックを解放した）後に、セッションは `.staging/<run>/` ごと、入力はそのディレクトリごと消す。セッションの中の private clone と worktree は、他のリポジトリに worktree の登録を残さない
 - `/tmp` の既存残骸は `.devcontainer/cleanup-workspace.bash` が安全条件付きで片付ける。`items/`・`worlds/`・`reviews/`・`tmp/agents/` は片付けの対象にしない。`git clean -fdx` のように未追跡のファイルを一括で消すコマンドを使わない
 
 ## Git・PR

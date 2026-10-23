@@ -8,7 +8,6 @@ import hashlib
 import importlib.util
 import json
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -22,8 +21,7 @@ from typing import Any, cast
 # This CLI can be invoked from a different repository's review worktree.
 ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT))
-from tools.agent_runner.dsh_identity import read_session_identity  # noqa: E402
-from tools.agent_runner.models import BatchResult, Identity, Request, Runtime  # noqa: E402
+from tools.agent_runner.models import Request, Runtime  # noqa: E402
 
 BINDING_KEYS = ("run_id", "request_id", "agent_id", "role")
 SKILL_PATH = ".agents/skills/pr-review/SKILL.md"
@@ -41,7 +39,6 @@ def _workspace() -> ModuleType:
 
 
 workspace = _workspace()
-parent_data = workspace._load_script("pr_review_parent", Path(__file__).with_name("pr_review_parent.py"))
 records = workspace._load_script("review_records", ROOT / ".agents/scripts/review_records.py")
 record = workspace._load_script("review_run_record", Path(__file__).with_name("review_run_record.py"))
 FAILURES = (OSError, ValueError, RuntimeError, TypeError, KeyError, subprocess.SubprocessError)
@@ -76,21 +73,7 @@ def request_deadline(path: str) -> float:
     return Request.model_validate_json(Path(path).read_text(encoding="utf-8")).deadline_seconds
 
 
-def observed_dsh_identity() -> Identity:
-    if os.environ.get("DSH_SHELL") != "1" or os.environ.get("DSH_PROFILE") != "headless":
-        raise workspace.WorkspaceError("DSH headless identity must be read inside its own bash tool")
-    home, session = os.environ.get("DSH_HOME"), os.environ.get("DSH_SESSION_ID")
-    if not home or not session:
-        raise workspace.WorkspaceError("DSH_HOME and DSH_SESSION_ID must both be observed")
-    return read_session_identity(Path(home), Path.cwd(), session, live=True)
-
-
 def observed_model(runtime: Runtime, supplied: str | None) -> tuple[str | None, str]:
-    if runtime == "dsh":
-        identity = observed_dsh_identity()
-        if supplied is not None and supplied != identity.model:
-            raise workspace.WorkspaceError("--model-name does not match the observed DSH model")
-        return identity.model, identity.provider or "unknown"
     if runtime == "codex":
         if supplied is not None:
             raise workspace.WorkspaceError("Codex model must come from the current rollout, not --model-name")
@@ -179,23 +162,20 @@ def helper_write_exceptions(
 
     review_dir は保存先のディレクトリで、ブランチ名を知らない呼び出し側は ``#<PR>-*`` のパターンを渡す。
     source_git は ``--source-root`` の checkout の Git の共有ディレクトリ。親（parent_git）と違えば、
-    helper は review 用の worktree・ref・オブジェクトをそちらに書き、親には保存ロックだけを書く
-    （DSH は専用 clone に取得し checkout の Git には書かないため、Git の許可行は non-DSH に限定する）。
+    helper は review 用の worktree・ref・オブジェクトをそちらに書き、親には保存ロックだけを書く。
     """
     worktree_data = (
         "the Git objects, refs and worktree registrations that the helper adds and removes for its review worktree"
     )
-    git_scope = "non-DSH helper only; DSH uses a dedicated clone and does not write checkout Git data"
     if source_git is None or source_git == parent_git:
         git_data = (
             f"{parent_git}: the helper's save lock (pr-review-save.lock) and {worktree_data} (a submodule's Git data "
-            "is here too; a repository without a checkout here is cloned inside the helper's session instead; "
-            f"{git_scope})",
+            "is here too; a repository without a checkout here is cloned inside the helper's session instead)",
         )
     else:
         git_data = (
-            f"{parent_git / 'pr-review-save.lock'}: the helper's save lock ({git_scope})",
-            f"{source_git}: {worktree_data} in the --source-root checkout ({git_scope})",
+            f"{parent_git / 'pr-review-save.lock'}: the helper's save lock",
+            f"{source_git}: {worktree_data} in the --source-root checkout",
         )
     return (
         f"{tool_root}: the source checkout (tool_root) that holds the pr-review skill, its references and its "
@@ -205,8 +185,8 @@ def helper_write_exceptions(
         *git_data,
         f"{parent / 'tmp/agents'}/pr-review-scratch-{number}.*: one scratch directory created with "
         "agent_tmp.py mkdir as pr-review allows; remove it when it is no longer needed",
-        f"the session that the helper's prepare creates (pr-review-{number}-* in the temporary directory, or "
-        "the DSH staging area): its review worktree, backup and state belong to the helper. Write only the "
+        f"the session that the helper's prepare creates (pr-review-{number}-* in the temporary directory): "
+        "its review worktree, backup and state belong to the helper. Write only the "
         "draft and findings_draft that prepare returns, and leave no files in the review worktree",
         f"{tool_root / 'tools/devenv/.venv'} and uv's cache: the environment that "
         "`uv run --project <tool_root>/tools/devenv --locked` maintains",
@@ -217,25 +197,9 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     started_at, started_monotonic = utc_now(), time.monotonic()
     binding = request_binding(args.request)
     model, provider = observed_model(args.runtime, args.model_name)
-    artifact_identity = f"{provider}/{model}" if args.runtime == "dsh" else model
-    model_name, _source = workspace.resolve_runtime_model_name(artifact_identity)
-    snapshot = None
-    request: Request | None = None
-    if args.runtime == "dsh":
-        if not args.request:
-            raise workspace.WorkspaceError("DSH review requires an authenticated parent's Request")
-        request = Request.model_validate_json(Path(args.request).read_text(encoding="utf-8"))
-        snapshot = parent_data.load(workspace, parent_data.descriptor_from_prompt(request.prompt), args.pr)
-        if snapshot["review_commit"] != args.review_commit:
-            raise workspace.WorkspaceError("review commit does not match the parent snapshot")
-        target = snapshot["target"]
-        requested_head = parent_data.parameters_from_prompt(request.prompt).get("pr_head")
-        if requested_head is not None and requested_head != target["head_sha"]:
-            raise workspace.WorkspaceError("parent snapshot does not match Request PR HEAD")
-        parent = Path(target["parent_root"])
-    else:
-        parent = workspace._target_call("default_parent_root")
-        target = workspace._target_call("resolve", args.pr, parent_root=parent)
+    model_name, _source = workspace.resolve_runtime_model_name(model)
+    parent = workspace._target_call("default_parent_root")
+    target = workspace._target_call("resolve", args.pr, parent_root=parent)
     skill = {"path": SKILL_PATH, "sha256": hashlib.sha256((ROOT / SKILL_PATH).read_bytes()).hexdigest()}
     provenance = {
         **binding,
@@ -245,22 +209,13 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         "cli_version": "unknown",
         "skills": [skill],
     }
-    if args.runtime == "dsh":
-        observed = observed_dsh_identity()
-        provenance.update(effort=observed.effort or "unknown", session_id=observed.session_id or "unknown")
     identity = {"model": model or model_name, "runtime": args.runtime, "provenance": provenance}
     review_kind = "commit" if args.review_commit else "pr_head"
     # 記録の reviewed_head は完全なハッシュなので、create と同じ検査を記録より先に行う
     workspace.artifact_model(model_name, args.review_commit)
     # 記録の名前にセッションの接尾辞を使うので、セッションの名前を先に決めて create に渡す
     session_name, suffix = record.new_session_name(int(target["number"]))
-    temp_root = (
-        parent_data.staging_root(workspace, target, request)
-        if snapshot is not None and request is not None
-        else Path(args.temp_root).resolve()
-        if args.temp_root
-        else Path(tempfile.gettempdir()).resolve()
-    )
+    temp_root = Path(args.temp_root).resolve() if args.temp_root else Path(tempfile.gettempdir()).resolve()
     try:
         record_path = record.safe_record_path(
             parent, record.record_relative(target, started_at, model_name, suffix), str(target["repository"])
@@ -288,24 +243,13 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         return record_fields(record_path, error)
 
     try:
-        decision_state = (
-            dict(
-                records.read_state(
-                    records.comments_from_api(snapshot["comments"]),
-                    expected_pr={"repository": target["repository"], "number": target["number"]},
-                )
-            )
-            if snapshot is not None
-            else read_records(target, args.records_comments)
-        )
+        decision_state = read_records(target, args.records_comments)
         session = workspace.create(
             argparse.Namespace(
                 target=json.dumps(target),
-                model_name=artifact_identity,
+                model_name=model,
                 review_commit=args.review_commit,
                 source_root=args.source_root,
-                private_clone=args.runtime == "dsh",
-                parent_input=snapshot,
                 temp_root=str(temp_root),
                 session_dir=str(temp_root / session_name),
             )
@@ -334,7 +278,6 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
             "reviewer": reviewer,
             "skill": skill,
             "run_record": PurePosixPath(record_path.relative_to(parent)).as_posix(),
-            "parent_pr_data": snapshot["descriptor"] if snapshot is not None else None,
         }
         state["run_context"] = context
         workspace.write_json(state_file, state)
@@ -342,22 +285,17 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         # Keep the base private to this owned worktree, including during concurrent reviews.
         worktree = Path(session["worktree"])
         ref = "refs/worktree/pr-review-base"
-        if snapshot is None:
-            workspace.git(
-                worktree,
-                "fetch",
-                "--quiet",
-                "--no-write-fetch-head",
-                "--no-tags",
-                "--refmap=",
-                "origin",
-                f"+refs/heads/{base_ref}:{ref}",
-            )
-        else:
-            workspace.git(worktree, "update-ref", ref, snapshot["base"])
+        workspace.git(
+            worktree,
+            "fetch",
+            "--quiet",
+            "--no-write-fetch-head",
+            "--no-tags",
+            "--refmap=",
+            "origin",
+            f"+refs/heads/{base_ref}:{ref}",
+        )
         base = workspace.git(worktree, "merge-base", ref, state["commit"])
-        if snapshot is not None and base != snapshot["base"]:
-            raise workspace.WorkspaceError("bundle does not match the prepared base")
         document: dict[str, Any] = {
             "schema": "review-findings/v2",
             "kind": "candidates",
@@ -434,7 +372,6 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         "started_at": started_at,
         "reviewer": reviewer,
         "records": decision_state,
-        "requirements": snapshot["requirements"] if snapshot is not None else None,
         "diff_command": ["git", "-C", session["worktree"], "diff", "--find-renames", f"{base}..{state['commit']}"],
         **record_fields(record_path, record_error),
     }
@@ -468,9 +405,7 @@ def result_fields(state: dict[str, Any] | None = None) -> dict[str, Any]:
     }
 
 
-def complete(
-    args: argparse.Namespace, *, parent_request: Request | None = None, parent_identity: Identity | None = None
-) -> dict[str, Any]:
+def complete(args: argparse.Namespace) -> dict[str, Any]:
     parent, state = workspace.load_state(args.state)
     context_value = state.get("run_context")
     if not isinstance(context_value, dict) or "immutable" not in context_value:
@@ -483,38 +418,14 @@ def complete(
     stage = "complete"
     save_started: float | None = None
     try:
-        if context["reviewer"]["runtime"] == "dsh":
-            observed = parent_identity if parent_identity is not None else observed_dsh_identity()
-            previous = context["reviewer"]
-            metadata = previous["provenance"]
-            if (observed.model, observed.provider, observed.effort or "unknown", observed.session_id) != (
-                previous["model"],
-                metadata["provider"],
-                metadata["effort"],
-                metadata["session_id"],
-            ):
-                raise workspace.WorkspaceError("observed DSH route changed during review")
         request_path = context["request_path"]
         if request_path is not None and (
             workspace.file_digest(Path(request_path)) != context["request_sha256"]
-            or request_binding(request_path, work_dir=parent_request.work_dir if parent_request else None)
-            != context["binding"]
+            or request_binding(request_path) != context["binding"]
         ):
             raise workspace.WorkspaceError("request binding changed during review")
         if hashlib.sha256((ROOT / SKILL_PATH).read_bytes()).hexdigest() != context["skill"]["sha256"]:
             raise workspace.WorkspaceError("loaded review skill changed during review")
-        if context.get("parent_pr_data") is not None:
-            snapshot = parent_data.load(
-                workspace,
-                context["parent_pr_data"],
-                f"https://github.com/{state['pr_repo']}/pull/{state['pr_number']}",
-            )
-            if (
-                snapshot["target"]["head_sha"],
-                snapshot["base"],
-                snapshot["review_commit"] or snapshot["target"]["head_sha"],
-            ) != (state["pr_head"], context["immutable"]["base"], state["commit"]):
-                raise workspace.WorkspaceError("parent snapshot target changed")
         draft = Path(state["draft"])
         markdown = draft.read_text(encoding="utf-8")
         findings, _destination = workspace.findings_artifact_paths(
@@ -535,24 +446,12 @@ def complete(
         coverage = document.get("coverage")
         if not isinstance(coverage, dict) or not cast(dict[str, Any], coverage).get("read"):
             raise workspace.WorkspaceError("review coverage is missing; an unreviewed scaffold is not zero findings")
-        staged = context.get("staged")
-        if parent_request is not None:
-            if (
-                staged is None
-                or staged["draft_sha256"] != workspace.file_digest(draft)
-                or staged["findings_sha256"] != workspace.file_digest(findings)
-            ):
-                raise workspace.WorkspaceError("review drafts changed after staging")
-        timing = (
-            staged["timing"]
-            if staged is not None
-            else {
-                "started_at": context["started_at"],
-                "finished_at": utc_now(),
-                "seconds": round(time.monotonic() - context["started_monotonic"], 6),
-                "waiting_seconds": None,
-            }
-        )
+        timing = {
+            "started_at": context["started_at"],
+            "finished_at": utc_now(),
+            "seconds": round(time.monotonic() - context["started_monotonic"], 6),
+            "waiting_seconds": None,
+        }
         document["timing"] = timing
         execution = {
             "reviewer": context["reviewer"],
@@ -566,24 +465,6 @@ def complete(
         markdown += "```json\n" + json.dumps(execution, ensure_ascii=False, indent=2) + "\n```\n"
         workspace.write_json(findings, document)
         draft.write_text(markdown, encoding="utf-8")
-        if context.get("parent_pr_data") is not None and parent_request is None:
-            # Only the authenticated parent can recheck the live HEAD and publish.
-            context["staged"] = {
-                "timing": timing,
-                "draft_sha256": workspace.file_digest(draft),
-                "findings_sha256": workspace.file_digest(findings),
-            }
-            workspace.write_json(Path(args.state), state)
-            return {
-                **result_fields(state),
-                "status": "staged",
-                "staged": context["staged"],
-                "prepared": context["immutable"],
-                "state_file": args.state,
-                "reviewer": context["reviewer"],
-                "timing": timing,
-                "retained_paths": retained_paths(state),
-            }
         stage = "save"
         save_started = time.monotonic()
         saved = workspace.save(argparse.Namespace(state=args.state, findings=True))
@@ -659,196 +540,13 @@ def complete(
     return result
 
 
-def with_text_body(value: Any) -> dict[str, Any] | None:
-    """GitHub は空の本文を null で返す。空文字にした object、形が違えば None。"""
-    if not isinstance(value, dict):
-        return None
-    document = cast(dict[str, Any], value)
-    if "body" not in document:
-        return None
-    if document["body"] is None:
-        document["body"] = ""
-    return document if isinstance(document["body"], str) else None
-
-
-def referenced_issue(repository: str, number: int) -> dict[str, Any]:
-    """PR 本文が参照する Issue。失敗の理由には gh の出力を写さない（秘密値が混ざりうる）。"""
-    try:
-        workspace._target_call("validate_repository", repository)
-        text = command(["gh", "issue", "view", str(number), "--repo", repository, "--json", "body,comments"])
-    except FAILURES as error:
-        raise workspace.WorkspaceError("Issue is not readable with gh issue view") from error
-    try:
-        issue = with_text_body(json.loads(text))
-    except ValueError as error:
-        raise workspace.WorkspaceError("Issue response is not JSON") from error
-    if issue is None or not isinstance(issue.get("comments"), list):
-        raise workspace.WorkspaceError("Issue requirements metadata is incomplete")
-    return issue
-
-
-def parent_requirements(pr: str, repository: str, number: int) -> dict[str, Any]:
-    """対象 PR の要件は必須。参照 Issue を読めなければ理由付きの未取得として渡し、レビューは止めない。"""
-    document = with_text_body(
-        json.loads(command(["gh", "pr", "view", pr, "--repo", repository, "--json", "body,closingIssuesReferences"]))
-    )
-    if document is None or not isinstance(document.get("closingIssuesReferences"), list):
-        raise workspace.WorkspaceError("PR requirements metadata is incomplete")
-    references: set[tuple[str, int]] = {
-        (repository, int(n)) for n in re.findall(r"(?<![\w/])#([1-9][0-9]*)", document["body"])
-    }
-    for entry in document["closingIssuesReferences"]:
-        url = cast(dict[str, Any], entry).get("url") if isinstance(entry, dict) else None
-        match = re.fullmatch(
-            r"https://github.com/([^/]+/[^/]+)/issues/([1-9][0-9]*)", url if isinstance(url, str) else ""
-        )
-        if match is None:
-            raise workspace.WorkspaceError("closing Issue URL is invalid")
-        references.add((match[1], int(match[2])))
-    for match in re.finditer(
-        r"https://github.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/([1-9][0-9]*)", document["body"]
-    ):
-        references.add((match[1], int(match[2])))
-    issues: list[dict[str, Any]] = []
-    unavailable: list[dict[str, Any]] = []
-    for repo, issue_number in sorted(references - {(repository, number)}):
-        try:
-            issues.append({"repository": repo, "number": issue_number, **referenced_issue(repo, issue_number)})
-        except workspace.WorkspaceError as error:
-            unavailable.append({"repository": repo, "number": issue_number, "reason": str(error)})
-    return {"pr": document, "issues": issues, "unavailable": unavailable}
-
-
-def prepare_parent(args: argparse.Namespace) -> dict[str, str]:
-    """Shared parent preparation for ordinary runner calls and the review loop."""
-    if args.records_comments:
-        comments = read_json(Path(args.records_comments))
-    else:
-        target = workspace._target_call("resolve", args.pr, parent_root=workspace._target_call("default_parent_root"))
-        comments = json.loads(
-            command(
-                [
-                    "gh",
-                    "api",
-                    "--paginate",
-                    "--slurp",
-                    f"repos/{target['repository']}/issues/{target['number']}/comments",
-                ]
-            )
-        )
-    records.comments_from_api(comments)
-    requirements = getattr(args, "requirements", None)
-    if requirements is None:
-        parsed = workspace._target_call("parse_pull_request_argument", args.pr)
-        repository = parsed.repository or workspace._target_call(
-            "parent_repository", workspace._target_call("default_parent_root")
-        )
-        requirements = parent_requirements(args.pr, repository, parsed.number)
-    return parent_data.prepare(workspace, args, comments, requirements)
-
-
-def finalize_parent_batch(batch: BatchResult) -> None:
-    """Revalidate stopped staged attempts; never trust payload paths by themselves."""
-    for result in batch.results:
-        if not result.attempts:
-            continue
-        attempt = result.attempts[-1]
-        payload = attempt.payload
-        if not isinstance(payload, dict) or payload.get("status") != "staged":
-            continue
-        try:
-            if (
-                result.state != "success"
-                or attempt.state != "success"
-                or attempt.exit_code != 0
-                or not attempt.stop_confirmed
-                or attempt.sensitive_paths
-            ):
-                raise workspace.WorkspaceError("staged reviewer did not stop successfully with sensitive cleanup")
-            if attempt.request_path is None or attempt.work_dir is None:
-                raise workspace.WorkspaceError("staged reviewer has no actual Request")
-            request = Request.model_validate_json(parent_data.regular_bytes(attempt.request_path))
-            binding = {key: str(getattr(request, key)) for key in BINDING_KEYS}
-            if (
-                (request.run_id, request.request_id, request.agent_id, request.role, request.work_dir)
-                != (batch.run_id, result.request_id, result.actual_agent, result.role, attempt.work_dir)
-                or attempt.agent_id != request.agent_id
-                or any(payload.get(k) != v for k, v in binding.items())
-            ):
-                raise workspace.WorkspaceError("staged result does not match actual Request")
-            descriptor = parent_data.descriptor_from_prompt(request.prompt)
-            state_path = Path(str(payload["state_file"]))
-            parent_data.regular_bytes(state_path)
-            snapshot = parent_data.load(
-                workspace, descriptor, f"https://github.com/{payload['repository']}/pull/{payload['pr_number']}"
-            )
-            staging = parent_data.staging_root(workspace, snapshot["target"], request)
-            if not state_path.is_relative_to(staging):
-                raise workspace.WorkspaceError("staged session is outside this Request's PR staging directory")
-            _parent, state = workspace.load_state(str(state_path))
-            context = state.get("run_context", {})
-            if (
-                context.get("binding") != binding
-                or context.get("parent_pr_data") != descriptor
-                or payload.get("reviewer") != context.get("reviewer")
-                or payload.get("staged") != context.get("staged")
-                or payload.get("prepared") != context.get("immutable")
-                or context.get("request_path") != str(attempt.request_path)
-            ):
-                raise workspace.WorkspaceError("staged session does not match its prepared context")
-            if any(
-                payload.get(key) != value
-                for key, value in {
-                    "repository": state["pr_repo"],
-                    "pr_number": state["pr_number"],
-                    "pr_head": state["pr_head"],
-                    "reviewed_head": state["commit"],
-                }.items()
-            ):
-                raise workspace.WorkspaceError("staged result target changed")
-            if context["reviewer"]["runtime"] != "dsh":
-                raise workspace.WorkspaceError("parent staging is only supported for DSH")
-            parent_data.regular_bytes(Path(state["draft"]))
-            findings, _destination = workspace.findings_artifact_paths(
-                Path(state["backup_dir"]),
-                state["head_branch"],
-                state["model_name"],
-                pr_number=state["pr_number"],
-                commit=state["commit"],
-                repository=state["pr_repo"],
-                review_commit=state.get("review_commit"),
-            )
-            parent_data.regular_bytes(findings)
-            attempt.payload = complete(
-                argparse.Namespace(state=str(state_path)), parent_request=request, parent_identity=attempt.identity
-            )
-            if attempt.payload.get("status") == "success":
-                # Remove only empty Request-owned staging directories, never other sessions.
-                for empty in (staging, staging.parent, staging.parent.parent, staging.parent.parent.parent):
-                    try:
-                        empty.rmdir()
-                    except OSError:
-                        break
-        except FAILURES as error:
-            attempt.payload = {**payload, "status": "failed", "reason": str(error), "cleanup": "not_attempted"}
-
-
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description=__doc__)
     commands = root.add_subparsers(dest="command", required=True)
-    parent = commands.add_parser("prepare-parent", help="認証済み親で固定PRデータを取得する")
-    parent.add_argument("--pr", required=True)
-    parent.add_argument("--output-dir", required=True)
-    parent.add_argument("--source-root")
-    parent.add_argument("--review-commit")
-    parent.add_argument("--records-comments")
-    parent.set_defaults(handler=prepare_parent)
-    finalize = commands.add_parser("finalize-parent", help="停止済みDSHレビューを親で保存する")
-    finalize.add_argument("--result", required=True, type=Path)
     start = commands.add_parser("prepare")
     start.add_argument("--pr", required=True)
     start.add_argument(
-        "--runtime", required=True, choices=("claude-code", "devin", "pi", "dsh", "codex", "cursor", "grok-build")
+        "--runtime", required=True, choices=("claude-code", "devin", "pi", "codex", "cursor", "grok-build")
     )
     start.add_argument("--model-name")
     start.add_argument("--request")
@@ -894,20 +592,6 @@ def attach_runner(result_path: Path) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
-    if args.command == "finalize-parent":
-        batch = BatchResult.model_validate_json(args.result.read_text(encoding="utf-8"))
-        finalize_parent_batch(batch)
-        workspace.write_json(args.result, batch.model_dump(mode="json"))
-        # A refused save is a failed review payload, not a failed after_run hook.
-        print(json.dumps({"status": "success", "result_file": str(args.result)}))
-        return 0
-    if args.command == "prepare-parent":
-        try:
-            print(json.dumps(prepare_parent(args), ensure_ascii=False))
-            return 0
-        except FAILURES as error:
-            print(json.dumps({"status": "failed", "reason": str(error)}, ensure_ascii=False))
-            return 1
     if args.command == "attach-runner":
         result = attach_runner(args.result)
         print(json.dumps(result, ensure_ascii=False, indent=2))

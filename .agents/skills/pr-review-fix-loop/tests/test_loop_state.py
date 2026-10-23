@@ -55,40 +55,18 @@ def test_start_rejects_an_unknown_role_and_inspect_self(loop: Any, env: Any) -> 
     assert not (env.review_dir / "loop/lock.json").exists()
 
 
-# テスト用の雛形（conftest の TEST_TEMPLATE）に、runtime が dsh の担当 delta を足す個人設定
-DSH_AGENT = """
-[agents.delta]
-runtime = "dsh"
-command = ["fake-delta"]
-model = "delta-model"
-"""
-DSH_REJECTED = "dsh runtime agent"
 CONFIG_REJECTED = "ConfigError: invalid_config"
 
 
 def write_personal(root: Path, extra: str = "") -> Path:
     path = root / "personal.toml"
-    path.write_text(DSH_AGENT + extra, encoding="utf-8")
+    path.write_text(extra, encoding="utf-8")
     return path
 
 
 @pytest.mark.parametrize(
     ("assign", "extra", "expected"),
     [
-        pytest.param(["self-review=delta"], "", DSH_REJECTED, id="assign-self-review-dsh"),
-        pytest.param(["fix-check=delta"], "", DSH_REJECTED, id="assign-fix-check-dsh"),
-        pytest.param(
-            [],
-            '[workflows.fix.assignments.self-review]\nfallback = ["delta"]\n',
-            DSH_REJECTED,
-            id="fallback-self-review-dsh",
-        ),
-        pytest.param(
-            [],
-            '[workflows.fix.assignments.fix-check]\nfallback = ["delta"]\n',
-            DSH_REJECTED,
-            id="fallback-fix-check-dsh",
-        ),
         pytest.param(
             [],
             '[workflows.fix.assignments.self-review]\nagents = ["alpha", "beta"]\n',
@@ -139,44 +117,16 @@ def test_start_rejects_fix_assignments_that_run_roles_refuses(
             {"implement": ["alpha"], "self-review": ["alpha"], "fix-check": ["beta"]},
             id="external-review-roles",
         ),
-        pytest.param(
-            ["implement=delta"],
-            {"implement": ["delta"], "self-review": ["self"], "fix-check": ["self"]},
-            id="implement-dsh",
-        ),
-        pytest.param(
-            ["inspect=alpha,delta"],
-            {"implement": ["alpha"], "self-review": ["self"], "fix-check": ["self"]},
-            id="inspect-dsh",
-        ),
     ],
 )
 def test_start_accepts_fix_assignments_that_run_roles_accepts(
     env: Any, tmp_path: Path, assign: list[str], expected: dict[str, list[str]]
 ) -> None:
-    """DSH を拒否するのは self-review・fix-check だけ。implement とレビュアーには使える。"""
+    """既定と外部レビューの割り当てを受け付ける。"""
     started = env.start(assign=assign, config=write_personal(tmp_path))
 
     assert started["status"] == "ok"
     assert {role: value["agents"] for role, value in started["assignments"]["fix"].items()} == expected
-
-
-def test_cli_start_reports_a_refused_fix_assignment(
-    loop: Any, env: Any, kit: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(loop, "GitHub", lambda: env.github)
-    monkeypatch.setattr(loop.target, "default_parent_root", lambda: env.parent)
-    arguments = ["start", f"#{kit.number}", "--controller-model", "test-planner", "--controller-runtime", "pi"]
-    arguments += ["--assign", "self-review=delta", "--template", str(env.template)]
-    arguments += ["--config", str(write_personal(tmp_path))]
-
-    assert loop.main(arguments) == 2
-
-    output = json.loads(capsys.readouterr().out)
-    assert (output["status"], output["stage"]) == ("error", "config")
-    assert DSH_REJECTED in output["reason"]
-    assert env.gh.calls == []
-    assert not (env.review_dir / "loop").exists()
 
 
 @pytest.mark.parametrize(

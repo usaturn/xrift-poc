@@ -1,6 +1,5 @@
 """Adapter protocol and fixed-name discovery; no concrete runtime is bundled."""
 
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from importlib import import_module
 from pathlib import Path
@@ -16,8 +15,6 @@ class AdapterContext:
     role: Role
     work_dir: Path
     receipt_path: Path
-    sandbox_write_paths: tuple[Path, ...] = ()
-    environment: Mapping[str, str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +57,6 @@ _MODULES = {
     "codex": "codex",
     "cursor": "cursor",
     "grok-build": "grok_build",
-    "dsh": "dsh",
 }
 
 

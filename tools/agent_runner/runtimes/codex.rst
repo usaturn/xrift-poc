@@ -106,7 +106,7 @@ pr-review の helper（``uv run ... review_run.py``）が uv のキャッシュ 
 
 inspect・self-review・fix-check は、writes=false でも helper がレビューディレクトリ、親の Git の共有ディレクトリ
 （保存ロック、review worktree の登録・ref・オブジェクト）、``tools/devenv/.venv`` と uv のキャッシュに書き、
-DSH 以外の pr-review は ``gh api`` と ``git fetch`` でネットワークも使う。``-s workspace-write`` と ``--add-dir`` で
+pr-review は ``gh api`` と ``git fetch`` でネットワークも使う。``-s workspace-write`` と ``--add-dir`` で
 書き込み先を足しても、codex は書き込みを許したディレクトリの中の ``.git``（ディレクトリかポインタファイル）・
 ``gitdir:`` の解決先・``.codex`` を読み取り専用に保ち、``.git/config`` などの metadata も明示の許可が無ければ書かせない。
 ネットワークも既定で制限される（Context7 ``/openai/codex``、2026-10-19 に確認）。helper を動かすにはこれらを明示的に
@@ -118,8 +118,6 @@ sandbox の意味が無くなる。このため書き込みを許可せず、割
 - runner は、``write_exceptions`` を渡された run で writes=false の役割に codex がいれば、何も作らずに invalid_input で止める
   （``review-verify/scripts/dispatch.py`` の fix-check、CLI の ``--write-exception``）。例外の無い読み取りの run は従来どおり
 - 書き込みロール（implement）の codex は変えない
-- codex を DSH と同じ経路（親が PR の情報を用意し、専用 clone、``staged`` を親が確定）に乗せれば安全に渡せるが、
-  loop・``review_run.py``・runner の DSH 固有の分岐を広げる別の変更になる
 
 制約・既知の限界
 ----------------

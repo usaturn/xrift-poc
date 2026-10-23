@@ -38,19 +38,16 @@ PR 全体の差分を隔離 worktree で読み、検証した指摘を助言と�
 - Claude Code の allowed-tools は許可確認用で、独自の保存手順ではない。`.claude/skills/pr-review` はこの実体へのリンク。
 - Devin headlessでは途中のassistant説明もstdoutへ連結されるため、中間messageを抑止する。禁止指示だけで漏れを保証できないので、**最終complete/fail JSONを1つの `json` コードフェンスで囲む**。JSONの外に説明を付けず、途中にJSONフェンスを出さない。既存Devin adapterがこの形式をobjectとして回収するため、共有Request/Receipt/Resultやpayloadの内容は変更しない。Devin は冒頭の対象 PR 行だけを補間する。本文の `＄ARGUMENTS` / `＄1`〜`＄9` を説明やシェルの位置引数へ半角で書かない。空欄・ドル記号始まりは PR 未指定。モデルは現在のシステム提示 `You are powered by <MODEL>` を使い、過去 transcript や要求した設定を使わない。
 - Pi は自身の bash で `PI_PROVIDER` と `PI_MODEL` の両方を確認する。どちらか空なら履歴の model_change・設定にfallbackせず失敗する。
-- DSH 標準 headless は `--runtime dsh` で `--model-name` を省く。helper が自身の bash の `DSH_HOME`・`DSH_SESSION_ID`・cwd に結び付いた `session.v4.jsonl` を読み、直前の解決済み request header と assistant message source の provider/model の一致から確定する。effort は同じ header、CLI 版は未観測。`PI_*` や TUI 用の `DSH_MODEL` を要求せず、親の値・起動設定・他 session のログで代用しない。欠落・不一致・途中の経路変更は failed。保存名には provider を含め、本文には正確なモデル ID を使う。
-- DSH は認証済み親が作った `Request.prompt` の `parent_pr_data` を helper に検査させる。PR/Issue の要件は prepare の `requirements` を読み、GitHub API・token・remote fetch は子から使わない。complete の `staged` は保存成功ではなく、停止後に親が HEAD・Request・実測 Identity・draft を再照合して保存・cleanup する。欠けた親入力を ambient 認証で補わない。
-- DSH の cache/仮想環境は runner の隔離 HOME 内の設定をそのまま使う。正式保存は通常 helper を bash から呼ぶ。runner が起動前に許可した HOME/temp・対象 PR の保存先・保存ロック以外への書き込みは禁止。権限拒否時は cache・cwd・sandbox 設定を変えて再試行せず failed で止める。
 - Codex は `--model-name` を渡さず、helper が現在の `CODEX_THREAD_ID` の rollout から確定する。未完の末尾だけを無視し、壊れた完了行・モデル欠落は拒否する。
 - 他 runtime も現在提示された正確な model ID だけを `--model-name` に渡す。系列名・過去成果・設定から推測しない。未知の provider / effort / session / CLI は unknown、未計測の待ちは null。設定のrequested値をactualに写さない。
 
 ## 手順
 
 1. **開始・prepare**: 時刻と短縮できない保存枠を最初に決める。非対話は実 request の期限も上限にする。[入口](references/noninteractive.md)の prepare を1回呼び、request binding・対象・隔離 WT・draft・候補 draft・base・records を受け取る。PR 未指定、識別不能、API失敗は質問せず failed。普段の対話でPR指定が無い場合だけ指定を求めてよい。
-2. **要件・全体差分・精読**: DSH は prepare の `requirements.pr` と `requirements.issues` を以下の PR/Issue 取得結果の代わりに読む（子から gh を呼ばない）。`requirements.unavailable` は親が取得できなかった参照 Issue（repository・number・reason）なので、Issue の取得失敗と同じく coverage の読めなかった範囲に書く。精読の前に、PR 本文（`gh pr view <PR> --repo <PRのrepo> --json body,closingIssuesReferences`）、PR が閉じる・参照する Issue の本文とコメント（`gh issue view <N> --repo <Issueのrepo> --json body,comments`）、それらが参照するリポジトリ内の仕様・設計文書、対象の `AGENTS.md`（テストの方針と規約）から、今回の受け入れ条件と対象外を数行に整理する。仕様・設計文書と `AGENTS.md` は base の版（`git -C "$WT" show <base>:<path>`）で読み、PR が書き換えた記述は PR 本文と同じく主張として扱う。PR が閉じる Issue は全条件を、参照するだけの Issue は PR 本文が満たすと述べた条件を、今回の受け入れ条件にする。閉じる Issue でも、PR 本文が一部だけを扱うと明示していれば、その範囲にする。PR のコメント・レビューは要件の出所にしない（他のレビューが含まれうる）。続けて prepare の `diff_command` をそのまま実行し、変更ファイルは全文、関連コード・依存・テストも WT で読む。規模は固定 diff の `git diff --numstat <base>..<reviewed_head>` と変更ファイル数で判断し、binary / 不明を0にしない。停止手段が使えない runtime は委譲を省略する。
+2. **要件・全体差分・精読**: 精読の前に、PR 本文（`gh pr view <PR> --repo <PRのrepo> --json body,closingIssuesReferences`）、PR が閉じる・参照する Issue の本文とコメント（`gh issue view <N> --repo <Issueのrepo> --json body,comments`）、それらが参照するリポジトリ内の仕様・設計文書、対象の `AGENTS.md`（テストの方針と規約）から、今回の受け入れ条件と対象外を数行に整理する。仕様・設計文書と `AGENTS.md` は base の版（`git -C "$WT" show <base>:<path>`）で読み、PR が書き換えた記述は PR 本文と同じく主張として扱う。PR が閉じる Issue は全条件を、参照するだけの Issue は PR 本文が満たすと述べた条件を、今回の受け入れ条件にする。閉じる Issue でも、PR 本文が一部だけを扱うと明示していれば、その範囲にする。PR のコメント・レビューは要件の出所にしない（他のレビューが含まれうる）。続けて prepare の `diff_command` をそのまま実行し、変更ファイルは全文、関連コード・依存・テストも WT で読む。規模は固定 diff の `git diff --numstat <base>..<reviewed_head>` と変更ファイル数で判断し、binary / 不明を0にしない。停止手段が使えない runtime は委譲を省略する。
 3. **既存指摘・判断・前回修正**: snapshot があれば active/Pending/Decided/history/Resolvedを読む。prepare の records（`--records-comments` でも渡せる）に skip があれば新しい根拠が無い同じ問題を Decided に置く。recordsは新候補を探す情報源にはしない。前回の修正の起点は最後のサイクルの reviewed_head、無ければsnapshotの最終history HEAD。現在の reviewed commitの祖先なら `git -C "$WT" log --first-parent --no-merges <起点>..<reviewed_head>` の範囲を重点確認する。起点不明・祖先でない場合はcoverageへ理由を書き、範囲を推測しない。
 4. **候補・draft**: 以下の検証プロトコルで反証・実行・分類を行う。本文のhistoryへ今回の時刻・reviewed commitの12桁・Modeを1行追記する。Modeは指定commitでも `Initial` / `Update` のみとし、指定commitは保存名・候補JSON・coverageで区別する。coverage / 未検証 / pendingを誤魔化さない。prepareが作った候補JSONの固定項目は触らず、coverage・findings・unverified_candidatesへ同じ内容を書く。
-5. **complete・結果**: [入口](references/noninteractive.md)の complete を1回呼ぶ。同じv2 provenance / timingを本文と候補へ記録し、既存helperでpair検査・lock内のHEAD/fingerprint検査・両成果保存・cleanupを行う。候補JSONを保存できなければ、Markdownのみへfallbackせずfailedにする。DSH では `status=staged` と state_file を確認して JSON をそのまま返し、親の通常保存・cleanup を待つ。他 runtime は status=success と両成果・cleanup成功を確認してJSON結果をそのまま返す。失敗なら理由と保存前state/draft/WTを報告し、手動保存・削除をしない。保存後の本文を直接追記しない。
+5. **complete・結果**: [入口](references/noninteractive.md)の complete を1回呼ぶ。同じv2 provenance / timingを本文と候補へ記録し、既存helperでpair検査・lock内のHEAD/fingerprint検査・両成果保存・cleanupを行う。候補JSONを保存できなければ、Markdownのみへfallbackせずfailedにする。status=success と両成果・cleanup成功を確認してJSON結果をそのまま返す。失敗なら理由と保存前state/draft/WTを報告し、手動保存・削除をしない。保存後の本文を直接追記しない。
 
 ## 確認観点
 
@@ -278,5 +275,5 @@ Merge recommendation の判定基準:
 - AGENTS.mdのテスト基準に沿い、文面や運用値の写しを要求するテストを提案していないか。
 - 実行時のCritical/High/Mediumの検証済みに実際の最小再現があり、「止まる」と「動く」を分けたか。
 - request binding、実測識別情報、skill hash、unknown/null、同一timingを維持したか。
-- DSH は complete の staged を親の保存成功と混同せず返したか。他 runtime / 親は成果2件・cleanup成功を確認したか。failed/missingを0件にしていないか。
+- 成果2件・cleanup成功を確認し、failed/missingを0件にしていないか。
 - cleanup後のWTを成果参照に使わず、残存領域は完全パスと理由を返したか。
