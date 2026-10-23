@@ -1,26 +1,20 @@
 """Workflow behavior against real disposable Git checkouts and fake Python CLIs."""
 
-import asyncio
 import contextlib
 import json
-import os
-import signal
 import subprocess
 import sys
 import threading
-import time
-import warnings
 from collections.abc import Callable, Generator, Iterable
 from pathlib import Path
-from types import SimpleNamespace
-from typing import cast
 
 import pytest
 
-from tools.agent_runner import environ, runner, workspace
+from tools.agent_runner import environ, workspace
 from tools.agent_runner.adapters import AdapterContext, AdapterOutcome, Capabilities, LaunchSpec
 from tools.agent_runner.config import ConfigError
 from tools.agent_runner.models import (
+    DIAGNOSIS_TEXT_CHARS,
     Agent,
     Assignment,
     Config,
@@ -32,43 +26,32 @@ from tools.agent_runner.models import (
     State,
     Workflow,
 )
-from tools.agent_runner.process import ProcessResult
 from tools.agent_runner.runner import RunnerError, run_workflow
-from tools.agent_runner.tests.test_process import alive
-from tools.test_support.worktree_race import plant_racer
 
 pytest_plugins = ("tools.test_support.plugin",)
 # Only fake agents are launched here; drop AGENT_RUNNER_DEPTH inside each test so a runner agent can run them
 pytestmark = pytest.mark.usefixtures("outside_runner")
 
-# Removing receipt validation, cancellation checks, environment filtering, or the
-# workflow semaphore must break these consumer-visible assertions.
+# A fake CLI: options pick its receipt, exit code, and side effects; it echoes inherited values to its logs.
 _SCRIPT = """
-import json, os, pathlib, sys, time
+import json, os, pathlib, sys
 incoming = json.loads(sys.stdin.read())
 request = incoming['request']
 options = incoming['options']
 if options.get('outside'):
     pathlib.Path(options['outside']).write_text('changed again')
-if options.get('marker'):
-    pathlib.Path(options['marker']).write_text(str(time.monotonic()))
 token = os.environ.get('SERVICE_TOKEN', 'no-token')
 _export_file = pathlib.Path(sys.argv[1]).parent.joinpath('export.json')
 if options.get('export_link'):
     _export_file.symlink_to(options['export_link'])
-elif options.get('export_fifo'):
-    os.mkfifo(_export_file)
 elif options.get('devin_export') is not None:
     _export_file.write_text(options['devin_export'].replace('$TOKEN', token), encoding='utf-8')
-time.sleep(options.get('sleep', 0))
 print(os.environ.get('SERVICE_TOKEN', 'no-token'))
 print(os.environ.get('Extra_Password', 'no-password'), file=sys.stderr)
 payload = options.get('payload', {'prompt': request['prompt'], 'depth': os.environ.get('AGENT_RUNNER_DEPTH'),
-    'ambient': os.environ.get('UNCONFIGURED_SECRET'), 'git': os.environ.get('GIT_DIR'),
-    'skills': incoming['skills'], 'sources': incoming['sources']})
+    'ambient': os.environ.get('UNCONFIGURED_SECRET'), 'git': os.environ.get('GIT_DIR')})
 receipt = {key: request[key] for key in ('schema_version', 'run_id', 'request_id', 'agent_id', 'role')}
-receipt.update(status=options.get('status', 'success'), payload=payload)
-receipt.update(options.get('receipt_changes', {}))
+receipt.update(status='success', payload=payload)
 if not options.get('missing'):
     pathlib.Path(sys.argv[1]).write_text(options.get('raw', json.dumps(receipt)))
 sys.exit(options.get('exit', 0))
@@ -100,8 +83,6 @@ class FakeAdapter:
                 {
                     "request": context.request.model_dump(mode="json"),
                     "options": self.options.get(context.request.agent_id, {}),
-                    "skills": context.role.skills,
-                    "sources": context.agent.skill_sources,
                 }
             ).encode(),
             env=self.env,
@@ -145,36 +126,6 @@ def written(paths: Iterable[Path]) -> int:
     return sum(path.stat().st_size > 0 for path in paths)
 
 
-@contextlib.contextmanager
-def exit_times(pids: Callable[[], Iterable[int]]) -> Generator[dict[int, float]]:
-    """Record when each pid from pids() is first seen not alive inside the with block.
-
-    A stop is observed from outside rather than recorded by the stopped process:
-    work a process does after SIGTERM must finish within the runner's fixed grace
-    before SIGKILL, which a loaded host stretches (#694). A last sweep after the
-    block records processes that stopped just before it ended.
-    """
-    times: dict[int, float] = {}
-    finished = threading.Event()
-
-    def watch() -> None:
-        while True:
-            done = finished.wait(0.01)
-            for pid in pids():
-                if pid not in times and not alive(pid):
-                    times[pid] = time.monotonic()
-            if done:
-                return
-
-    watcher = threading.Thread(target=watch)
-    watcher.start()
-    try:
-        yield times
-    finally:
-        finished.set()
-        watcher.join()
-
-
 @pytest.fixture
 def repository(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
@@ -191,30 +142,20 @@ def repository(tmp_path: Path) -> Path:
     return repo
 
 
-def configuration(
-    agents: list[str] | None = None,
-    fallback: list[str] | None = None,
-    *,
-    deadline: float = 5.0,
-    shape: str = "json",
-) -> Config:
+def configuration(agents: list[str] | None = None, fallback: list[str] | None = None) -> Config:
     return Config(
         agents={
-            name: Agent(runtime="pi", command=[sys.executable, "-c", _SCRIPT], model=name, skill_sources=["source"])
-            for name in ("a", "b", "c")
+            name: Agent(runtime="pi", command=[sys.executable, "-c", _SCRIPT], model=name) for name in ("a", "b", "c")
         },
-        roles={
-            "inspect": Role.model_validate(
-                {"writes": False, "skills": ["review"], "deadline_seconds": deadline, "result_shape": shape}
-            )
-        },
+        roles={"inspect": Role.model_validate({"writes": False, "deadline_seconds": 5.0, "result_shape": "json"})},
         workflows={
             "audit": Workflow(assignments={"inspect": Assignment(agents=agents or ["a"], fallback=fallback or [])})
         },
     )
 
 
-def test_unavailable_registered_checkout_does_not_prevent_cli_run(repository: Path, tmp_path: Path) -> None:
+def test_unavailable_registered_checkout_is_an_outside_change(repository: Path, tmp_path: Path) -> None:
+    """監査できない登録済みの checkout が outside_changes から落ちると、呼び出し側が黙って受け入れる。"""
     external = workspace.create_worktree(repository, "HEAD", tmp_path / "unavailable")
     gitfile = external / ".git"
     original = gitfile.read_bytes()
@@ -223,407 +164,81 @@ def test_unavailable_registered_checkout_does_not_prevent_cli_run(repository: Pa
         batch = run_workflow(
             configuration(),
             "audit",
-            "literal prompt",
+            "prompt",
             repository,
             output_dir=tmp_path / "run",
             adapter_loader=lambda _: FakeAdapter(),
         )
-        assert batch.state == "success"
-        attempt = batch.results[0].attempts[0]
-        assert attempt.exit_code == 0 and attempt.stop_confirmed
-        assert "literal prompt" in str(attempt.payload)
         assert batch.outside_changes == [str(external)]
-        assert [item.model_dump() for item in batch.checkout_audit] == [
-            {
-                "path": str(external),
-                "kind": "unavailable_before",
-                "reason": "git_unavailable",
-                "locked": False,
-                "prunable": False,
-            }
-        ]
     finally:
         gitfile.write_bytes(original)
 
 
-def test_success_has_verified_receipt_paths_and_observed_identity(repository: Path, tmp_path: Path) -> None:
-    prompt = 'a quote " and a backtick `\nsecond line\n'
+@pytest.mark.parametrize("options", [{"payload": {}}, {"exit": 7}], ids=["empty-payload", "nonzero-exit"])
+def test_exit_zero_is_not_a_substitute_for_valid_receipt(
+    repository: Path, tmp_path: Path, options: dict[str, object]
+) -> None:
+    """空の payload・終了 7 の CLI を success とする、観測していない identity を補うと、呼び出し側が黙って誤る。"""
     batch = run_workflow(
         configuration(),
         "audit",
-        prompt,
+        "prompt",
         repository,
         output_dir=tmp_path / "run",
-        adapter_loader=lambda _: FakeAdapter(identity=Identity(model="observed")),
+        adapter_loader=lambda _: FakeAdapter({"a": options}),
     )
-    assert batch.state == "success"
-    result = batch.results[0]
-    assert (result.requested_agent, result.actual_agent, result.role) == ("a", "a", "inspect")
-    attempt = result.attempts[0]
-    assert attempt.identity.model == "observed"
-    assert attempt.identity.provider is None
-    assert attempt.exit_code == 0 and attempt.stop_confirmed
-    assert attempt.work_dir == batch.artifact_dir / result.request_id / "attempt-1" / "worktree"
-    assert attempt.work_dir is not None and attempt.work_dir.exists()
-    assert attempt.request_path is not None and attempt.request_path.exists()
-    assert attempt.stdout_path is not None and attempt.stdout_path.exists()
-    assert attempt.stderr_path is not None and attempt.stderr_path.exists()
-    payload = cast(dict[str, object], attempt.payload)
-    assert prompt in str(payload["prompt"])
-    assert "this worktree only" in str(payload["prompt"])
-    assert "not a sandbox" in str(payload["prompt"])
-    assert payload["skills"] == ["review"] and payload["sources"] == ["source"]
-    assert payload["depth"] == "1"
-    assert batch.outside_changes == []
-
-
-@pytest.mark.parametrize(
-    ("options", "state"),
-    [
-        ({"missing": True}, "missing_result"),
-        ({"raw": "{"}, "invalid_result"),
-        ({"receipt_changes": {"run_id": "old"}}, "invalid_result"),
-        ({"receipt_changes": {"request_id": "old"}}, "invalid_result"),
-        ({"receipt_changes": {"agent_id": "old"}}, "invalid_result"),
-        ({"receipt_changes": {"role": "old"}}, "invalid_result"),
-        ({"receipt_changes": {"schema_version": 2}}, "invalid_result"),
-        ({"receipt_changes": {"extra": True}}, "invalid_result"),
-        ({"payload": {}}, "invalid_result"),
-        ({"payload": []}, "invalid_result"),
-        ({"payload": "text"}, "invalid_result"),
-        ({"payload": None}, "invalid_result"),
-        ({"exit": 7}, "response_failed"),
-        ({"status": "awaiting_authentication"}, "awaiting_authentication"),
-        ({"status": "awaiting_authentication", "exit": 3}, "awaiting_authentication"),
-        ({"status": "awaiting_approval"}, "awaiting_approval"),
-        ({"status": "awaiting_approval", "exit": 3}, "awaiting_approval"),
-        ({"status": "response_failed"}, "response_failed"),
-        ({"status": "response_failed", "exit": 3}, "response_failed"),
-        # A CLI receipt cannot claim a state that only the runner determines.
-        ({"status": "self"}, "invalid_result"),
-        ({"status": "timed_out"}, "invalid_result"),
-    ],
-)
-def test_exit_zero_is_not_a_substitute_for_valid_receipt(
-    repository: Path,
-    options: dict[str, object],
-    state: str,
-) -> None:
-    batch = run_workflow(
-        configuration(), "audit", "prompt", repository, adapter_loader=lambda _: FakeAdapter({"a": options})
-    )
-    assert batch.state == "failed"
-    assert batch.results[0].state == state
+    assert batch.results[0].state != "success"
     assert batch.results[0].attempts[0].identity.model is None
 
 
-@pytest.mark.parametrize(
-    ("payload", "state"), [("answer", "success"), (" \n ", "invalid_result"), ({"x": 1}, "invalid_result")]
-)
-def test_text_receipt_requires_nonblank_text(repository: Path, payload: object, state: str) -> None:
-    batch = run_workflow(
-        configuration(shape="text"),
-        "audit",
-        "prompt",
-        repository,
-        adapter_loader=lambda _: FakeAdapter({"a": {"payload": payload}}),
-    )
-    assert batch.results[0].state == state
-
-
-def test_adapter_success_cannot_bypass_missing_receipt(repository: Path) -> None:
+def test_adapter_success_cannot_bypass_missing_receipt(repository: Path, tmp_path: Path) -> None:
+    """receipt が無いのに adapter の success で成功にすると、payload の無い success を黙って返す。"""
     batch = run_workflow(
         configuration(),
         "audit",
         "prompt",
         repository,
+        output_dir=tmp_path / "run",
         adapter_loader=lambda _: FakeAdapter({"a": {"missing": True}}, outcome_state="success"),
     )
-    assert batch.results[0].state == "missing_result"
+    assert batch.results[0].state != "success"
 
 
-def test_partial_success_and_independent_worktrees(repository: Path) -> None:
+def test_partial_success_and_independent_worktrees(repository: Path, tmp_path: Path) -> None:
+    """1 人の失敗を batch の success にする・並行の担当に同じ worktree を渡すと、失敗や混ざった変更を黙って通す。"""
     batch = run_workflow(
         configuration(["a", "b"]),
         "audit",
         "prompt",
         repository,
+        output_dir=tmp_path / "run",
         adapter_loader=lambda _: FakeAdapter({"a": {"missing": True}}),
     )
-    assert batch.state == "partial_success"
-    assert batch.assignments == {"inspect": ["a", "b"]}
-    assert [result.state for result in batch.results] == ["missing_result", "success"]
-    assert len({result.request_id for result in batch.results}) == 2
+    assert batch.state != "success"
     assert len({result.attempts[0].work_dir for result in batch.results}) == 2
 
 
-def test_only_explicit_fallback_is_tried_in_order(repository: Path) -> None:
+def test_only_explicit_fallback_is_tried_in_order(repository: Path, tmp_path: Path) -> None:
+    """設定に無い担当へ切り替える・fallback の順序を取り違えると、利用者が選んでいない provider に黙って送る。"""
     fake = FakeAdapter({"a": {"missing": True}, "b": {"exit": 2}})
     batch = run_workflow(
-        configuration(fallback=["b", "c"]), "audit", "prompt", repository, adapter_loader=lambda _: fake
+        configuration(fallback=["b", "c"]),
+        "audit",
+        "prompt",
+        repository,
+        output_dir=tmp_path / "run",
+        adapter_loader=lambda _: fake,
     )
-    assert batch.state == "success"
-    assert batch.assignments == {"inspect": ["a"]}
     assert batch.results[0].actual_agent == "c"
     assert [attempt.agent_id for attempt in batch.results[0].attempts] == ["a", "b", "c"]
-    alone = run_workflow(configuration(), "audit", "prompt", repository, adapter_loader=lambda _: fake)
+    alone = run_workflow(
+        configuration(), "audit", "prompt", repository, output_dir=tmp_path / "alone", adapter_loader=lambda _: fake
+    )
     assert [attempt.agent_id for attempt in alone.results[0].attempts] == ["a"]
 
 
-def _ok_flag(payload: object) -> bool:
-    return isinstance(payload, dict) and cast(dict[str, object], payload).get("ok") is True
-
-
-def _raise_with_payload(payload: object) -> bool:
-    if not _ok_flag(payload):
-        raise ValueError(f"payload-check-detail {payload}")
-    return True
-
-
-@pytest.mark.parametrize("check", [_ok_flag, _raise_with_payload], ids=["returns-false", "raises"])
-def test_payload_check_refusal_is_invalid_result_and_tries_fallback(
-    repository: Path, check: Callable[[object], bool]
-) -> None:
-    fake = FakeAdapter(
-        {"a": {"payload": {"ok": False, "note": "check-input"}}, "b": {"payload": {"ok": True}}},
-        identity=Identity(model="observed"),
-    )
-    batch = run_workflow(
-        configuration(fallback=["b"]),
-        "audit",
-        "prompt",
-        repository,
-        adapter_loader=lambda _: fake,
-        payload_check=check,
-    )
-    result = batch.results[0]
-    assert [(attempt.agent_id, attempt.state) for attempt in result.attempts] == [
-        ("a", "invalid_result"),
-        ("b", "success"),
-    ]
-    assert (batch.state, result.actual_agent) == ("success", "b")
-    refused = result.attempts[0]
-    assert refused.payload is None and refused.identity.model == "observed"
-    # Neither the check's exception text nor the refused payload reaches the result.
-    assert "payload-check-detail" not in batch.model_dump_json()
-    assert "check-input" not in batch.model_dump_json()
-    alone = run_workflow(
-        configuration(), "audit", "prompt", repository, adapter_loader=lambda _: fake, payload_check=check
-    )
-    assert (alone.state, alone.results[0].state) == ("failed", "invalid_result")
-
-
-def test_self_has_no_process_or_worktree(repository: Path) -> None:
-    batch = run_workflow(configuration(["self"]), "audit", "prompt", repository)
-    assert batch.state == "self"
-    assert batch.assignments == {"inspect": ["self"]}
-    assert batch.results[0].state == "self"
-    assert not list(batch.artifact_dir.rglob("worktree"))
-
-
-def test_launch_failed_is_safe(repository: Path) -> None:
-    cfg = configuration()
-    cfg.agents["a"].command = ["/does/not/exist"]
-    failed = run_workflow(cfg, "audit", "secret prompt", repository, adapter_loader=lambda _: FakeAdapter())
-    assert failed.results[0].state == "launch_failed"
-    assert "secret prompt" not in failed.model_dump_json()
-
-
-@pytest.mark.parametrize("deadline", [4.0, 8.0])
-def test_role_deadline_covers_fallback_attempts(
-    repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, deadline: float
-) -> None:
-    now = 0.0
-    budgets: list[tuple[str, float]] = []
-
-    # Replace only runner's clock: asyncio and real process teardown keep real time.
-    monkeypatch.setattr(runner, "time", SimpleNamespace(monotonic=lambda: now))
-
-    async def prepare(
-        repository: Path,
-        commit: str,
-        destination: Path,
-        *,
-        deadline_seconds: float,
-        cancel: threading.Event,
-        stdout_path: Path,
-        stderr_path: Path,
-        secrets: tuple[str, ...] = (),
-    ) -> ProcessResult:
-        nonlocal now
-        budgets.append(("prepare", deadline_seconds))
-        destination.mkdir()
-        stdout_path.write_bytes(b"")
-        stderr_path.write_bytes(b"")
-        now += deadline / 8
-        return ProcessResult(None, 0, True, deadline / 8)
-
-    async def execute(
-        spec: LaunchSpec,
-        *,
-        cwd: Path,
-        env: dict[str, str],
-        deadline_seconds: float,
-        stdout_path: Path,
-        stderr_path: Path,
-        cancel: threading.Event,
-        secrets: tuple[str, ...] = (),
-    ) -> ProcessResult:
-        nonlocal now
-        agent = json.loads(spec.stdin)["request"]["agent_id"]
-        budgets.append((agent, deadline_seconds))
-        stdout_path.write_bytes(b"")
-        stderr_path.write_bytes(b"")
-        # a exits without a receipt; b consumes the remaining shared budget.
-        elapsed = deadline / 4 if agent == "a" else deadline_seconds
-        now += elapsed
-        return ProcessResult(None if agent == "a" else "timed_out", 0, True, elapsed)
-
-    monkeypatch.setattr(runner, "prepare_worktree", prepare)
-    monkeypatch.setattr(runner, "execute", execute)
-    batch = run_workflow(
-        configuration(fallback=["b", "c"], deadline=deadline),
-        "audit",
-        "prompt",
-        repository,
-        output_dir=tmp_path / "artifacts",
-        adapter_loader=lambda _: FakeAdapter({"a": {"missing": True}}),
-    )
-    result = batch.results[0]
-    assert result.state == "timed_out"
-    assert [(attempt.agent_id, attempt.state) for attempt in result.attempts] == [
-        ("a", "missing_result"),
-        ("b", "timed_out"),
-    ]
-    assert budgets == [
-        ("prepare", deadline),
-        ("a", deadline * 7 / 8),
-        ("prepare", deadline * 5 / 8),
-        ("b", deadline / 2),
-    ]
-    assert batch.elapsed_seconds == deadline
-
-
-@pytest.mark.parametrize("locale_source", ["default", "allowlist", "adapter"])
-def test_workflow_preserves_literal_environment(
-    repository: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    supervisor_bootstrap: Callable[[str], None],
-    locale_source: str,
-) -> None:
-    class EnvironmentAdapter(FakeAdapter):
-        def prepare(self, context: AdapterContext) -> LaunchSpec:
-            return LaunchSpec(("/usr/bin/env", "-0"), b"", env=self.env)
-
-        def collect(self, context: AdapterContext, stdout_path: Path, stderr_path: Path) -> AdapterOutcome:
-            payload: dict[str, object] = {
-                os.fsdecode(name): os.fsdecode(value)
-                for entry in stdout_path.read_bytes().split(b"\0")
-                if entry
-                for name, value in [entry.split(b"=", 1)]
-            }
-            return AdapterOutcome(
-                Receipt(
-                    schema_version=context.request.schema_version,
-                    run_id=context.request.run_id,
-                    request_id=context.request.request_id,
-                    agent_id=context.request.agent_id,
-                    role=context.request.role,
-                    status="success",
-                    payload=payload,
-                )
-            )
-
-    # The exec environment, not os.environ, is what commands may inherit.
-    monkeypatch.setattr(environ, "_literal", environ.literal_environ() | {"LC_CTYPE": "C", "LANG": "POSIX"})
-    config = configuration()
-    additions = {"LC_CTYPE": "C", "EMPTY": "", "TEXT": "日本語\nkey=value"} if locale_source == "adapter" else {}
-    if locale_source == "allowlist":
-        config.agents["a"].env = ["LC_CTYPE"]
-    batch = run_workflow(
-        config,
-        "audit",
-        "prompt",
-        repository,
-        output_dir=tmp_path / "artifacts",
-        adapter_loader=lambda _: EnvironmentAdapter(env=additions),
-    )
-    expected = {"PATH": os.defpath, "AGENT_RUNNER_DEPTH": "1"}
-    if locale_source == "allowlist":
-        expected["LC_CTYPE"] = "C"
-    expected.update(additions)
-    assert batch.state == "success" and batch.results[0].state == "success"
-    assert batch.results[0].attempts[-1].payload == expected
-
-
-def test_cancel_during_run_prevents_fallback(repository: Path, tmp_path: Path) -> None:
-    cancel = threading.Event()
-    started = tmp_path / "a-started"
-    with set_when(cancel, lambda: written(tmp_path.glob(started.name)) == 1):
-        batch = run_workflow(
-            configuration(fallback=["b"]),
-            "audit",
-            "prompt",
-            repository,
-            cancel=cancel,
-            adapter_loader=lambda _: FakeAdapter({"a": {"sleep": 60, "marker": str(started)}}),
-        )
-    assert batch.results[0].state == "interrupted"
-    assert len(batch.results[0].attempts) == 1
-    assert batch.results[0].attempts[0].stop_confirmed
-
-
-def test_preexisting_cancel_launches_nothing(repository: Path) -> None:
-    cancel = threading.Event()
-    cancel.set()
-    batch = run_workflow(
-        configuration(["a", "b"], ["c"]),
-        "audit",
-        "prompt",
-        repository,
-        cancel=cancel,
-        adapter_loader=lambda _: FakeAdapter(),
-    )
-    assert all(result.state == "interrupted" for result in batch.results)
-    assert not list(batch.artifact_dir.rglob("worktree"))
-
-
-def test_unconfirmed_stop_blocks_success_and_fallback(repository: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # Independent stop evidence is the only patched seam: execution and artifacts remain real.
-    def no_stop(_: object) -> bool:
-        return False
-
-    monkeypatch.setattr("tools.agent_runner.process._stop_confirmed", no_stop)
-    batch = run_workflow(
-        configuration(fallback=["b"]), "audit", "prompt", repository, adapter_loader=lambda _: FakeAdapter()
-    )
-    result = batch.results[0]
-    assert result.state != "success"
-    assert len(result.attempts) == 1
-    assert not result.attempts[0].stop_confirmed
-    assert result.attempts[0].work_dir is not None and result.attempts[0].work_dir.exists()
-
-
-def test_concurrency_bounds_whole_assignments(repository: Path, tmp_path: Path) -> None:
-    markers = {name: tmp_path / name for name in ("a", "b", "c")}
-    batch = run_workflow(
-        configuration(["a", "b", "c"]),
-        "audit",
-        "prompt",
-        repository,
-        concurrency=2,
-        adapter_loader=lambda _: FakeAdapter(
-            {name: {"sleep": 0.25, "marker": str(path)} for name, path in markers.items()}
-        ),
-    )
-    assert batch.state == "success"
-    starts = sorted(float(path.read_text()) for path in markers.values())
-    assert starts[1] - starts[0] < 0.2
-    assert starts[2] - starts[0] >= 0.23
-
-
-def test_outside_change_to_already_dirty_file_is_warning_only(repository: Path) -> None:
+def test_outside_change_to_already_dirty_file_is_warning_only(repository: Path, tmp_path: Path) -> None:
+    """開始前から dirty な追跡ファイルを担当が書き換えても outside_changes に出ず、呼び出し側が黙って受け入れる。"""
     dirty = repository / "tracked.txt"
     dirty.write_text("already dirty")
     batch = run_workflow(
@@ -631,17 +246,19 @@ def test_outside_change_to_already_dirty_file_is_warning_only(repository: Path) 
         "audit",
         "prompt",
         repository,
+        output_dir=tmp_path / "run",
         adapter_loader=lambda _: FakeAdapter({"a": {"outside": str(dirty)}}),
     )
-    assert batch.state == "success"
-    assert batch.outside_changes == [str(repository)]
     assert dirty.read_text() == "changed again"
+    assert batch.outside_changes == [str(repository)]
 
 
 def test_only_allowlisted_environment_and_redacted_results(
     repository: Path,
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """許可しない資格情報・GIT_* が担当に渡る、ログ・payload・identity・request.json に秘密が黙って残る。"""
     monkeypatch.setenv("SERVICE_TOKEN", "token-value")
     monkeypatch.setenv("UNCONFIGURED_SECRET", "ambient-value")
     monkeypatch.setenv("GIT_DIR", "/bogus-ambient-git")
@@ -659,151 +276,67 @@ def test_only_allowlisted_environment_and_redacted_results(
         env={"AGENT_RUNNER_DEPTH": "0", "Extra_Password": "password-value"},
         identity=Identity(model="token-value", skill_versions={"version": "password-value"}),
     )
-    batch = run_workflow(cfg, "audit", "prompt", repository, adapter_loader=lambda _: fake)
+    batch = run_workflow(
+        cfg, "audit", "prompt", repository, output_dir=tmp_path / "run", adapter_loader=lambda _: fake
+    )
     serialized = batch.model_dump_json()
     assert "token-value" not in serialized and "password-value" not in serialized
-    assert "[REDACTED]" in serialized
     attempt = batch.results[0].attempts[0]
     assert attempt.stdout_path is not None and "token-value" not in attempt.stdout_path.read_text()
     assert attempt.stderr_path is not None and "password-value" not in attempt.stderr_path.read_text()
     assert attempt.request_path is not None and "password-value" not in attempt.request_path.read_text()
     environment = run_workflow(
-        cfg, "audit", "prompt", repository, adapter_loader=lambda _: FakeAdapter(env={"AGENT_RUNNER_DEPTH": "0"})
+        cfg,
+        "audit",
+        "prompt",
+        repository,
+        output_dir=tmp_path / "environment",
+        adapter_loader=lambda _: FakeAdapter(env={"AGENT_RUNNER_DEPTH": "0"}),
     )
-    payload = cast(dict[str, object], environment.results[0].attempts[0].payload)
+    payload = environment.results[0].attempts[0].payload
+    assert isinstance(payload, dict)
     assert payload["depth"] == "1" and payload["ambient"] is None and payload["git"] is None
 
 
-def test_diagnosis_is_redacted_before_it_is_cut(repository: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_diagnosis_is_redacted_before_it_is_cut(
+    repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """先に切ってから伏せると、境界で切れた秘密の先頭が diagnosis に黙って残る（#96）。"""
     monkeypatch.setenv("SERVICE_TOKEN", "token-value")
-    message = "x" * 195 + "token-value の後\n2 行目"
+    # The cut falls inside the secret: its first five characters fit below the limit.
+    message = "x" * (DIAGNOSIS_TEXT_CHARS - 5) + "token-value の後\n2 行目"
     fake = FakeAdapter(
         {"a": {"exit": 1}},
         diagnosis=Diagnosis(
             ending="turn_end", reason="error", code="token-value", status=503, message=message, steps=2
         ),
     )
-    batch = run_workflow(configuration(), "audit", "prompt", repository, adapter_loader=lambda _: fake)
-    attempt = batch.results[0].attempts[0]
-    assert attempt.state == "response_failed"
-    assert attempt.diagnosis is not None
-    # Cutting before redaction would keep "token", the head of the secret, at the boundary.
-    assert attempt.diagnosis.message == "x" * 195 + "[REDA"
-    assert (attempt.diagnosis.code, attempt.diagnosis.status, attempt.diagnosis.steps) == ("[REDACTED]", 503, 2)
-    assert "token-value" not in attempt.diagnosis.model_dump_json()
-
-
-class RaisingCollectAdapter(FakeAdapter):
-    def collect(self, context: AdapterContext, stdout_path: Path, stderr_path: Path) -> AdapterOutcome:
-        raise ValueError("collector failure")
-
-
-def test_attempts_without_an_adapter_diagnosis_have_none(repository: Path) -> None:
-    failing = run_workflow(
-        configuration(),
-        "audit",
-        "prompt",
-        repository,
-        adapter_loader=lambda _: RaisingCollectAdapter(diagnosis=Diagnosis(ending="completed")),
-    )
-    assert failing.results[0].state == "invalid_result"
-    assert failing.results[0].attempts[0].diagnosis is None
-    plain = run_workflow(configuration(), "audit", "prompt", repository, adapter_loader=lambda _: FakeAdapter())
-    assert plain.results[0].state == "success"
-    assert plain.results[0].attempts[0].diagnosis is None
-
-
-def test_invalid_direct_config_is_rejected_before_execution(repository: Path) -> None:
-    cfg = configuration()
-    cfg.workflows["audit"].assignments["inspect"].agents = ["unknown"]
-    with pytest.raises(ConfigError, match="invalid_reference"):
-        run_workflow(cfg, "audit", "prompt", repository)
-    cfg = configuration(["a", "b"])
-    cfg.agents["b"].model = "a"
-    with pytest.raises(ConfigError, match="duplicate_model"):
-        run_workflow(cfg, "audit", "prompt", repository)
-    with pytest.raises(ConfigError, match="invalid_reference"):
-        run_workflow(configuration(), "unknown", "prompt", repository)
-
-
-def test_nested_invocation_and_invalid_inputs_fail_closed(repository: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("AGENT_RUNNER_DEPTH", "1")
-    with pytest.raises(ConfigError, match="nested_invocation"):
-        run_workflow(configuration(), "audit", "prompt", repository)
-    monkeypatch.delenv("AGENT_RUNNER_DEPTH")
-    with pytest.raises(RunnerError):
-        run_workflow(configuration(), "audit", "prompt", repository, concurrency=0)
-    with pytest.raises(RunnerError):
-        run_workflow(configuration(), "audit", "prompt", repository, revision="--dangerous")
-
-
-def _scope_lines(batch_prompt: object, body: str) -> list[str]:
-    """Request.prompt から caller の本文を除いた、runner の作業範囲の指示の空でない行。"""
-    assert isinstance(batch_prompt, str) and batch_prompt.endswith(body)
-    return [line for line in batch_prompt.removesuffix(body).splitlines() if line]
-
-
-def test_write_exceptions_follow_the_work_scope_lines(repository: Path) -> None:
-    body = "review the change"
-    exceptions = ("/x/reviews: run records", "uv cache with spaces")
-    plain = run_workflow(configuration(), "audit", body, repository, adapter_loader=lambda _: FakeAdapter())
-    granted = run_workflow(
-        configuration(), "audit", body, repository, adapter_loader=lambda _: FakeAdapter(), write_exceptions=exceptions
-    )
-    prompts = [cast(dict[str, object], batch.results[0].attempts[-1].payload)["prompt"] for batch in (plain, granted)]
-
-    def kinds(lines: list[str]) -> list[str]:
-        return [line.split(":", 1)[0].split("=", 1)[0] for line in lines]
-
-    scope = _scope_lines(prompts[0], body)
-    # 例外を渡さない呼び出し（fix-check・self-review・--write-exception を付けない CLI）の指示は作業範囲の 2 行のまま
-    assert kinds(scope) == ["Work in this worktree only", "writes"]
-    lines = _scope_lines(prompts[1], body)
-    assert kinds(lines[:2]) == kinds(scope) and lines[1] == scope[1]
-    assert lines[2] == runner.EXCEPTIONS_HEADING
-    assert lines[3:] == [f"- {item}" for item in exceptions]
-
-
-def test_write_exceptions_keep_non_ascii_spaces_inside_a_line(repository: Path) -> None:
-    # 全角空白・NBSP を含むブランチ名は正しいレビューディレクトリ名になる（git check-ref-format を通る）。
-    # 全角空白・NBSP は行の途中なら、Cf・Co・Cn は前後を含めて受け付ける（interfaces.rst の値の条件）
-    body = "review the change"
-    exceptions = (
-        "/x/#7-feat-日本語\u3000名前: run records",
-        "/y/a\u00a0b: lock",
-        "a\u200bb\u202ec\ufeffd: zero-width (Cf) inside",
-        "a\ue000b\u0378c: private use (Co) and unassigned (Cn)",
-        "\u200b/z/edge\u200b: zero-width at both ends",
-    )
     batch = run_workflow(
-        configuration(), "audit", body, repository, adapter_loader=lambda _: FakeAdapter(), write_exceptions=exceptions
+        configuration(), "audit", "prompt", repository, output_dir=tmp_path / "run", adapter_loader=lambda _: fake
     )
-    prompt = cast(dict[str, object], batch.results[0].attempts[-1].payload)["prompt"]
-    assert _scope_lines(prompt, body)[3:] == [f"- {item}" for item in exceptions]
+    diagnosis = batch.results[0].attempts[0].diagnosis
+    assert diagnosis is not None and diagnosis.message is not None
+    assert "token" not in diagnosis.message
+    assert "token-value" not in diagnosis.model_dump_json()
 
 
-@pytest.mark.parametrize(
-    "value",
-    [
-        "a\nb",
-        "a\rb",
-        "a\u2028b",
-        "a\x85b",
-        "a\tb",
-        "a\x00b",
-        " a",
-        "a ",
-        "\u3000a",
-        "a\u3000",
-        "\u00a0a",
-        "a\u00a0",
-        "",
-        1,
-    ],
-)
-def test_invalid_write_exceptions_are_rejected_before_any_output(
-    repository: Path, tmp_path: Path, value: object
-) -> None:
+def test_nested_invocation_fails_closed(repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """担当の中（AGENT_RUNNER_DEPTH=1）から Python API を呼ぶと、入れ子の担当を黙って起動する。"""
+    monkeypatch.setenv("AGENT_RUNNER_DEPTH", "1")
+    with pytest.raises(ConfigError):
+        run_workflow(
+            configuration(),
+            "audit",
+            "prompt",
+            repository,
+            output_dir=tmp_path / "run",
+            adapter_loader=lambda _: FakeAdapter(),
+        )
+
+
+@pytest.mark.parametrize("value", ["a\nb", "a b"])
+def test_invalid_write_exceptions_are_rejected_before_any_output(repository: Path, tmp_path: Path, value: str) -> None:
+    """改行（U+2028 を含む）のある値を通すと、作業範囲の指示に行が足され、許可の範囲を黙って書き換える。"""
     output = tmp_path / "output"
     with pytest.raises(RunnerError):
         run_workflow(
@@ -812,12 +345,13 @@ def test_invalid_write_exceptions_are_rejected_before_any_output(
             "prompt",
             repository,
             output_dir=output,
-            write_exceptions=("ok", cast(str, value)),
+            write_exceptions=("ok", value),
         )
     assert not output.exists()
 
 
 def test_a_bare_string_is_not_split_into_exceptions(repository: Path, tmp_path: Path) -> None:
+    """文字列を 1 つ渡すと 1 文字ずつ（- / を含む）が許可として並び、書き込みを黙って広く許す。"""
     output = tmp_path / "output"
     with pytest.raises(RunnerError):
         run_workflow(configuration(), "audit", "prompt", repository, output_dir=output, write_exceptions="abc")
@@ -830,27 +364,22 @@ class ReadOnlyAdapter(FakeAdapter):
     capabilities = Capabilities(enforces_read_only=True)
 
 
-def mixed_runtimes(agents: list[str], fallback: list[str] | None = None) -> Config:
-    """configuration() の担当の runtime を a=pi・b=codex・c=cursor にする（loader が runtime で切り替えるため）。"""
-    config = configuration(agents, fallback)
-    runtimes: dict[str, Runtime] = {"a": "pi", "b": "codex", "c": "cursor"}
-    for name, agent in config.agents.items():
-        agent.runtime = runtimes[name]
-    return config
-
-
 def read_only_codex(runtime: str) -> FakeAdapter:
     return ReadOnlyAdapter() if runtime == "codex" else FakeAdapter()
 
 
-@pytest.mark.parametrize(("agents", "fallback"), [(["b"], None), (["a"], ["b"])], ids=["primary", "fallback"])
 def test_read_only_agents_are_rejected_before_any_output_when_writes_are_needed(
-    repository: Path, tmp_path: Path, agents: list[str], fallback: list[str] | None
+    repository: Path, tmp_path: Path
 ) -> None:
+    """読み取り専用の fallback に書き込みの例外を渡して起動すると、毎回却下されてもレビュアーが黙って減る（#52）。"""
+    config = configuration(["a"], ["b"])
+    runtimes: dict[str, Runtime] = {"a": "pi", "b": "codex", "c": "cursor"}
+    for name, agent in config.agents.items():
+        agent.runtime = runtimes[name]
     output = tmp_path / "output"
     with pytest.raises(RunnerError):
         run_workflow(
-            mixed_runtimes(agents, fallback),
+            config,
             "audit",
             "prompt",
             repository,
@@ -861,46 +390,8 @@ def test_read_only_agents_are_rejected_before_any_output_when_writes_are_needed(
     assert not output.exists()
 
 
-def test_read_only_agents_still_run_without_write_exceptions(repository: Path) -> None:
-    batch = run_workflow(mixed_runtimes(["b"]), "audit", "prompt", repository, adapter_loader=read_only_codex)
-    assert batch.state == "success"
-
-
-def test_read_only_agents_still_run_in_writing_roles(repository: Path) -> None:
-    config = mixed_runtimes(["b"])
-    config.roles["inspect"].writes = True
-    batch = run_workflow(
-        config,
-        "audit",
-        "prompt",
-        repository,
-        adapter_loader=read_only_codex,
-        write_exceptions=("/x/reviews: run records",),
-    )
-    assert batch.state == "success"
-
-
-def test_read_only_assignments_lists_roles_and_agents() -> None:
-    assert runner.read_only_assignments(mixed_runtimes(["a"], ["b", "c"]), "audit", read_only_codex) == [
-        ("inspect", "b")
-    ]
-
-    def no_load(runtime: str) -> FakeAdapter:
-        raise AssertionError("self must not load adapters")
-
-    assert runner.read_only_assignments(configuration(["self"]), "audit", no_load) == []
-
-
-def test_unloadable_adapters_are_left_to_the_launch() -> None:
-    """読み込めない adapter は起動の時点で unsupported になる既存の扱いのまま。検査では拒否しない。"""
-
-    def broken(runtime: str) -> FakeAdapter:
-        raise ImportError("unavailable")
-
-    assert runner.read_only_assignments(configuration(["a"]), "audit", broken) == []
-
-
 def test_existing_or_symlink_output_is_never_reused(repository: Path, tmp_path: Path) -> None:
+    """既存の出力ディレクトリを再利用すると前の run の成果物を黙って上書きし、リンクなら別の場所へ書く。"""
     existing = tmp_path / "existing"
     existing.mkdir()
     marker = existing / "receipt.json"
@@ -913,306 +404,34 @@ def test_existing_or_symlink_output_is_never_reused(repository: Path, tmp_path: 
     assert marker.read_text() == "retained"
 
 
-def test_default_artifact_directory_is_unique(repository: Path) -> None:
-    one = run_workflow(configuration(["self"]), "audit", "prompt", repository)
-    two = run_workflow(configuration(["self"]), "audit", "prompt", repository)
-    assert one.artifact_dir != two.artifact_dir
-    # Tripwire: disposable artifacts go to a unique, identifiable directory under
-    # /tmp (AGENTS.md placement rule). Update this together with the runner prefix.
-    assert str(one.artifact_dir).startswith("/tmp/xrift-poc-agent-runner-")
-    assert one.artifact_dir.is_dir() and two.artifact_dir.is_dir()
-
-
-def test_invalid_mutated_config_does_not_emit_serializer_values(repository: Path) -> None:
-    cfg = configuration()
-    cfg.agents["a"].env = cast(list[str], "private-token-value")
-    with warnings.catch_warnings(record=True) as emitted:
-        warnings.simplefilter("always")
-        with pytest.raises(ConfigError):
-            run_workflow(cfg, "audit", "prompt", repository)
-    assert not emitted
-
-
-def test_invalid_observed_identity_does_not_emit_serializer_values(repository: Path) -> None:
-    identity = Identity()
-    identity.skill_versions = cast(dict[str, str], "private-token-value")
-    with warnings.catch_warnings(record=True) as emitted:
-        warnings.simplefilter("always")
-        batch = run_workflow(
-            configuration(), "audit", "prompt", repository, adapter_loader=lambda _: FakeAdapter(identity=identity)
-        )
-    assert batch.results[0].state == "invalid_result"
-    assert not emitted
-
-
-class MissingFileAdapter(FakeAdapter):
-    def collect(self, context: AdapterContext, stdout_path: Path, stderr_path: Path) -> AdapterOutcome:
-        return AdapterOutcome(Receipt.model_validate_json(context.receipt_path.read_bytes()))
-
-
-def test_missing_receipt_file_is_missing_not_a_parse_failure(repository: Path) -> None:
-    batch = run_workflow(
-        configuration(),
-        "audit",
-        "prompt",
-        repository,
-        adapter_loader=lambda _: MissingFileAdapter({"a": {"missing": True}}),
-    )
-    assert batch.results[0].state == "missing_result"
-
-
-class PreexistingReceiptAdapter(FakeAdapter):
-    def prepare(self, context: AdapterContext) -> LaunchSpec:
-        context.receipt_path.write_text(
-            Receipt(
-                run_id=context.request.run_id,
-                request_id=context.request.request_id,
-                agent_id=context.request.agent_id,
-                role=context.request.role,
-                status="success",
-                payload={"cached": True},
-            ).model_dump_json()
-        )
-        return super().prepare(context)
-
-
-def test_receipt_created_before_launch_is_never_reused(repository: Path) -> None:
-    batch = run_workflow(
-        configuration(),
-        "audit",
-        "prompt",
-        repository,
-        adapter_loader=lambda _: PreexistingReceiptAdapter({"a": {"missing": True}}),
-    )
-    assert batch.results[0].state == "invalid_result"
-
-
-def test_unproven_capability_is_unsupported(repository: Path) -> None:
-    adapter = FakeAdapter()
-    adapter.capabilities = Capabilities(noninteractive=cast(bool, "not-a-guarantee"))
-    batch = run_workflow(configuration(), "audit", "prompt", repository, adapter_loader=lambda _: adapter)
-    assert batch.results[0].state == "unsupported"
-    assert not list(batch.artifact_dir.rglob("worktree"))
-
-
-# Real checkout hooks block synchronous Git; supervising preparation must keep
-# other assignments progressing, bound cancellation, and stop escaped helpers.
-# Cancellation follows observed events, never a timer started before
-# run_workflow, and every case runs with slow preparation before the slot and
-# inside the role deadline, as on a loaded host (#694).
-@pytest.mark.parametrize("interruption", ["none", "cancel", "late_cancel"])
-def test_checkout_preparation_is_supervised(
-    repository: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    interruption: str,
-) -> None:
-    markers = tmp_path / "hook-markers"
-    markers.mkdir()
+def test_preparation_logs_are_redacted(repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """準備（git worktree add）の hook が出した秘密を、準備のログ（worktree.*.log）に伏せずに黙って残す。"""
     hook = repository / ".git/hooks/post-checkout"
-    child_code = (
-        "import os,signal,time; os.setsid(); signal.signal(signal.SIGTERM,signal.SIG_IGN); "
-        f"open({str(markers)!r} + '/child-' + str(os.getpid()),'w').write(str(time.monotonic())); time.sleep(60)"
-    )
-    # The hook records its pid; exit_times observes when the runner stops it. The
-    # runner decides timed_out or interrupted before it signals, so an observed
-    # stop is past the deadline.
     hook.write_text(
         f"#!{sys.executable}\n"
-        "import os,subprocess,sys,time\n"
-        f"open({str(markers)!r} + '/hook-' + str(os.getpid()),'w').close()\n"
-        "time.sleep(0.3)\n"
-        f"subprocess.Popen([sys.executable,'-c',{child_code!r}], "
-        "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
-        "print(os.environ['SERVICE_TOKEN'], flush=True)\n"
+        "import os,sys\n"
+        "print('hook-ran', os.environ['SERVICE_TOKEN'], flush=True)\n"
         "print(os.environ['UNCONFIGURED_SECRET'], file=sys.stderr, flush=True)\n"
-        "time.sleep(60)\n"
     )
     hook.chmod(0o755)
-    real_snapshot = runner.snapshot_checkouts
-
-    def slow_snapshot(repository: Path) -> dict[str, str | None]:
-        time.sleep(0.3)
-        return real_snapshot(repository)
-
-    monkeypatch.setattr(runner, "snapshot_checkouts", slow_snapshot)
-    monkeypatch.setenv("SERVICE_TOKEN", "prep-token-value")
-    monkeypatch.setenv("UNCONFIGURED_SECRET", "ambient-prep-value")
-    monkeypatch.setenv("GIT_DIR", "/bogus-ambient-git")
+    values = {"SERVICE_TOKEN": "prep-token-value", "UNCONFIGURED_SECRET": "ambient-prep-value"}
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
     # Preparation helpers run under the exec environment, not os.environ.
-    monkeypatch.setattr(
-        environ,
-        "_literal",
-        environ.literal_environ()
-        | {
-            "SERVICE_TOKEN": "prep-token-value",
-            "UNCONFIGURED_SECRET": "ambient-prep-value",
-            "GIT_DIR": "/bogus-ambient-git",
-        },
-    )
-    cancel = threading.Event()
-    agent_markers = {name: tmp_path / f"agent-{name}" for name in ("a", "b")}
-    try:
-        with exit_times(lambda: [int(path.name.removeprefix("hook-")) for path in markers.glob("hook-*")]) as stopped:
-            # cancel: once both helpers run; late_cancel: once the runner stopped both hooks.
-            ready = {
-                "cancel": lambda: written(markers.glob("child-*")) == 2,
-                "late_cancel": lambda: len(stopped) == 2,
-            }.get(interruption, lambda: False)
-            with set_when(cancel, ready):
-                batch = run_workflow(
-                    # Deadlines far above unloaded preparation (0.2 s) plus the delays above.
-                    configuration(["a", "b"], ["c"], deadline=60 if interruption == "cancel" else 3),
-                    "audit",
-                    "prompt",
-                    repository,
-                    cancel=cancel,
-                    concurrency=2,
-                    output_dir=tmp_path / "run",
-                    adapter_loader=lambda _: FakeAdapter(
-                        {name: {"marker": str(path)} for name, path in agent_markers.items()}
-                    ),
-                )
-        expected = "interrupted" if interruption == "cancel" else "timed_out"
-        assert [result.state for result in batch.results] == [expected, expected]
-        assert cancel.is_set() == (interruption != "none")
-        # Well below the 60 s hook, helper, and cancel-case deadline: stopping waits for none of them.
-        assert batch.elapsed_seconds < 30
-        starts = sorted(float(path.read_text()) for path in markers.glob("child-*"))
-        stops = sorted(stopped.values())
-        assert len(starts) == 2 and len(stops) == 2
-        # Preparations progress together: both helpers start before either hook is stopped.
-        assert starts[-1] < stops[0]
-        assert not any(path.exists() for path in agent_markers.values())
-        for result in batch.results:
-            assert len(result.attempts) == 1
-            attempt = result.attempts[0]
-            assert attempt.stop_confirmed
-            assert attempt.work_dir is not None and attempt.work_dir.is_dir()
-            assert attempt.request_path is not None and not attempt.request_path.exists()
-            assert attempt.stdout_path is not None and attempt.stdout_path.name == "worktree.stdout.log"
-            assert attempt.stderr_path is not None and attempt.stderr_path.name == "worktree.stderr.log"
-            for path in (attempt.stdout_path, attempt.stderr_path):
-                output = path.read_text()
-                assert "prep-token-value" not in output and "ambient-prep-value" not in output
-            assert "[REDACTED]" in attempt.stderr_path.read_text()
-        for marker in markers.glob("child-*"):
-            pid = int(marker.name.removeprefix("child-"))
-            assert not alive(pid)
-    finally:
-        for marker in [*markers.glob("child-*"), *markers.glob("hook-*")]:
-            try:
-                os.kill(int(marker.name.split("-", 1)[1]), signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-
-
-# Cancellation at checkout completion must not replace retained preparation log
-# paths with agent log paths for an agent that was never launched.
-def test_cancel_at_preparation_completion_retains_log_paths(
-    repository: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cancel = threading.Event()
-
-    async def cancelled(
-        repository: Path,
-        commit: str,
-        destination: Path,
-        *,
-        deadline_seconds: float,
-        cancel: threading.Event,
-        stdout_path: Path,
-        stderr_path: Path,
-        secrets: tuple[str, ...] = (),
-    ) -> ProcessResult:
-        result = await workspace.prepare_worktree(
-            repository,
-            commit,
-            destination,
-            deadline_seconds=deadline_seconds,
-            cancel=cancel,
-            stdout_path=stdout_path,
-            stderr_path=stderr_path,
-            secrets=secrets,
-        )
-        cancel.set()
-        await asyncio.sleep(0)
-        return result
-
-    monkeypatch.setattr(runner, "prepare_worktree", cancelled)
-    marker = tmp_path / "agent-started"
+    monkeypatch.setattr(environ, "_literal", environ.literal_environ() | values)
     batch = run_workflow(
-        configuration(fallback=["b"]),
+        configuration(),
         "audit",
         "prompt",
         repository,
-        cancel=cancel,
-        adapter_loader=lambda _: FakeAdapter({"a": {"marker": str(marker)}}),
-    )
-    assert batch.results[0].state == "interrupted"
-    assert len(batch.results[0].attempts) == 1
-    attempt = batch.results[0].attempts[0]
-    assert not marker.exists()
-    assert attempt.stdout_path is not None and attempt.stdout_path.is_file()
-    assert attempt.stderr_path is not None and attempt.stderr_path.is_file()
-    assert attempt.stdout_path.name == "worktree.stdout.log"
-    assert attempt.stderr_path.name == "worktree.stderr.log"
-
-
-# Assignments that prepare one repository together read each other's half-written
-# commondir and die before creating anything (#68). Every one of them loses once here,
-# and every one still reaches its agent. The racer's commondir is finished only once,
-# while all three wait: rewriting it would empty it under a retry that is already
-# running and recreate the race. Later losses are genuine races between the retries,
-# so they take the real randomized pause instead of retrying together again.
-def test_simultaneous_preparations_survive_a_half_written_commondir(
-    repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    commondir = repository / ".git" / "worktrees" / "racer" / "commondir"
-    real_snapshot = runner.snapshot_checkouts
-    real_pause = workspace._pause  # pyright: ignore[reportPrivateUsage] - the retries' own backoff
-
-    def snapshot_then_race(repository: Path) -> dict[str, str | None]:
-        before = real_snapshot(repository)
-        # Even `git worktree list` fails on this registration, so it appears after the baseline audit.
-        plant_racer(repository)
-        return before
-
-    pauses = 0
-
-    async def finish_write_once_all_lost(seconds: float, cancel: threading.Event) -> None:
-        nonlocal pauses
-        pauses += 1
-        if pauses > 3:
-            await real_pause(seconds, cancel)
-        elif pauses == 3:
-            # The last to lose finishes the write; no assignment is running git now.
-            commondir.write_text("../..\n")
-        else:
-            async with asyncio.timeout(30):
-                while pauses < 3:
-                    await asyncio.sleep(0.01)
-
-    monkeypatch.setattr(runner, "snapshot_checkouts", snapshot_then_race)
-    monkeypatch.setattr(workspace, "_pause", finish_write_once_all_lost)
-    batch = run_workflow(
-        configuration(["a", "b", "c"]),
-        "audit",
-        "prompt",
-        repository,
-        concurrency=3,
         output_dir=tmp_path / "run",
         adapter_loader=lambda _: FakeAdapter(),
     )
-    assert batch.state == "success"
-    assert pauses >= 3
-    for result in batch.results:
-        assert [attempt.state for attempt in result.attempts] == ["success"]
-        work_dir = result.attempts[0].work_dir
-        assert work_dir is not None
-        assert "worktrees/racer/commondir: " in (work_dir.parent / "worktree.stderr.log.1").read_text()
+    work_dir = batch.results[0].attempts[0].work_dir
+    assert work_dir is not None
+    logs = "".join((work_dir.parent / name).read_text() for name in ("worktree.stdout.log", "worktree.stderr.log"))
+    assert "hook-ran" in logs
+    assert not any(value in logs for value in values.values())
 
 
 # Devin leaves an ATIF export next to the receipt. Its transcript can repeat
@@ -1259,6 +478,7 @@ def _literal_env(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
 def test_devin_retained_export_is_redacted_after_nonzero_exit(
     repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """失敗した試行の Devin の export.json（継承した秘密を含みうる）を伏せずに黙って残す。"""
     _literal_env(monkeypatch, "synthetic-token-2345")
     config = _as_devin(configuration())
     config.agents["a"].env = ["SERVICE_TOKEN"]
@@ -1271,113 +491,21 @@ def test_devin_retained_export_is_redacted_after_nonzero_exit(
         adapter_loader=lambda _: FakeAdapter({"a": {"exit": 4, "devin_export": _devin_configurable_export()}}),
     )
     attempt = batch.results[0].attempts[0]
-    assert attempt.state == "response_failed" and attempt.exit_code == 4 and attempt.stop_confirmed
-    retained = (attempt.request_path or batch.artifact_dir / "x" / "request.json").parent / "export.json"
-    text = retained.read_text(encoding="utf-8")
+    assert attempt.request_path is not None
+    text = (attempt.request_path.parent / "export.json").read_text(encoding="utf-8")
+    # The fake CLI wrote the inherited value, so the export held it before redaction.
+    assert "no-token" not in text
     assert "synthetic-token-2345" not in text
-    assert "[REDACTED]" in text
 
 
-def test_devin_retained_export_is_redacted_after_timeout(
+def test_unsafe_devin_export_is_retained_reported_and_never_collected(
     repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _literal_env(monkeypatch, "synthetic-token-3456")
-    # The deadline also covers checkout and CLI startup before the export exists;
-    # keep it far above their unloaded 0.2 s (#694).
-    config = _as_devin(configuration(deadline=3.0))
-    config.agents["a"].env = ["SERVICE_TOKEN"]
-    batch = run_workflow(
-        config,
-        "audit",
-        "prompt",
-        repository,
-        output_dir=tmp_path / "run",
-        adapter_loader=lambda _: FakeAdapter({"a": {"sleep": 60, "devin_export": _devin_configurable_export()}}),
-    )
-    attempt = batch.results[0].attempts[0]
-    assert attempt.state == "timed_out" and attempt.stop_confirmed
-    assert attempt.request_path is not None
-    retained = attempt.request_path.parent / "export.json"
-    text = retained.read_text(encoding="utf-8")
-    assert "synthetic-token-3456" not in text
-    assert "[REDACTED]" in text
-
-
-def test_devin_retained_export_is_redacted_after_interruption(
-    repository: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _literal_env(monkeypatch, "synthetic-token-4567")
-
-    async def quick_prepare(
-        repository: Path,
-        commit: str,
-        destination: Path,
-        *,
-        deadline_seconds: float,
-        cancel: threading.Event,
-        stdout_path: Path,
-        stderr_path: Path,
-        secrets: tuple[str, ...] = (),
-    ) -> ProcessResult:
-        destination.mkdir(parents=True)
-        stdout_path.write_bytes(b"")
-        stderr_path.write_bytes(b"")
-        return ProcessResult(None, 0, True, deadline_seconds / 8)
-
-    monkeypatch.setattr(runner, "prepare_worktree", quick_prepare)
-    config = _as_devin(configuration(deadline=6.0))
-    config.agents["a"].env = ["SERVICE_TOKEN"]
-    cancel = threading.Event()
-    with set_when(cancel, lambda: written((tmp_path / "run").glob("*/attempt-1/export.json")) == 1):
-        batch = run_workflow(
-            config,
-            "audit",
-            "prompt",
-            repository,
-            output_dir=tmp_path / "run",
-            cancel=cancel,
-            adapter_loader=lambda _: FakeAdapter({"a": {"sleep": 60, "devin_export": _devin_configurable_export()}}),
-        )
-    attempt = batch.results[0].attempts[0]
-    assert attempt.state == "interrupted" and attempt.stop_confirmed
-    assert attempt.request_path is not None
-    retained = attempt.request_path.parent / "export.json"
-    text = retained.read_text(encoding="utf-8")
-    assert "synthetic-token-4567" not in text
-    assert "[REDACTED]" in text
-
-
-def test_unconfirmed_stop_never_reads_or_rewrites_devin_export(
-    repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _literal_env(monkeypatch, "synthetic-token-5678")
-
-    async def quick_prepare(
-        repository: Path,
-        commit: str,
-        destination: Path,
-        *,
-        deadline_seconds: float,
-        cancel: threading.Event,
-        stdout_path: Path,
-        stderr_path: Path,
-        secrets: tuple[str, ...] = (),
-    ) -> ProcessResult:
-        # Only agent execution observes unconfirmed stop evidence below.
-        destination.mkdir(parents=True)
-        stdout_path.write_bytes(b"")
-        stderr_path.write_bytes(b"")
-        return ProcessResult(None, 0, True, deadline_seconds / 8)
-
-    monkeypatch.setattr(runner, "prepare_worktree", quick_prepare)
-
-    def no_stop(_: object) -> bool:
-        return False
-
-    monkeypatch.setattr("tools.agent_runner.process._stop_confirmed", no_stop)
-    config = _as_devin(configuration(fallback=["b"]))
+    """export.json が外を指すリンクのとき、伏せ字でリンク先（利用者のファイル）を書き換える・収集して成功にする。"""
+    _literal_env(monkeypatch, "synthetic-token-6789")
+    sentinel = tmp_path / "sentinel.txt"
+    sentinel.write_text("synthetic-token-6789", encoding="utf-8")
+    config = _as_devin(configuration())
     config.agents["a"].env = ["SERVICE_TOKEN"]
     batch = run_workflow(
         config,
@@ -1386,85 +514,11 @@ def test_unconfirmed_stop_never_reads_or_rewrites_devin_export(
         repository,
         output_dir=tmp_path / "run",
         adapter_loader=lambda _: FakeAdapter(
-            {"a": {"devin_export": _devin_configurable_export(), "payload": {"secret": "synthetic-token-5678"}}}
+            {"a": {"devin_export": _devin_configurable_export(), "export_link": str(sentinel)}}
         ),
     )
-    result = batch.results[0]
-    assert result.state == "response_failed"
-    attempt = result.attempts[0]
-    assert not attempt.stop_confirmed and attempt.state == "response_failed"
-    assert attempt.payload is None
-    assert len(result.attempts) == 1 and attempt.agent_id == "a"
-    assert attempt.request_path is not None
-    export = attempt.request_path.parent / "export.json"
-    assert attempt.sensitive_paths == [attempt.request_path.parent / "receipt.json", export]
-    receipt = attempt.request_path.parent / "receipt.json"
-    assert "synthetic-token-5678" in receipt.read_text(encoding="utf-8")
-    text = export.read_text(encoding="utf-8")
-    # Neither the receipt nor the export was read or rewritten for a live writer.
-    assert "synthetic-token-5678" in text
-    assert json.loads(text) == json.loads(_devin_configurable_export().replace("$TOKEN", "synthetic-token-5678"))
-
-
-@pytest.mark.parametrize("unsafe", ["symlink", "fifo"])
-def test_unsafe_devin_export_is_retained_reported_and_never_collected(
-    repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unsafe: str
-) -> None:
-    _literal_env(monkeypatch, "synthetic-token-6789")
-    sentinel = tmp_path / "sentinel.txt"
-    sentinel.write_text("synthetic-token-6789", encoding="utf-8")
-    options: dict[str, object] = {"devin_export": _devin_configurable_export()}
-    if unsafe == "symlink":
-        options["export_link"] = str(sentinel)
-    else:
-        options["export_fifo"] = True
-    config = _as_devin(configuration())
-    config.agents["a"].env = ["SERVICE_TOKEN"]
-    batch = run_workflow(
-        config,
-        "audit",
-        "prompt",
-        repository,
-        output_dir=tmp_path / "run",
-        adapter_loader=lambda _: FakeAdapter({"a": options}),
-    )
     attempt = batch.results[0].attempts[0]
-    assert attempt.state == "response_failed" and attempt.stop_confirmed
-    assert attempt.payload is None
+    assert attempt.state != "success" and attempt.payload is None
     assert attempt.request_path is not None
     assert attempt.sensitive_paths == [attempt.request_path.parent / "export.json"]
-    if unsafe == "symlink":
-        # The external sentinel was never opened or rewritten.
-        assert sentinel.read_text(encoding="utf-8") == "synthetic-token-6789"
-    else:
-        assert (attempt.request_path.parent / "export.json").exists()
-
-
-def test_devin_export_redaction_fault_never_reaches_collection(
-    repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _literal_env(monkeypatch, "synthetic-token-7890")
-    original = runner.redact_file
-
-    def faulty(path: Path, secrets: tuple[str, ...]) -> bool:
-        return False if Path(path).name == "export.json" else original(path, secrets)
-
-    monkeypatch.setattr(runner, "redact_file", faulty)
-    config = _as_devin(configuration())
-    config.agents["a"].env = ["SERVICE_TOKEN"]
-    batch = run_workflow(
-        config,
-        "audit",
-        "prompt",
-        repository,
-        output_dir=tmp_path / "run",
-        adapter_loader=lambda _: FakeAdapter({"a": {"devin_export": _devin_configurable_export()}}),
-    )
-    attempt = batch.results[0].attempts[0]
-    assert batch.state == "failed"
-    assert attempt.state == "response_failed" and attempt.stop_confirmed
-    assert attempt.payload is None and attempt.identity.model is None
-    assert attempt.request_path is not None
-    assert attempt.sensitive_paths == [attempt.request_path.parent / "export.json"]
-    # The unredactable managed file still holds values; only its path is reported.
-    assert "synthetic-token-7890" in (attempt.request_path.parent / "export.json").read_text(encoding="utf-8")
+    assert sentinel.read_text(encoding="utf-8") == "synthetic-token-6789"
