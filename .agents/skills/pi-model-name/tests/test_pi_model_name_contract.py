@@ -27,8 +27,6 @@ def test_frontmatter() -> None:
 
 def run_script(args: list[str], env_extra: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
-    # DSH_SHELL はこのテスト自身が DSH 配下で走るときに継承される。ランタイム
-    # ごとの分岐を固定するため、pi / DSH のどちらの変数も明示された分だけにする。
     for key in (
         "PI_PROVIDER",
         "PI_MODEL",
@@ -36,12 +34,6 @@ def run_script(args: list[str], env_extra: dict[str, str] | None = None) -> subp
         "PI_SESSION_FILE",
         "PI_SUBAGENT_SESSION",
         "PI_REASONING_LEVEL",
-        "DSH_SHELL",
-        "DSH_PROVIDER",
-        "DSH_MODEL",
-        "DSH_REASONING_EFFORT",
-        "DSH_SESSION_ID",
-        "DSH_PROFILE",
     ):
         env.pop(key, None)
     if env_extra:
@@ -53,17 +45,6 @@ def run_script(args: list[str], env_extra: dict[str, str] | None = None) -> subp
         env=env,
         check=False,
     )
-
-
-def dsh_env(**extra: str) -> dict[str, str]:
-    return {
-        "DSH_SHELL": "1",
-        "DSH_PROVIDER": "opencode-go",
-        "DSH_MODEL": "deepseek-v4.1-flash",
-        "DSH_SESSION_ID": "dsh-session",
-        "DSH_REASONING_EFFORT": "max",
-        **extra,
-    }
 
 
 def test_prints_runtime_model() -> None:
@@ -97,88 +78,6 @@ def test_strict_fails_closed_without_runtime() -> None:
     assert proc.returncode == 2
     assert "PI_PROVIDER/PI_MODEL" in proc.stderr
     assert "session" in proc.stderr.lower() or "history" in proc.stderr.lower()
-
-
-def test_dsh_runtime_prints_provider_and_model() -> None:
-    proc = run_script([], dsh_env())
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout == "opencode-go/deepseek-v4.1-flash\n"
-    assert proc.stderr == ""
-
-
-@pytest.mark.parametrize(
-    "flag,expected",
-    [("--model", "deepseek-v4.1-flash\n"), ("--provider", "opencode-go\n")],
-)
-def test_dsh_runtime_partial_flags(flag: str, expected: str) -> None:
-    proc = run_script([flag], dsh_env())
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout == expected
-
-
-def test_dsh_json_provenance_and_key_set() -> None:
-    proc = run_script(["--json"], dsh_env())
-    assert proc.returncode == 0, proc.stderr
-    payload = json.loads(proc.stdout)
-    assert payload["provenance"] == "dsh-runtime"
-    assert payload["ok"] is True
-    assert (payload["provider"], payload["model"]) == ("opencode-go", "deepseek-v4.1-flash")
-    assert payload["session_file"] is None
-    assert payload["conflicts"] == []
-    pi_payload = json.loads(
-        run_script(["--json"], {"PI_PROVIDER": "opencode-go", "PI_MODEL": "deepseek-v4.1-flash"}).stdout
-    )
-    assert set(payload) == set(pi_payload)
-
-
-def test_dsh_session_mode_reports_session_facts() -> None:
-    proc = run_script(["--session"], dsh_env())
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout == (
-        "provider=opencode-go\nmodel=deepseek-v4.1-flash\nsession_id=dsh-session\nsession_file=\nreasoning=max\n"
-    )
-
-
-def test_pi_runtime_wins_over_dsh_facts() -> None:
-    proc = run_script([], dsh_env(PI_PROVIDER="commandcode", PI_MODEL="deepseek/deepseek-v4.1-flash"))
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout == "commandcode/deepseek/deepseek-v4.1-flash\n"
-
-
-@pytest.mark.parametrize(
-    "facts",
-    [{"DSH_SHELL": "1"}, {"DSH_SHELL": "1", "DSH_PROVIDER": "opencode-go"}, {"DSH_SHELL": "1", "DSH_MODEL": "m"}],
-)
-def test_dsh_without_complete_facts_fails_closed(facts: dict[str, str]) -> None:
-    proc = run_script([], facts)
-    assert proc.returncode == 2
-    assert proc.stdout == ""
-    assert "DSH_PROVIDER/DSH_MODEL" in proc.stderr
-    assert "history" in proc.stderr.lower()
-
-
-def test_dsh_rejects_explicit_session_file(tmp_path: Path) -> None:
-    session = write_session(tmp_path / "sess.jsonl", [model_change("m1", None)])
-    proc = run_script(["--session-file", str(session)], dsh_env())
-    assert proc.returncode == 2
-    assert proc.stdout == ""
-    assert "--session-file applies to pi sessions only" in proc.stderr
-
-
-def test_dsh_does_not_use_session_history_without_flag(tmp_path: Path) -> None:
-    session = write_session(tmp_path / "sess.jsonl", [model_change("m1", None, model="model-b")])
-    proc = run_script([], {"DSH_SHELL": "1", "PI_SESSION_FILE": str(session)})
-    assert proc.returncode == 2
-    assert proc.stdout == ""
-    assert "DSH_PROVIDER/DSH_MODEL" in proc.stderr
-
-
-def test_dsh_keeps_history_informational_path_behind_the_flag(tmp_path: Path) -> None:
-    session = write_session(tmp_path / "sess.jsonl", [model_change("m1", None, model="model-b")])
-    proc = run_script(["--allow-session-history", "--model"], {"DSH_SHELL": "1", "PI_SESSION_FILE": str(session)})
-    assert proc.returncode == 0
-    assert proc.stdout == "model-b\n"
-    assert proc.stderr.splitlines() == ["provenance=session-history (informational only, NOT formal MODEL_NAME)"]
 
 
 def test_history_allowed_only_with_flag(tmp_path: Path) -> None:

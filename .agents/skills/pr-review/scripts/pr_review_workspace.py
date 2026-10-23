@@ -241,12 +241,6 @@ def add_detached_worktree(repo: Path, worktree: Path, commit: str) -> None:
         wait_before_retry(random.uniform(0.05, 0.2))
 
 
-def init_temporary_repository(cwd: Path, path: Path) -> None:
-    """自分で作って消す一時のリポジトリを作り、以後の操作で自動 maintenance を起動させない（#64）。"""
-    git(cwd, "init", "--quiet", str(path))
-    git(path, "config", *load_review_target().NO_AUTO_MAINTENANCE)
-
-
 def git_path(repo: Path, argument: str) -> Path:
     value = Path(str(git(repo, "rev-parse", argument)))
     if not value.is_absolute():
@@ -526,8 +520,7 @@ def create_from_target(args: argparse.Namespace, target_value: str) -> dict[str,
     artifact_model(model_name, review_commit)
     commit = review_commit or pr_head
     review_directory_name(number, head_branch)
-    parent_input = getattr(args, "parent_input", None)
-    source_root = None if parent_input is not None else (getattr(args, "source_root", None) or target["target_root"])
+    source_root = getattr(args, "source_root", None) or target["target_root"]
     checkout = require_target_checkout(Path(str(source_root)), repository) if source_root else None
     if checkout is not None and review_commit is not None:
         require_review_commit(checkout, commit)
@@ -550,44 +543,10 @@ def create_from_target(args: argparse.Namespace, target_value: str) -> dict[str,
             repository=repository,
             review_commit=review_commit,
         )
-        private_clone = bool(getattr(args, "private_clone", False))
-        if checkout is None or private_clone:
+        if checkout is None:
             source = session_dir / "repo"
             with target_errors() as review_target:
-                if parent_input is not None:
-                    init_temporary_repository(parent, source)
-                    git(source, "remote", "add", "origin", clone.clone_url)
-                    git(
-                        source,
-                        "fetch",
-                        "--quiet",
-                        "--no-write-fetch-head",
-                        parent_input["bundle"],
-                        f"+refs/pr-review/{number}:refs/pr-review/{number}",
-                        "+refs/pr-review-parent/base:refs/pr-review-parent/base",
-                        "+refs/pr-review-parent/commit:refs/pr-review-parent/commit",
-                    )
-                    if pinned_ref_commit(source, f"refs/pr-review/{number}") != pr_head:
-                        raise WorkspaceError("parent bundle PR HEAD does not match its metadata")
-                elif checkout is None:
-                    review_target.clone_repository(clone, source, checkout_branch=False)
-                else:
-                    # Copy objects through upload-pack, never hardlink shared Git metadata.
-                    git(
-                        checkout,
-                        "clone",
-                        "--quiet",
-                        "--config",
-                        "=".join(review_target.NO_AUTO_MAINTENANCE),
-                        "--no-local",
-                        "--no-checkout",
-                        str(checkout),
-                        str(source),
-                    )
-                    git(source, "remote", "set-url", "origin", clone.clone_url)
-                    review_target.fetch_pull_head(source, number, pr_head)
-                    if review_commit is not None:
-                        git(source, "fetch", "--quiet", "--no-write-fetch-head", str(checkout), review_commit)
+                review_target.clone_repository(clone, source, checkout_branch=False)
             require_review_commit(source, commit)
             add_detached_worktree(source, worktree, commit)
         else:
@@ -598,7 +557,7 @@ def create_from_target(args: argparse.Namespace, target_value: str) -> dict[str,
             add_detached_worktree(source, worktree, commit)
             if snapshot(source) != before:
                 raise WorkspaceError("creating the review worktree changed the target checkout")
-        if parent_input is None and current_pr_head(repository, number) != pr_head:
+        if current_pr_head(repository, number) != pr_head:
             raise WorkspaceError("PR head changed after fetch; resolve again without saving")
         require_created_worktree(worktree, commit)
         state_file = session_dir / "session.json"
@@ -608,7 +567,7 @@ def create_from_target(args: argparse.Namespace, target_value: str) -> dict[str,
                 "version": STATE_VERSION_TARGET,
                 "parent_root": str(parent),
                 "target_root": str(source.resolve(strict=True)),
-                "target_kind": "clone" if checkout is None or private_clone else "checkout",
+                "target_kind": "clone" if checkout is None else "checkout",
                 "pr_repo": repository,
                 "worktree": str(worktree.resolve(strict=True)),
                 "backup_dir": str(backup_dir.resolve(strict=True)),

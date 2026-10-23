@@ -11,13 +11,13 @@ from typing import Any
 
 import pytest
 
-# テスト用の雛形（conftest の TEST_TEMPLATE）に、runtime が dsh の担当 delta を足す個人設定
-DSH_AGENT = """
+COPY_AGENT = """
 [agents.delta]
-runtime = "dsh"
+runtime = "pi"
 command = ["fake-delta"]
 model = "delta-model"
 """
+# 個人設定にだけある担当を、既定の割り当てとは別に使う。
 # runtime が codex の担当。名前ではなく runtime（adapter の宣言）で止まることを確かめるため、別名にする（#52）
 CODEX_AGENT = """
 [agents.gpt-review]
@@ -117,7 +117,6 @@ def without_fix_check(template: Path, root: Path) -> Path:
         pytest.param(
             {"assign": ["implement=alpha,beta"]}, ["--assign", "implement=alpha,beta"], id="two-implementers"
         ),
-        pytest.param({"assign": ["self-review=delta"]}, ["--assign", "self-review=delta"], id="dsh-self-review"),
         pytest.param({"template": "no-fix-check"}, [], id="missing-fix-check"),
         pytest.param(
             {"assign": ["inspect=alpha,gpt-review"]}, ["--assign", "inspect=alpha,gpt-review"], id="codex-inspect"
@@ -138,7 +137,7 @@ def test_check_options_rejects_what_start_rejects_with_the_same_reason(
     cli: list[str],
 ) -> None:
     personal = tmp_path / "personal.toml"
-    personal.write_text(DSH_AGENT + CODEX_AGENT + start_options.pop("personal", ""), encoding="utf-8")
+    personal.write_text(CODEX_AGENT + start_options.pop("personal", ""), encoding="utf-8")
     template = isolated.template
     if start_options.get("template") == "no-fix-check":
         template = without_fix_check(template, tmp_path)
@@ -205,7 +204,7 @@ def test_check_options_reads_the_personal_config_when_not_given(
 ) -> None:
     """--config が無いときは、start と同じく既存の個人設定を重ねる（個人設定だけにある担当を使える）。"""
     personal = tmp_path / "personal.toml"
-    personal.write_text(DSH_AGENT, encoding="utf-8")
+    personal.write_text(COPY_AGENT, encoding="utf-8")
     monkeypatch.setenv("AGENT_RUNNER_CONFIG", str(personal))
 
     code, output = check_options(loop, capsys, "--assign", "implement=delta", "--template", str(isolated.template))

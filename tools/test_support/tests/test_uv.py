@@ -113,7 +113,7 @@ def test_uv_no_sync_reproduces_cm1_with_project_environment_set(
 ) -> None:
     """`UV_PROJECT_ENVIRONMENT` が別の venv を指していても C-M1 を再現する（#81）。
 
-    DSH の adapter は隔離した HOME の venv を `UV_PROJECT_ENVIRONMENT` に設定する。
+    外側の実行環境が別の venv を `UV_PROJECT_ENVIRONMENT` に設定する。
     そこに `pytest` があると、venv の無い worktree の `uv run --no-sync pytest` が成功してしまっていた。
     """
     env = create_env_repo(tmp_path / "repo")

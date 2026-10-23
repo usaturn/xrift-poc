@@ -17,8 +17,6 @@ reviews/<owner>/<repo>/#<PR>-<ブランチ>/
         ├── cycle-<n>.json          # サイクルごとの記録
         └── cycle-<n>/
             ├── comments.json       # レビュアーに渡した PR の全コメント（gh api --paginate --slurp の出力）
-            ├── parent-pr-data/     # レビュアーに DSH がいるときだけ。DSH のレビュアーに渡す入力（snapshot.json・objects.bundle）
-            ├── rerun-parent-pr-data/  # 再実行のレビュアーに DSH がいるときだけ。再実行で渡す入力
             ├── review-result.json  # runner の結果（BatchResult）の写し
             ├── rerun-result.json   # 再実行したときだけ。再実行の runner の結果の写し
             ├── probe-result.json   # 短い確認を起動したときだけ。確認の runner の結果の写し
@@ -28,7 +26,6 @@ reviews/<owner>/<repo>/#<PR>-<ブランチ>/
 ```
 
 - レビューディレクトリの直下には `<model>.md` 以外のファイルを置かない（`.agents/review-findings.md` 2 章）。`loop/` はサブディレクトリである。
-- `parent-pr-data/`・`rerun-parent-pr-data/` は、helper が `review_run.py` の `prepare_parent` で作り、DSH のレビュアーは `Request.prompt` の `parent_pr_data`（path と SHA-256）で受け取る。DSH の sandbox はホストの `/tmp` を隠すので、`/tmp` には置けない。そのレビュー（1 回目か再実行）が確定し（runner の結果の保存・`finalize_parent_batch` による確定・後処理・検査・runner の出力の回収）、受け付けたレビュアーがいて、DSH の試行がどれも受け付けた結果の最後の試行なら、helper が消す（`settle_parent_input`）。それ以外（DSH の試行の失敗・却下、受け付けたレビュアーが無い、確定する前の停止）は、そのレビュアーに渡した証拠として残す。検査まで進んだレビューでは、残したパスを `review.cleanup.retained`（再実行は `review.rerun.cleanup.retained`）に載せる。`finish`・`recover` は、記録ではなくサイクルのディレクトリにいま残っているものを調べ、その完全パスを出力の `retained` に載せる（6 章）。後処理の失敗や中断で記録に載らなかった入力も含み、消えた入力は載せない。残ったものを消す時点は AGENTS.md の「コミットしないファイルの置き場所」に従う
 - runner の worktree と出力は、`${TMPDIR:-/tmp}/xrift-poc-pr-loop-XXXXXX/cycle-<n>-review/`（短い確認は `cycle-<n>-probe/`）に一意に作る。停止を確認した後に helper が回収する（`run.json` の `resources`）。
 
 ## 2. ロック（`lock.json`）
@@ -85,13 +82,13 @@ reviews/<owner>/<repo>/#<PR>-<ブランチ>/
 | `review.probe`・`review.rerun.probe` | その runner の実行の後に短い確認を起動したときだけ。`agents`（確認した実担当）、`output_dir`・`started_at`・`ended_at`（null の間は未完了）・`seconds`・`batch`（確認の runner の run ID・state・`result_file`・`outside_changes`）・`cleanup` |
 | `review.reused[]` | 再利用した成果 2 件のパスと SHA-256、`model`・`runtime`・`reviewed_head`・`active_findings` |
 | `review.batch` | runner の run ID・state・assignments・`result_file`（写し）・`outside_changes` |
-| `review.runner_run_id`・`review.rerun.runner_run_id` | runner が結果を返した直後（親の確定の前）に記録する runner の run ID。`batch.run_id` と同じ値で、後処理の失敗や中断で `batch` を記録できなかったレビューでも、`.staging/` のセッションを引くのに使う（6 章）。この欄より前の記録には無い |
-| `review.output_dir`・`comments_file`・`started_at`・`ended_at`・`seconds`・`cleanup` | レビューの実行と回収。`cleanup` は `{"state", "retained"}` で、`retained` は回収で残した runner の出力と、残した `parent-pr-data`（1 章）。何も残さなければ `state` は `removed`、残せば `retained` |
+| `review.runner_run_id`・`review.rerun.runner_run_id` | 過去の記録を読むための optional の欄。新しいレビューでは書かず、読取り・再保存で元の値を保つ |
+| `review.output_dir`・`comments_file`・`started_at`・`ended_at`・`seconds`・`cleanup` | レビューの実行と回収。`cleanup` は `{"state", "retained"}` で、`retained` は回収で残した runner の出力。過去に記録したパスも保持する。何も残さなければ `state` は `removed`、残せば `retained` |
 | `planning` | `round`・`comment_id`・`posted`、`outcome`・`commit`・`stop_reason`・`merged`、判断の件数（`state` 別・`change` 別）、`planning_file`・`verified_file` とその SHA-256、`finalize`（結果の内容・`result_file`・`round_dir`）、`role_runs[]`（`run_roles.py` の出力ごとの実際の担当と状態）、`ended_at` |
 
 レビュー・確認・判断の中身は写さない。参考データ（`.agents/review-findings.md` の識別情報・時間）は、パスで参照する成果の側にある。
 
-`attempts[].diagnosis` は runner の試行の結果の `diagnosis`（`tools/agent_runner/interfaces.rst` の「診断の要約」）の写しで、runner が伏せ字にしてから文字列を 200 文字に切ったものである。終わり方（`ending`）・provider の code と HTTP status・message の先頭・ステップとツールの呼び出しの数・最後のイベント・最後の入力 token の数・ランタイムの記録の最後の記録の種類と時刻・stderr が認証や承認の語に当たったか、だけを持つ。stdout・stderr の本文は写さない。DSH 以外のランタイム、停止を確認できない試行、起動の前に終わった試行では null。記録だけで見分けたい型と、記録に出る形の目安は次のとおり。
+`attempts[].diagnosis` は runner の試行の結果の `diagnosis`（`tools/agent_runner/interfaces.rst` の「診断の要約」）の写しで、runner が伏せ字にしてから文字列を 200 文字に切ったものである。終わり方（`ending`）・provider の code と HTTP status・message の先頭・ステップとツールの呼び出しの数・最後のイベント・最後の入力 token の数・ランタイムの記録の最後の記録の種類と時刻・stderr が認証や承認の語に当たったか、だけを持つ。stdout・stderr の本文は写さない。診断を返せない adapter、停止を確認できない試行、起動の前に終わった試行では null。記録だけで見分けたい型と、記録に出る形の目安は次のとおり。
 
 | 型 | 記録に出る形 |
 | --- | --- |
@@ -134,24 +131,22 @@ reviews/<owner>/<repo>/#<PR>-<ブランチ>/
 
 | キー | 値 |
 | --- | --- |
-| `retained` | 1 回目と再実行と各確認の回収で残したパス（`review.cleanup.retained`・`review.rerun.cleanup.retained`・`review.probe.cleanup.retained`・`review.rerun.probe.cleanup.retained`。runner の出力と、残した `parent-pr-data`）と、全試行のレビュアーが報告した `retained_paths`（現在の `review.reviewers` と、再実行で置き換えた `review.rerun.replaced`）。順序を保って重複を除く |
+| `retained` | 1 回目と再実行と各確認の回収で残したパス（`review.cleanup.retained`・`review.rerun.cleanup.retained`・`review.probe.cleanup.retained`・`review.rerun.probe.cleanup.retained`。過去に記録したパスも含む）と、全試行のレビュアーが報告した `retained_paths`（現在の `review.reviewers` と、再実行で置き換えた `review.rerun.replaced`）。順序を保って重複を除く |
 | `outside_changes` | 1 回目と再実行と各確認の runner の結果の `outside_changes`。順序を保って重複を除く |
 
 `finish`・`status` の `cycles[]` の各要素にも、同じ集約の `outside_changes` がある。`cycles[].reviewers[]` は `agent`・`verdict`・`reason`・`rejected_stage`・`attempts`・`probe` を持つ。`review` の出力の `accepted`・`rejected` の各要素も `attempts`・`probe` を持つ。
 
-`finish`・`recover` の出力の `retained` は、loop が記録した runner の出力（`run.json` の `resources`）のうち残したものと、サイクルのディレクトリにいま残っている `parent-pr-data`・`rerun-parent-pr-data`（1 章）である。`status` は `retained` を返さない。レビュアーの pr-review が残したパスは、別のキー `reviewer_retained`（`finish`・`status`・`recover`）に置く。レビュアーが payload の `retained_paths` で報告したパスと、loop が `.staging/` の下に見つけた DSH のセッション（下の箇条書き）である。loop はこれを所有せず、回収しない（`recover` も消さない）。
+`finish`・`recover` の出力の `retained` は、loop が記録した runner の出力（`run.json` の `resources`）のうち残したものと、各サイクルの `cleanup.retained` に記録したパスである。過去に記録した値もそのまま読み、再保存・報告する。パスの探索や削除はしない。`status` は `retained` を返さない。レビュアーが payload の `retained_paths` で報告したパスは、別のキー `reviewer_retained`（`finish`・`status`・`recover`）に置く。loop はこれを所有せず、回収しない（`recover` も消さない）。
 
 | キー | 値 |
 | --- | --- |
-| `reviewer_retained[].path` | pr-review が `retained_paths` で報告した値（worktree・draft・session・pr_ref）か、loop が `.staging/` の下に見つけた項目の完全パス。パスごとに 1 要素で、並びはサイクルの順に、そのサイクルで報告された順、見つけた順（1 回目・再実行の順に名前の順） |
-| `reviewer_retained[].observed` | 観測。`[{"cycle", "agent", "attempt", "source"}]`。`source` は `payload`（レビュアーが `retained_paths` で報告した。`agent` は報告した試行の実担当）か `staging`（loop が `.staging/` の下に見つけた。`agent` は `<agent>` のディレクトリの名前で、それより上の階層の項目では null）。`attempt` は `first`（1 回目。再実行で置き換えた記録を含む）か `rerun`（再実行）。再実行待ちの記録（`reviewers` と `rerun.replaced` に同じ記録がある）は 1 回だけ数える。報告されたパスは、`.staging/` の下で見つけても `staging` の観測を足さない |
+| `reviewer_retained[].path` | pr-review が `retained_paths` で報告した値（worktree・draft・session・pr_ref）。パスごとに 1 要素で、並びはサイクルの順に、そのサイクルで報告された順 |
+| `reviewer_retained[].observed` | 観測。`[{"cycle", "agent", "attempt", "source"}]`。`source` は `payload`（レビュアーが `retained_paths` で報告した。`agent` は報告した試行の実担当）。`attempt` は `first`（1 回目。再実行で置き換えた記録を含む）か `rerun`（再実行）。再実行待ちの記録（`reviewers` と `rerun.replaced` に同じ記録がある）は 1 回だけ数える |
 | `reviewer_retained[].exists` | 出力を作った時点の `lstat` の結果（`true`・`false`）。調べられない、または絶対パスでない値（`pr_ref` の ref 名など）は `null` |
 | `reviewer_retained[].registered` | 出力を作った時点で、tool_root の checkout に worktree として登録されているか（`git worktree list`）。別のリポジトリ（private clone など）の登録は見ない。照合できない、または絶対パスでない値は `null` |
 
 - `retained_paths` は、停止を確認した試行の payload からだけ記録する（停止を確認できない試行の payload は読まない）。`finish` は停止を確認できない runner の資源が無いと確かめた後（終了コード 7 にならなかったとき）に状態を見る
 - 状態を見るときは、パスの中身を読まず、消さない。pr-review は途中で後片付けを済ませたパスも報告しうるので、`exists: false` もありうる
-- `.staging/` の下の DSH のセッション: DSH のレビュアーの pr-review は、セッションを `<review_dir>/.staging/<runner の run ID>/<request_id>/<agent_id>/` の直下に作る（AGENTS.md の「コミットしないファイルの置き場所」）。loop は、その run の各サイクルの 1 回目と再実行の runner の run ID（`review.runner_run_id`・`review.batch.run_id`、再実行は `review.rerun` の同じ欄。4 章）ごとに、`.staging/<run ID>/<request>/<agent>/` の直下にいま残っている項目を出す。payload が指さないセッション（同じ試行の中で作り直して放棄したもの）や、payload を読まない試行（runner の段階で失敗した試行）のセッションも出る。名前と種類だけを見て、中身を読まず、リンクをたどらない。たどらない項目（上の階層のディレクトリでない項目）も、そのパスで出す。一覧を読めないディレクトリと、UTF-8 で表せない名前（出力の JSON に書けない）の項目を含むディレクトリは、そのディレクトリのパスで出す。空のディレクトリだけの階層は出さない
-- `.staging/` で調べないもの: 別の run（同じ PR の前の run を含む）や別の runner の呼び出し側の `.staging/<run>/`、短い確認（保存先への書き込みを許さないので、セッションを作らない）、runner が結果を返す前に止まったレビュー（`interrupted_review`。run ID を記録できない）。最後のもののセッションは、`recover` の `retained` に残る runner の出力の中の `<request_id>/` と同じ名前のディレクトリを、`<review_dir>/.staging/*/` の下で探す
 - run が終わる前（`state` が `running`・`held`）の出力（`status` など）は、その時点で残っているものを出すので、次の `review`（中断からの再開）が保存して消すセッションや、停止を確認できない試行が使っているセッションも含みうる。消す時点は AGENTS.md の「コミットしないファイルの置き場所」に従う（run が `finish`・`recover` でロックを解放した後）
 
 ## 7. 読む側の注意

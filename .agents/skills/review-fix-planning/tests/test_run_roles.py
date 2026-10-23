@@ -61,8 +61,8 @@ class FakeAdapter:
 
 
 def config(self_review: str = "self", fix_check: str = "self") -> Config:
-    """``a``・``b`` は pi、``d`` は DSH の担当（どれも fake adapter で動く）。"""
-    runtimes: dict[str, Runtime] = {"a": "pi", "b": "pi", "d": "dsh"}
+    """pi の担当を fake adapter で動かす。"""
+    runtimes: dict[str, Runtime] = {"a": "pi", "b": "pi"}
     return Config(
         agents={
             name: Agent(runtime=runtime, command=[sys.executable, "-c", PROGRAM], model=name)
@@ -528,37 +528,11 @@ def test_implement_uses_only_implement_and_does_not_consume_review_budget(inputs
     assert json.loads(inputs[1].read_text())["activities"] == []
 
 
-@pytest.mark.parametrize("role", ["self-review", "fix-check"])
-@pytest.mark.parametrize("slot", ["agents", "fallback"])
-def test_dsh_review_assignment_stops_before_reserving_the_review(
-    inputs: tuple[dict[str, Any], Path, dict[str, Any]], tmp_path: Path, role: str, slot: str
-) -> None:
-    """DSH には親の準備が無いので、1 回枠を消費する前に止める（#671）。fallback は一次担当が self でも見る。"""
-    selected = config()
-    assignment = selected.workflows["fix"].assignments[role]
-    if slot == "agents":
-        assignment.agents = ["d"]
-    else:
-        assignment.fallback = ["d"]
-    adapter = FakeAdapter()
-    with pytest.raises(mod.RoleInputError, match="dsh runtime"):
-        launch(inputs, tmp_path, selected, adapter_loader=adapter)
-    assert adapter.requests == []
-    assert json.loads(inputs[1].read_text())["activities"] == []
-    assert not (tmp_path / "run").exists()
-    assert not inputs[1].with_suffix(".json.review-lock").exists()
-
-
 TEMPLATE = """
 [agents.a]
 runtime = "pi"
 command = [{missing}]
 model = "a"
-
-[agents.d]
-runtime = "dsh"
-command = [{missing}]
-model = "d"
 
 [agents.c]
 runtime = "codex"
@@ -589,36 +563,6 @@ agents = ["self"]
 [workflows.fix.assignments.fix-check]
 agents = ["self"]
 """
-
-
-@pytest.mark.parametrize("role", ["self-review", "fix-check"])
-def test_cli_rejects_an_assigned_dsh_review_agent(
-    inputs: Any, tmp_path: Path, capsys: pytest.CaptureFixture[str], role: str
-) -> None:
-    """設定ファイルの読み込みと --assign の上書きを通っても、予約・起動の前に exit 2 で止まる（#671）。"""
-    request, planning, fix_input = inputs
-    template, personal = tmp_path / "template.toml", tmp_path / "personal.toml"
-    # command は存在しないパス。拒否が外れても実際の CLI を起動しない
-    template.write_text(TEMPLATE.format(missing=json.dumps(str(tmp_path / "missing-agent"))))
-    personal.write_text("")
-    request_file, fix_file = tmp_path / "request.json", tmp_path / "fix-input.json"
-    request_file.write_text(json.dumps(request))
-    fix_file.write_text(json.dumps(fix_input))
-    before = planning.read_bytes()
-    arguments = ["--phase", "self-review", "--request", str(request_file), "--output-dir", str(tmp_path / "run")]
-    arguments += ["--planning-file", str(planning), "--fix-input", str(fix_file)]
-    arguments += ["--template", str(template), "--config", str(personal), "--assign", f"{role}=d"]
-    assert mod.main(arguments) == 2
-    assert "dsh runtime" in capsys.readouterr().err
-    assert planning.read_bytes() == before
-    assert not (tmp_path / "run").exists()
-
-
-def test_dsh_review_assignment_does_not_stop_implement(inputs: Any, tmp_path: Path) -> None:
-    """implement は runner の worktree に書く役割で、pr-review の DSH の手順を使わない。"""
-    adapter = FakeAdapter()
-    batch = mod.run(config("d", "d"), "implement", inputs[0], tmp_path / "implement", adapter_loader=adapter)
-    assert batch.state == "success" and [result.role for result in batch.results] == ["implement"]
 
 
 class ReadOnlyAdapter(FakeAdapter):

@@ -481,7 +481,7 @@ class ReviewerAdapter:
 
         identity = Identity(model=context.agent.model, session_id=f"fake-{context.request.agent_id}")
         if not context.receipt_path.exists():
-            # receipt を書かずに止まった（crash）。DSH の adapter と同じく、stdout の error イベントから診断を返す
+            # receipt を書かずに止まった（crash）。stdout の error イベントから診断を返す
             events = [json.loads(line) for line in stdout_path.read_text(encoding="utf-8").splitlines() if line]
             message = next((event["message"] for event in events if event.get("type") == "error"), None)
             ending = "error_event" if message is not None else "incomplete"
