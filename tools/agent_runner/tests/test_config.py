@@ -113,6 +113,15 @@ def test_duplicate_models_are_rejected_across_all_candidates(template: Path, tmp
         load_config(template, personal)
 
 
+def test_duplicate_agent_names_are_rejected(template: Path, tmp_path: Path) -> None:
+    """同じ担当を 2 回通すと、同じモデルの結果が 2 人分として数えられ独立したレビューが黙って減る。"""
+    personal = personal_config(
+        tmp_path, '[workflows.audit.assignments.inspect]\nagents = ["first", "first"]\nfallback = []\n'
+    )
+    with pytest.raises(ConfigError):
+        load_config(template, personal)
+
+
 def test_diversity_constraint_checks_fallback_candidates(template: Path, tmp_path: Path) -> None:
     """exclude_same_model_as が fallback を見ないと、実装担当と同じモデルが self-review を黙って担う。"""
     personal = personal_config(tmp_path, '[workflows.audit.exclude_same_model_as]\ninspect = "implement"\n')
