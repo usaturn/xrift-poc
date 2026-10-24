@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import shutil
 import subprocess
+import sys
 from dataclasses import asdict
 from pathlib import Path
 
@@ -97,7 +100,7 @@ def test_product_whose_origin_is_the_env_repository_stops(env: EnvRepo, origin: 
     assert summary(project, env) == ("stop", "product_origin_is_env", None)
 
 
-def test_unrelated_repositories_and_plain_directories_stop(env: EnvRepo, tmp_path: Path) -> None:
+def test_an_unrelated_repository_with_a_github_origin_stops(env: EnvRepo, tmp_path: Path) -> None:
     """`items/`・`worlds/` の外の独立した Git リポジトリを `unknown` で止めないと、
     無関係のリポジトリを制作物として扱い、scan_before_push が push を通し、
     その origin の GitHub に Issue・PR を作る。"""
@@ -123,6 +126,27 @@ def test_missing_paths_under_missing_work_directories_are_not_env(env: EnvRepo, 
     result = route_target.route(worktree / "worlds" / "new-world" / "src" / "a.tsx", env.root)
     assert (result.kind, result.code) == ("stop", "product_in_env_worktree")
     assert result.project_root == str((worktree / "worlds" / "new-world").resolve())
+
+
+def _install_scripts(env: EnvRepo) -> Path:
+    scripts = env.root / ".agents" / "scripts"
+    scripts.mkdir(parents=True)
+    for name in ("route_target.py", "review_target.py", "agent_tmp.py"):
+        shutil.copy2(SCRIPTS / name, scripts / name)
+    return scripts / "route_target.py"
+
+
+def test_cli_routes_the_given_path_not_the_cwd(env: EnvRepo) -> None:
+    """CLI が引数のパスではなく cwd を判定すると、
+    親の checkout から制作物のパスを判定したときに env と黙って返し、制作物を親に commit・起票する。"""
+    script = _install_scripts(env)
+    environ = {key: value for key, value in os.environ.items() if key != "XRIFT_POC_ROOT"}
+    project = create_product(env.root, "worlds", "w", git=False)
+    result = subprocess.run(
+        [sys.executable, str(script), str(project)], cwd=env.root, env=environ, capture_output=True, text=True
+    )
+    shown = json.loads(result.stdout)
+    assert (shown["kind"], shown["code"]) == ("stop", "product_uninitialized")
 
 
 def test_products_in_env_worktrees_stop_with_their_own_code(env: EnvRepo, tmp_path: Path) -> None:
