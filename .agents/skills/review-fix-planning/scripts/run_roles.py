@@ -58,6 +58,7 @@ def load_module(name: str, path: Path) -> Any:
 verifier = load_module("planning_fix_dispatch", ROOT / ".agents/skills/review-verify/scripts/dispatch.py")
 findings = verifier.load_review_findings()
 review_target = load_module("planning_review_target", ROOT / ".agents/scripts/review_target.py")
+agent_tmp = load_module("planning_agent_tmp", ROOT / ".agents/scripts/agent_tmp.py")
 review_entry = load_module("planning_review_run", ROOT / ".agents/skills/pr-review/scripts/review_run.py")
 
 
@@ -327,7 +328,13 @@ def run(
     require_auditable_checkouts(repository)
     # 1 回枠の予約より前に求める。求められなければ枠を消費せずに止まる
     exceptions = write_exceptions(selected, data) if phase == "self-review" else ()
-    writable_paths = writable_review_paths(selected, data) if phase == "self-review" else ()
+    if phase == "self-review":
+        writable_paths = writable_review_paths(selected, data)
+    elif verifier.assigned_externally(selected, "implement"):
+        # AGENTS.md の置き場所の規則どおり、担当が agent_tmp.py mkdir でスクラッチを作れるようにする
+        writable_paths = agent_tmp.runner_scratch(repository)
+    else:
+        writable_paths = ()
     context = None
     if phase == "self-review":
         if planning_file is None or fix_input is None:

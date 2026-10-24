@@ -304,6 +304,23 @@ PR レビュー（workflow `review` の role `inspect`）のレビュアーは�
 agents = ["claude-opus", "pi-gpt"]
 ```
 
+runner は親の main checkout と共有の Git 管理領域を担当から読み取り専用にする。CLI の `run --workflow review` で
+pr-review の helper を使わせるときは、`--write-exception` の作業範囲の指示とは別に、helper の書き込み先を
+`--writable-path`（ignored の既存ディレクトリか保存ロック）と `--private-review-refs` で渡す。
+例外の行のパスは mount の許可にならない。`tools/devenv/.venv` が無ければその指定を外す。
+PR 修正ループと `run_roles.py` は同じ許可を自分で渡す。
+
+```bash
+mkdir -p "$PARENT/reviews/<owner>/<repo>" "$PARENT/tmp/agents"
+uv run --project tools/devenv python -m tools.agent_runner run --workflow review \
+  --repository "$PARENT" --revision HEAD --prompt-file /path/to/prompt.txt \
+  --assign inspect=claude-opus,pi-gpt \
+  --write-exception "$PARENT/reviews: the pr-review helper's saved review" \
+  --writable-path "$PARENT/reviews/<owner>/<repo>" --writable-path "$PARENT/tmp/agents" \
+  --writable-path "$PARENT/.git/pr-review-save.lock" --writable-path "$PARENT/tools/devenv/.venv" \
+  --private-review-refs
+```
+
 同じ役割に、同じ `model` の agent は並べられない。例えば `pi-gpt` と同じモデルの担当を
 個人設定で別名にしても、`pi-gpt` と同時には割り当てられない。
 
@@ -322,7 +339,7 @@ runtime が `cursor` の担当（雛形の `cursor`・`cursor-grok47`）は、wr
 （`inspect`・`self-review`・`fix-check`）も `-f --sandbox disabled` で起動する（#75。writes=true の役割は今までどおり `-f` だけ）。
 シェルを使えるので、PR レビューの役割でも pr-review・review-verify の helper を実行できる。
 writes=false は claude-code・devin・pi と同じく runner の指示であり、sandbox ではない。
-ほかの checkout の変更は、runner が `outside_changes` として報告する。
+開始前から登録済みの checkout は、どの runtime でも runner が読み取り専用にし、変化は `outside_changes` として報告する。
 Ask mode では pr-review の helper を実行できないことと、Cursor の sandbox の範囲・実機の確認は `tools/agent_runner/runtimes/cursor.rst` に記録した。
 
 ### レビューの後処理
@@ -343,9 +360,11 @@ after_run = []
 ### 完了・停止・保持
 
 run は各担当の独立した detached worktree を確定済み commit から作り、
-同時実行数を制限して終了まで待つ。書き込み制限の sandbox は設けず、
-worktree 内で作業する指示と、既存 checkout の内容の前後比較を行う。
-外部の変更は警告として返し、止めない。ignored 資源や Git 外の任意のパスは監査範囲外。
+同時実行数を制限して終了まで待つ。担当は bubblewrap の mount 名前空間で起動し、
+開始前から登録済みの checkout・その Git 管理領域を読み取り専用にし、祖先のディレクトリを rename できない mountpoint にする。
+許可した保存先の内側にある登録済み checkout も読み取り専用のまま残る。
+保護できない登録（開始前から監査できない、起動時に無いなど）があっても担当は起動し、`checkout_isolated` を false にする。
+既存 checkout の内容の前後比較も行い、変化は警告として返して止めない。ignored 資源や Git 外の任意のパスは監査範囲外。
 
 結果は `result.json`、stdout/stderr は担当別ログに保存する。
 標準出力は run ID・状態・実際の保存先の JSON summary。
@@ -368,7 +387,8 @@ worktree 内で作業する指示と、既存 checkout の内容の前後比較�
 
 role/fix-check の入口が `category=environment` と `checkout_audit` を返した場合は、
 全登録の接続を確認する。`unavailable_before` は開始前からの監査不能、`unavailable_after` は実行中の
-監査不能、`content_changed` は内容の変化を示す。いずれも worker が変更したという帰属ではない。
+監査不能、`content_changed` は内容の変化、`replaced` は checkout か祖先のディレクトリが同じパスの別のものに
+置き換わったことを示す。いずれも worker が変更したという帰属ではない。
 `locked`/`prunable` は観測した登録の情報であり、ロック理由や Git stderr は出力しない。
 
 - 本体が移動済みなら、所有者が対象 run の所有・停止を確認し、移動先の `.git`、管理側の
@@ -410,6 +430,8 @@ PY
 成功した場合だけ、新しい run で role/fix-check を再実行する。開始時に監査不能だった古い run の
 警告は、途中で接続が回復しても無変更として追認せず、停止記録や消費済みのレビュー予約を上書きしない。
 汎用 runner の子の成功と監査警告は別であり、厳格な受け取り入口は監査不能も拒否する。
+例外は `checkout_isolated` が true の run の `content_changed` と、`unavailable_after` の `checkout_missing`
+（別のセッションの変更・後片付け）だけで、`replaced` と停止未確認は拒否する。
 
 ## エージェント向けツールの導入
 

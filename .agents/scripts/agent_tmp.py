@@ -50,6 +50,14 @@ def make_session_dir(main_root: Path, topic: str) -> Path:
     """``<main_root>/tmp/agents/<topic>.XXXXXX`` を作り、その絶対パスを返す。"""
     if TOPIC_PATTERN.fullmatch(topic) is None:
         raise AgentTmpError(f"invalid topic {topic!r}: use {TOPIC_PATTERN.pattern}")
+    return Path(tempfile.mkdtemp(prefix=f"{topic}.", dir=scratch_root(main_root))).resolve()
+
+
+def scratch_root(main_root: Path) -> Path:
+    """``<main_root>/tmp/agents`` が main worktree の中で無視されていることを確かめて作り、その実パスを返す。
+
+    runner の外部の担当に、セッションディレクトリを作る書き込み先として許可するときにも使う。
+    """
     agents_dir = main_root / AGENTS_DIR
     resolved = agents_dir.resolve()
     main_resolved = main_root.resolve()
@@ -61,7 +69,26 @@ def make_session_dir(main_root: Path, topic: str) -> Path:
     if ignored.returncode != 0:
         raise AgentTmpError(f"{target} is not ignored by git in {main_root}")
     agents_dir.mkdir(parents=True, exist_ok=True)
-    return Path(tempfile.mkdtemp(prefix=f"{topic}.", dir=agents_dir)).resolve()
+    return agents_dir.resolve()
+
+
+def runner_scratch(repository: Path) -> tuple[Path, ...]:
+    """runner の外部の担当が ``mkdir`` でセッションディレクトリを作れるよう、書き込みを許可する親の tmp/agents。
+
+    runner は ``repository`` に登録された checkout を読み取り専用にする。親の main worktree がその 1 つの
+    ときだけ返す。別のリポジトリ（制作物）や、親・tmp/agents を確かめられないときは何も許可しない。
+    """
+    try:
+        root = resolve_main_root(Path(__file__).resolve().parent)
+    except AgentTmpError:
+        return ()
+    common = _git(repository, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if common.returncode != 0 or Path(common.stdout.strip()).resolve() != (root / ".git").resolve():
+        return ()
+    try:
+        return (scratch_root(root),)
+    except AgentTmpError, OSError:
+        return ()
 
 
 def main(argv: Sequence[str] | None = None) -> int:
