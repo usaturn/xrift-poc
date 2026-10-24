@@ -40,7 +40,8 @@ jobs:
           meson compile -C "$RUNNER_TEMP/bubblewrap-build"
           meson install -C "$RUNNER_TEMP/bubblewrap-build"
           test "$("$RUNNER_TEMP/bubblewrap/bin/bwrap" --version)" = "bubblewrap ${BUBBLEWRAP_VERSION}"
-          echo "$RUNNER_TEMP/bubblewrap/bin" >> "$GITHUB_PATH"
+          # agent-runner は担当の PATH を /bin:/usr/bin に限定する。
+          sudo install -m 0755 "$RUNNER_TEMP/bubblewrap/bin/bwrap" /usr/bin/bwrap
       # pi の起動スクリプトのテストは実物の pi を使う。pi は node 上で動く（1.1.0 は node >=22.19.0）。Dev Container と同じ Node.js 24 を使う。
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -54,10 +55,10 @@ jobs:
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       # 固定版が、runner の隔離と同じ形の overlay と -try の bind を受け付けることを、正式な検証の前に確かめる。
       - run: |
-          test "$(command -v bwrap)" = "$RUNNER_TEMP/bubblewrap/bin/bwrap"
+          test "$(env PATH=/bin:/usr/bin bwrap --version)" = "bubblewrap 0.11.2"
           lower="$(mktemp -d)"
           echo original > "$lower/file"
-          bwrap --unshare-pid --die-with-parent --bind / / --dev-bind /dev /dev --proc /proc \
+          env PATH=/bin:/usr/bin bwrap --unshare-pid --die-with-parent --bind / / --dev-bind /dev /dev --proc /proc \
             --overlay-src "$lower" --tmp-overlay "$lower" --ro-bind-try "$lower/missing" "$lower/missing" \
             -- sh -c 'echo changed > "$1/file" && test "$(cat "$1/file")" = changed' sh "$lower"
           test "$(cat "$lower/file")" = original
