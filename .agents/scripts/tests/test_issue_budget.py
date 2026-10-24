@@ -105,15 +105,16 @@ def run(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True, timeout=30)
 
 
-def test_cli_start_does_not_overwrite_an_existing_ledger(tmp_path: Path) -> None:
-    """既にある ledger に start を重ねて作り直すと、
-    記録した安全の失敗・利用者待ち・失敗の回数を黙って消し、能動時間を 0 から数え直す。"""
+def test_cli_keeps_a_recorded_safety_failure(tmp_path: Path) -> None:
+    """mark が ledger に記録を足さないか、既にある ledger に start を重ねて作り直すと、
+    記録した安全の失敗・利用者待ち・失敗の回数が黙って消え、再開した controller が続行する。"""
     ledger = str(tmp_path / "budget.jsonl")
     assert run("start", "--ledger", ledger, "--budget-minutes", "30").returncode == 0
     marked = run(
         "mark", "--ledger", ledger, "--event", "failure", "--failure-class", "safety", "--signature", "unknown-send"
     )
     assert marked.returncode == 0
+    assert json.loads(run("show", "--ledger", ledger).stdout)["safety_failure"] is True
     recorded = Path(ledger).read_bytes()
 
     again = run("start", "--ledger", ledger, "--budget-minutes", "30")
