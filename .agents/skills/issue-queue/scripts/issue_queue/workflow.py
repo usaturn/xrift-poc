@@ -76,7 +76,7 @@ def initialize(store: Store, ext: External, request: Init) -> tuple[Path, Run]:
     agent_args(request.policy.agent_kind, request.policy.agent_args)
     for number in request.issues:
         issue = ext.issue(number)
-        if issue["state"] != "OPEN" or "<!-- planning-parallel-issues board:" in issue["body"]:
+        if issue["state"] != "OPEN" or ext.is_board_child(issue):
             raise QueueError("openの独立したIssueだけを指定してください")
     run = Run(
         id=uuid4().hex, parent=str(store.parent), owner=ext.caller(), queue=request.issues, policy=request.policy
@@ -385,7 +385,7 @@ class Workflow:
     def preflight(self, *, new: bool) -> None:
         """実装の工程の起動の前の検査。newは新しいattemptを作るとき（工程の境界）に真。"""
         issue = self.ext.issue(self.run.queue[self.run.index])
-        if issue["state"] != "OPEN" or "<!-- planning-parallel-issues board:" in issue["body"]:
+        if issue["state"] != "OPEN" or self.ext.is_board_child(issue):
             raise QueueError("Issueがclosedまたはボードの子です")
         dependencies = self.ext.pages(f"issues/{issue['number']}/dependencies/blocked_by")
         if any(d["state"].lower() == "open" for d in dependencies):

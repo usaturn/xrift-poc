@@ -266,6 +266,7 @@ def make_queue_env(base: Path) -> QueueEnv:
         "comments": [],
         "fail": None,
         "fail_after": None,
+        "parents": {},
         "issues": {
             str(n): {
                 "number": n,
@@ -378,6 +379,12 @@ if tool == "gh":
     if args[0] == "api":
         endpoint = next(a for a in args[1:] if a.startswith("repos/"))
         assert endpoint.startswith("repos/usaturn/xrift-poc/")
+        if endpoint.endswith("/parent"):
+            number = endpoint.split("/")[-2]
+            parent_number = data["parents"].get(number)
+            if parent_number is None:
+                error(message="gh: No parent issue found (HTTP 404)")
+            emit(data["issues"][str(parent_number)])
         if "--method" in args:
             assert args[args.index("--method") + 1] == "POST"
             body = json.loads(Path(args[args.index("--input") + 1]).read_text())
