@@ -92,7 +92,15 @@ scan_before_push() (
     # 本体はサブシェルなので、既定の値に戻しても呼び出し元へ漏れない
     IFS=$' \t\n'
     : "${XRIFT_POC_ROOT:?XRIFT_POC_ROOT を xrift-poc の main checkout のパスに設定する}"
-    if [[ $# -ne 0 && ( $# -ne 2 || "$1" != --review-target ) ]]; then
+    review_option="" review_target_json="" position=0
+    for argument in "$@"; do
+        position=$((position + 1))
+        case "$position" in
+            1) review_option="$argument" ;;
+            2) review_target_json="$argument" ;;
+        esac
+    done
+    if [[ $# -ne 0 && ( $# -ne 2 || "$review_option" != --review-target ) ]]; then
         printf 'scan_before_push: 引数は無し、または --review-target <JSON>\n' >&2
         return 1
     fi
@@ -129,7 +137,7 @@ scan_before_push() (
                 heads="$(git ls-remote --heads origin)" || return 1
             fi
             if [[ -n "$heads" ]]; then
-                base_branch="$(git ls-remote --symref origin HEAD | awk '$1 == "ref:" && $3 == "HEAD" { sub("^refs/heads/", "", $2); print $2 }')" || return 1
+                base_branch="$(git ls-remote --symref origin HEAD | sed -n 's@^ref: refs/heads/\([^[:space:]]*\)[[:space:]]HEAD$@\1@p')" || return 1
                 if [[ -z "$base_branch" ]]; then
                     printf 'scan_before_push: origin の既定ブランチを読めない\n' >&2
                     return 1
@@ -145,7 +153,7 @@ scan_before_push() (
     esac
     if [[ $# -eq 2 ]]; then
         context="$(uv run --no-project python "$XRIFT_POC_ROOT/.agents/scripts/review_target.py" \
-            scan-context --target "$2" --checkout "$here")" || return 1
+            scan-context --target "$review_target_json" --checkout "$here")" || return 1
         base_branch="$(jq -er .base_ref <<<"$context")" || return 1
     fi
     if [[ -e .gitleaksignore || -L .gitleaksignore ]]; then
