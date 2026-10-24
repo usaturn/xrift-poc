@@ -337,7 +337,10 @@ def test_abandon_accepts_only_unacknowledged_attempt_whose_child_is_gone(queue_e
     attempt = queue_env.launch(run)
     data = queue_env.data()
     child = data["panes"][attempt["pane_id"]]
-    if case != "child_alive":
+    if case == "child_alive":
+        # Herdrの復元でterminalが変わり、子は名前でだけ見つかる（保存したterminalのpaneの照合には当たらない）。
+        child["terminal_id"] = "term_after_herdr_restart"
+    else:
         # 子が終了し、paneにはshellだけが残る。
         child.update(name=None, agent=None, agent_session=None, agent_status="unknown")
     if case == "same_kind_in_pane":
