@@ -239,7 +239,8 @@ def assert_rejected(gh: FakeGh, value: dict[str, Any], *, body: str = BODY) -> N
 def test_records_post_rejects_an_invalid_record() -> None:
     """無効な記録を投稿すると、後の fold が止まる（投稿の後にエラーになる）。"""
     value = awaiting_record()
-    value["decisions"][0]["state"] = "maybe"
+    # 他の規則（outcome と判断の state の組など）に響かない欄だけを不正にする
+    value["decisions"][0]["pr_relation"] = "unrelated"
     assert_rejected(FakeGh(pr_view=pr_view(), comments=[]), value)
 
 
