@@ -117,8 +117,11 @@ def test_cli_keeps_a_recorded_safety_failure(tmp_path: Path) -> None:
     assert json.loads(run("show", "--ledger", ledger).stdout)["safety_failure"] is True
     recorded = Path(ledger).read_bytes()
 
+    # --failure-class の無い failure は不正。何も記録せずに 0 で終わると、controller は記録したと思って続ける。
+    invalid = run("mark", "--ledger", ledger, "--event", "failure", "--signature", "x")
     again = run("start", "--ledger", ledger, "--budget-minutes", "30")
 
+    assert invalid.returncode != 0
     assert again.returncode != 0
     assert Path(ledger).read_bytes() == recorded
 
