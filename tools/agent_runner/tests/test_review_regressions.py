@@ -1,5 +1,6 @@
 """Consumer-visible regressions from the final independent branch review."""
 
+import json
 import subprocess
 import threading
 from pathlib import Path
@@ -44,13 +45,16 @@ def test_one_fallback_cannot_fill_two_parallel_role_slots(repo: Path, tmp_path: 
     assert sum(attempt.agent_id == "c" for item in batch.results for attempt in item.attempts) == 1
 
 
+@pytest.mark.parametrize("malformed", [False, True])
 def test_retained_receipts_are_scrubbed_even_when_invalid(
-    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, malformed: bool
 ) -> None:
-    """解析してから伏せると、JSON として読めない receipt の秘密を伏せずに黙って残す。"""
+    """正常または不正な receipt の伏せ字を省くと、残したファイルに資格情報が黙って残る。"""
     secret = "known-credential-value"
     monkeypatch.setenv("SERVICE_TOKEN", secret)
-    options: dict[str, object] = {"raw": '{"credential":"' + secret}
+    options: dict[str, object] = (
+        {"raw": '{"credential":"' + secret} if malformed else {"payload": {"credential": secret}}
+    )
     batch = run_workflow(
         configuration(),
         "audit",
@@ -62,7 +66,9 @@ def test_retained_receipts_are_scrubbed_even_when_invalid(
     attempt = batch.results[0].attempts[0]
     assert attempt.request_path is not None
     raw = (attempt.request_path.parent / "receipt.json").read_bytes()
-    assert raw.startswith(b'{"credential":"')
+    if malformed:
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(raw)
     assert secret.encode() not in raw
     assert secret not in batch.model_dump_json()
 

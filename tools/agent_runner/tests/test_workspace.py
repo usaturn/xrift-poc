@@ -34,15 +34,23 @@ def repository(tmp_path: Path) -> Path:
     return root
 
 
-def test_audit_detects_existing_dirty_content_edits(repository: Path, tmp_path: Path) -> None:
-    """status だけを見ると、開始前から未追跡のファイルを担当が書き換えても outside_changes に黙って出ない。"""
+@pytest.mark.parametrize("symlink", [False, True])
+def test_audit_detects_existing_dirty_content_edits(repository: Path, tmp_path: Path, symlink: bool) -> None:
+    """開始前からある未追跡ファイルやリンクの変更を見逃すと outside_changes に黙って出ない。"""
     external = create_worktree(repository, "HEAD", tmp_path / "external checkout\nwith newline")
     path = external / "untracked.txt"
-    path.write_text("dirty before\n")
+    if symlink:
+        path.symlink_to("first-target")
+    else:
+        path.write_text("dirty before\n")
     before = snapshot_checkouts(repository)
     assert set(before) == {str(repository), str(external)}
     assert changed_checkouts(before) == []
-    path.write_text("dirty after!\n")
+    if symlink:
+        path.unlink()
+        path.symlink_to("different-target")
+    else:
+        path.write_text("dirty after!\n")
     assert changed_checkouts(before) == [str(external)]
 
 

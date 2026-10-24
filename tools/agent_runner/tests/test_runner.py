@@ -367,11 +367,12 @@ def read_only_codex(runtime: str) -> FakeAdapter:
     return ReadOnlyAdapter() if runtime == "codex" else FakeAdapter()
 
 
+@pytest.mark.parametrize("primary", [True, False])
 def test_read_only_agents_are_rejected_before_any_output_when_writes_are_needed(
-    repository: Path, tmp_path: Path
+    repository: Path, tmp_path: Path, primary: bool
 ) -> None:
-    """読み取り専用の fallback に書き込みの例外を渡して起動すると、毎回却下されてもレビュアーが黙って減る（#52）。"""
-    config = configuration(["a"], ["b"])
+    """読み取り専用の一次担当か fallback を起動すると、却下され続けてレビュアーが黙って減る。"""
+    config = configuration(["b"] if primary else ["a"], [] if primary else ["b"])
     runtimes: dict[str, Runtime] = {"a": "pi", "b": "codex", "c": "cursor"}
     for name, agent in config.agents.items():
         agent.runtime = runtimes[name]
