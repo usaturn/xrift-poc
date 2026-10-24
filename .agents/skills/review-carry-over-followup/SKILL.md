@@ -104,7 +104,7 @@ jq -n --slurpfile comments "$SESSION/comments.json" --slurpfile state "$SESSION/
   fi
   : "${TARGET_ROOT:?一時 clone を作れなかった}"
   DEFAULT_BRANCH="$(git -C "$TARGET_ROOT" ls-remote --symref origin HEAD \
-    | awk '$1 == "ref:" && $3 == "HEAD" { sub("^refs/heads/", "", $2); print $2 }')"
+    | sed -n 's@^ref: refs/heads/\([^[:space:]]*\)[[:space:]]HEAD$@\1@p')"
   : "${DEFAULT_BRANCH:?origin の既定ブランチを読めない}"
   # fetch に失敗したら、手元に残る古い ref を調べないよう、ここで止める
   DEFAULT_SHA="" PR_HEAD_SHA=""
@@ -174,11 +174,11 @@ jq -n --slurpfile comments "$SESSION/comments.json" --slurpfile state "$SESSION/
 # 条件の中（if・&&・||・!）から呼ぶと set -e が効かないので、各段で失敗を明示的に返す
 check_body() (
     set -euo pipefail
-    if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+    if [ "$#" -ne 1 ] || [ ! -f "$@" ]; then
         printf 'check_body: 本文ファイルを 1 つ指定する\n' >&2
         return 1
     fi
-    body="$1"
+    body="$@"
     scan="$(mktemp -d)" || return 1
     trap 'rm -rf -- "${scan:?}"' EXIT
     printf '[extend]\nuseDefault = true\n' > "$scan/config.toml" || return 1

@@ -126,3 +126,29 @@ def test_check_body_with_the_real_gitleaks(skill_shell: Any, tmp_path: Path, she
         found = re.search(r"leaks found: (\d+)", result.stderr)
         assert found is not None and int(found.group(1)) >= 1, result.stderr
     assert token not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_rendered_skill_checks_the_supplied_body_even_if_second_skill_argument_is_a_file(
+    skill_shell: Any, tmp_path: Path, shell: str
+) -> None:
+    """Skill 引数の置換で別ファイルを検査すると、秘密を含む本文が黙って投稿される。"""
+    harmless = tmp_path / "existing candidates.md"
+    harmless.write_text("公開できる候補\n", encoding="utf-8")
+    body = tmp_path / "投稿 本文.md"
+    token = secret_like_token()
+    body.write_text(f"GH_TOKEN={token}\n", encoding="utf-8")
+    rendered = re.sub(
+        r"\$[1-9]",
+        lambda match: str(harmless) if match.group() == "$1" else "unused",
+        skill_shell.block("check body"),
+    )
+    result = skill_shell.run(
+        shell,
+        f'{rendered}\nif check_body "$BODY"; then echo ACCEPTED; else echo REJECTED; fi\n',
+        cwd=tmp_path,
+        env={"PATH": os.environ["PATH"], "HOME": str(tmp_path), "BODY": str(body)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == ["REJECTED"]
+    assert token not in result.stdout + result.stderr
