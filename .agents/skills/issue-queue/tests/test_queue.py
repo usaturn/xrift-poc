@@ -13,6 +13,25 @@ import pytest
 from tools.test_support.issue_queue import CLI, QueueEnv, pane
 
 
+def test_queue_refuses_legacy_board_child_before_launch(queue_env: QueueEnv) -> None:
+    """子の目印が欠けても、claim を経ない queue の起動で競合した変更を残さない。"""
+    run = queue_env.init()
+    data = queue_env.data()
+    data["issues"]["101"] = {
+        "number": 101,
+        "url": "https://github.com/usaturn/xrift-poc/issues/101",
+        "html_url": "https://github.com/usaturn/xrift-poc/issues/101",
+        "state": "OPEN",
+        "body": "<!-- planning-board:test-reduction-101:begin -->\n親の説明",
+        "repository": {"full_name": "usaturn/xrift-poc"},
+    }
+    data["parents"]["11"] = 101
+    queue_env.save(data)
+
+    assert queue_env.call("launch", "--run", run, code=3)["status"] == "blocked"
+    assert len(queue_env.data()["panes"]) == 1
+
+
 def test_init_persists_policy_outside_worktrees_and_excludes_second_run(queue_env: QueueEnv) -> None:
     run = queue_env.init()
     assert Path(run).parent == queue_env.root / "tmp/agents"

@@ -12,6 +12,8 @@
 
 ## 親の本文に必要な項目（この順に書く）
 
+本文の先頭行に `<!-- planning-board:<board-key>:begin -->` を置く。`<board-key>` は Publication ledger の固定のボードキーで、英数字・ハイフン・アンダースコアだけを使う。説明の中の引用やコードブロックではなく、行全体を占める HTML コメントにする。既存の親 #101 は `<!-- planning-board:test-reduction-101:begin -->` を持つ。
+
 1. **成果と境界:** 測定できる完了基準、対象外、情報源の Issue、現在の base branch と SHA。
 2. **実行マップ:** 子へのリンク、目的、担当ファイル、先行 Issue、必要な入力、完了の証拠、planning の状態、実装の状態。snapshot を確認した時点を書く。claim と状態の判断の根拠は、取得し直した子のデータに置く。
 3. **Publication ledger:** 親の本文の中の管理対象の節。固定のボードキーと、子ごとに、固定の子キー、Issue の `number`、データベースの `id`、`node_id`、`html_url`、所属すべき親を書く。管理対象の依存関係の両端を、固定のキーとデータベースの ID で記録する。付け替え（reparent）が終わっていない間は、正確な再取得で移動を確かめるまで、確認済みの置き換え前の親の `number`、データベースの `id`、操作の状態を残す。後のセッションが基準とするのは、この公開された節である。ローカルの ledger は、公開前の写しにすぎない。
@@ -35,6 +37,10 @@
 > 7. 子に `planning: ready`、`implementation: not-started`、manifest の URL、次の操作を公開する。実装の Issue は open のままにする。変更しない（immutable な）claim を解放するのは、それがまだ自分の SHA と一致する場合だけで、`git push --force-with-lease=refs/heads/agent-claims/issue-N:CLAIM_SHA origin :refs/heads/agent-claims/issue-N` を使う。ref が無くなったことを確かめる。SHA が違う場合は削除せず、所有権を失ったことを報告する。止まった場合は、自分の claim を解放する前に、途中の進捗と復旧の操作を公開する。次のエージェントを待つ間、claim を保持しない。実際の成果物と残りの作業を報告し、親の snapshot の更新は coordinator に任せる。
 
 ## 子の本文に必要な項目
+
+本文の先頭行に `<!-- planning-parallel-issues board:<board-key> child:<child-key> -->` を置く。両キーは親の Publication ledger に記録する固定キーと一致させ、英数字・ハイフン・アンダースコアだけを使う。新規作成では最初の本文に書き、native の親子関係を追加した後に確認する。既存 Issue を再利用するときは、現在の本文・native の親子関係・Publication ledger を確かめてから追記し、無関係な本文を残す。公開後は各子の本文を取得し直し、先頭行とキーを確認する。子本文の目印だけで claim や native 関係の再確認を省かない。
+
+既存の #101 ボードの子は目印が無い。`issue-to-pr` と `issue-queue` は native parent と親本文の目印から識別するので、#101 の子本文を一括編集しない。
 
 | 項目 | 具体的な内容 |
 |---|---|

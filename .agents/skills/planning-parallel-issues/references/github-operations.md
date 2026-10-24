@@ -6,6 +6,8 @@
 
 ## native の関係
 
+新しい親・子の本文の先頭には [issue-board.md](issue-board.md) のボード目印を置く。既存の子を再利用するときは、現在の本文・native の親子関係・Publication ledger を照合してから子の目印を追加し、無関係な内容を残す。公開したら各子の本文の先頭行と親の Publication ledger を取得し直し、キーが一致することを確かめる。#101 の既存子は目印の追記を必須とせず、native parent と親本文の目印で識別する。
+
 以下の REST のパスは `/repos/{owner}/{repo}` からの相対パスである。`N` は表示される Issue 番号である。payload の ID は数値のデータベース ID であり、Issue 番号や GraphQL の node ID では**ない**。
 
 | 操作 | メソッドとパス | payload または結果 |

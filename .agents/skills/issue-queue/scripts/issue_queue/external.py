@@ -16,6 +16,8 @@ from .storage import QueueError
 
 TOOL_ROOT = Path(__file__).resolve().parents[5]
 REPOSITORY = "usaturn/xrift-poc"
+CHILD_BOARD_MARKER = re.compile(r"<!-- planning-parallel-issues board:[A-Za-z0-9_-]+ child:[A-Za-z0-9_-]+ -->")
+PARENT_BOARD_MARKER = re.compile(r"<!-- planning-board:[A-Za-z0-9_-]+:begin -->")
 
 
 class CommandError(QueueError):
@@ -150,6 +152,38 @@ class External:
         if value["url"] != f"https://github.com/{REPOSITORY}/issues/{number}":
             raise QueueError("Issueの対象が一致しません")
         return value
+
+    def is_board_child(self, issue: dict[str, Any]) -> bool:
+        body = issue.get("body")
+        if body is None:
+            body = ""
+        if not isinstance(body, str):
+            raise QueueError("Issue本文の形式が不正です")
+        if body and CHILD_BOARD_MARKER.fullmatch(body.splitlines()[0]):
+            return True
+
+        number = issue["number"]
+        try:
+            parent = object_json(command(["gh", "api", f"repos/{REPOSITORY}/issues/{number}/parent"]))
+        except CommandError as error:
+            if error.stderr.strip() == "gh: No parent issue found (HTTP 404)":
+                return False
+            raise
+
+        repository = parent.get("repository")
+        if not isinstance(repository, dict) or cast(dict[str, Any], repository).get("full_name") != REPOSITORY:
+            raise QueueError("同repositoryの親Issueを確認できません")
+        parent_number = parent.get("number")
+        if not isinstance(parent_number, int) or parent.get("html_url") != (
+            f"https://github.com/{REPOSITORY}/issues/{parent_number}"
+        ):
+            raise QueueError("親Issueの対象が一致しません")
+        parent_body = parent.get("body")
+        if parent_body is None:
+            parent_body = ""
+        if not isinstance(parent_body, str):
+            raise QueueError("親Issue本文の形式が不正です")
+        return bool(parent_body and PARENT_BOARD_MARKER.fullmatch(parent_body.splitlines()[0]))
 
     def pr(self, url: str) -> dict[str, Any]:
         if not re.fullmatch(rf"https://github.com/{REPOSITORY}/pull/[1-9]\d*", url):
