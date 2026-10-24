@@ -96,10 +96,12 @@ def test_registration_list_failure_still_stops_snapshot(repository: Path, monkey
 
 
 def test_only_isolated_content_changes_are_nonblocking() -> None:
-    """隔離なしや監査不能を許すと、担当の既存 checkout 変更を黙って受け付ける。"""
+    """隔離なし・監査不能・同じパスの置換を許すと、担当の既存 checkout 変更を黙って受け付ける。"""
     changed = CheckoutAudit(path="/checkout", kind="content_changed", reason="content_changed")
-    unavailable = CheckoutAudit(path="/checkout", kind="unavailable_after", reason="checkout_missing")
+    unavailable = CheckoutAudit(path="/checkout", kind="unavailable_after", reason="filesystem_unavailable")
+    replaced = CheckoutAudit(path="/checkout", kind="replaced", reason="checkout_replaced")
     assert not blocking_checkout_audit([changed.path], [changed], isolated=True)
     assert blocking_checkout_audit([changed.path], [changed], isolated=False)
     assert blocking_checkout_audit([unavailable.path], [unavailable], isolated=True)
+    assert blocking_checkout_audit([replaced.path], [replaced], isolated=True)
     assert blocking_checkout_audit([changed.path, "/unaccounted"], [changed], isolated=True)

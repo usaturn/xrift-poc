@@ -270,6 +270,7 @@ AuditReason = Literal[
     "filesystem_unavailable",
     "audit_unavailable",
     "content_changed",
+    "checkout_replaced",
 ]
 
 
@@ -277,7 +278,7 @@ class CheckoutAudit(StrictModel):
     """Observations only: fixed reasons, no Git stderr or attribution to a worker."""
 
     path: str
-    kind: Literal["unavailable_before", "unavailable_after", "content_changed"]
+    kind: Literal["unavailable_before", "unavailable_after", "content_changed", "replaced"]
     reason: AuditReason
     locked: bool = False
     prunable: bool = False

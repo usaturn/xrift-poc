@@ -426,12 +426,13 @@ def check_batch(batch: Mapping[str, Any]) -> None:
         diagnostics = [CheckoutAudit.model_validate(item) for item in cast(list[object], raw_diagnostics)]
     except ValidationError:
         raise AcceptError("invalid checkout audit diagnostics") from None
-    if any(item.kind in {"unavailable_before", "unavailable_after"} for item in diagnostics):
-        raise AcceptError("a checkout registered before the run cannot be audited; see batch.checkout_audit")
-    if blocking_checkout_audit(
+    if not blocking_checkout_audit(
         cast(list[str], batch.get("outside_changes", [])), diagnostics, isolated=batch.get("checkout_isolated") is True
     ):
-        raise AcceptError("a checkout registered before the run was changed")
+        return
+    if any(item.kind in {"unavailable_before", "unavailable_after"} for item in diagnostics):
+        raise AcceptError("a checkout registered before the run cannot be audited; see batch.checkout_audit")
+    raise AcceptError("a checkout registered before the run was changed")
 
 
 def final_payload(batch: Mapping[str, Any]) -> dict[str, Any]:

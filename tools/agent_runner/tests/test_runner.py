@@ -90,6 +90,19 @@ if options.get('temporary_worktree'):
         ['git', '-C', request['work_dir'], 'worktree', 'remove', target], capture_output=True
     ).returncode if added == 0 else None
     temporary_worktree = added == removed == 0
+replaced = None
+if options.get('replace_parent'):
+    import shutil
+    parent = pathlib.Path(options['replace_parent'])
+    moved = parent.with_name(parent.name + '.moved')
+    try:
+        parent.rename(moved)
+        shutil.copytree(moved, parent, symlinks=True)
+        (parent / options['replace_file']).write_text('changed by agent')
+    except OSError:
+        replaced = False
+    else:
+        replaced = True
 if options.get('marker'):
     pathlib.Path(options['marker']).write_text('ready')
     time.sleep(0.3)
@@ -105,7 +118,7 @@ payload = options.get('payload', {'prompt': request['prompt'], 'depth': os.envir
     'ambient': os.environ.get('UNCONFIGURED_SECRET'), 'git': os.environ.get('GIT_DIR'),
     'probes': probes, 'other_commit': other_commit, 'own_commit': own_commit,
     'temporary_worktree': temporary_worktree, 'lock_written': lock_written,
-    'review_ref_written': review_ref_written})
+    'review_ref_written': review_ref_written, 'replaced': replaced})
 receipt = {key: request[key] for key in ('schema_version', 'run_id', 'request_id', 'agent_id', 'role')}
 receipt.update(status='success', payload=payload)
 if not options.get('missing'):
@@ -376,6 +389,53 @@ def test_agent_cannot_write_registered_checkouts_but_can_commit_own_worktree(rep
         ).stdout
         == head
     )
+
+
+def test_allowed_storage_keeps_registered_checkout_inside_it_read_only(repository: Path, tmp_path: Path) -> None:
+    """許可した保存先の内側の既存 worktree を担当が書けると、他者の無断変更を並行変更の警告だけで取り込む。"""
+    (repository / ".git/info").mkdir(exist_ok=True)
+    (repository / ".git/info/exclude").write_text("/tmp/\n")
+    storage = repository / "tmp/agents"
+    storage.mkdir(parents=True)
+    nested = workspace.create_worktree(repository, "HEAD", storage / "別セッション checkout\n2")
+    protected, scratch = nested / "tracked.txt", storage / "scratch.txt"
+    batch = run_workflow(
+        configuration(),
+        "audit",
+        "prompt",
+        repository,
+        output_dir=tmp_path / "run",
+        adapter_loader=lambda _: FakeAdapter({"a": {"probe_paths": [str(protected), str(scratch)]}}),
+        writable_paths=(storage,),
+    )
+    assert batch.state == "success" and batch.checkout_isolated
+    payload = batch.results[0].attempts[0].payload
+    assert isinstance(payload, dict)
+    assert payload["probes"] == {str(protected): True, str(scratch): False}
+    assert protected.read_text() == "original"
+
+
+def test_agent_cannot_replace_registered_checkout_by_moving_its_parent(repository: Path, tmp_path: Path) -> None:
+    """書ける祖先を移して同じパスに複製を置けると、他者の checkout を動かした無断変更を並行変更として取り込む。"""
+    parent = tmp_path / "other session"
+    parent.mkdir()
+    external = workspace.create_worktree(repository, "HEAD", parent / "checkout")
+    inode = external.stat().st_ino
+    batch = run_workflow(
+        configuration(),
+        "audit",
+        "prompt",
+        repository,
+        output_dir=tmp_path / "run",
+        adapter_loader=lambda _: FakeAdapter(
+            {"a": {"replace_parent": str(parent), "replace_file": "checkout/tracked.txt"}}
+        ),
+    )
+    assert batch.state == "success"
+    payload = batch.results[0].attempts[0].payload
+    assert isinstance(payload, dict)
+    assert payload["replaced"] is False
+    assert external.stat().st_ino == inode and (external / "tracked.txt").read_text() == "original"
 
 
 def test_review_save_lock_is_writable_without_exposing_existing_git_state(repository: Path, tmp_path: Path) -> None:

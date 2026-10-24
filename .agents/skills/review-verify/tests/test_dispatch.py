@@ -667,23 +667,23 @@ def test_accept_allows_candidates_and_terms_the_verifier_appended(
     assert [c["id"] for c in json.loads(sidecar.read_text(encoding="utf-8"))["candidates"]] == ["S-1", "S-2"]
 
 
-def test_accept_does_not_attribute_a_disappeared_checkout_to_content_changes(
+def test_accept_does_not_attribute_an_unauditable_checkout_to_content_changes(
     dispatch: Any, scenario: Scenario, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     from tools.agent_runner.workspace import create_worktree
 
     external = create_worktree(scenario.root, "HEAD", tmp_path / "external")
 
-    class Disappearing(PayloadAdapter):
+    class Unauditable(PayloadAdapter):
         def collect(self, context: AdapterContext, stdout_path: Path, stderr_path: Path) -> AdapterOutcome:
-            shutil.rmtree(external)
+            (external / ".git").write_text(f"gitdir: {tmp_path / 'missing-gitdir'}\n")
             return super().collect(context, stdout_path, stderr_path)
 
     result = dispatch.dispatch(
         config("probe"),
         scenario.request,
         tmp_path / "run",
-        adapter_loader=loader_for(Disappearing(scenario.payload())),
+        adapter_loader=loader_for(Unauditable(scenario.payload())),
     )
     assert result["batch"]["checkout_audit"][0]["kind"] == "unavailable_after"
     assert accept(dispatch, tmp_path / "run") == 1

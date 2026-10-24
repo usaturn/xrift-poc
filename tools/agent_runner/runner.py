@@ -39,7 +39,7 @@ from tools.agent_runner.receipts import read_receipt
 from tools.agent_runner.workspace import (
     WorkspaceError,
     audit_checkouts,
-    checkout_isolation_argv,
+    checkout_isolation,
     prepare_worktree,
     resolve_revision,
     snapshot_checkouts,
@@ -223,7 +223,8 @@ def run_workflow(
     but refuses them before creating anything when a writes=False role is assigned
     an agent that cannot perform them (read_only_assignments).
     writable_paths are existing ignored directories that a caller explicitly lets
-    an agent write within a registered checkout. The mount guard validates them.
+    an agent write within a registered checkout. The mount guard validates them, and
+    registered checkouts inside them stay read-only.
     private_review_refs gives a review helper a temporary refs/pr-review namespace;
     fetched review refs then cannot alter the shared Git metadata.
     payload_check, when given, also checks each well-shaped success payload (before
@@ -370,10 +371,10 @@ def run_workflow(
             secrets.update(secret_values(spec.env))
             env["AGENT_RUNNER_DEPTH"] = "1"
             # execute merges spec.env last; consume additions here to forbid a depth override.
-            isolation = checkout_isolation_argv(
+            isolation = checkout_isolation(
                 repository, before, work_dir, directory, writable_paths, private_review_refs
             )
-            safe_spec = LaunchSpec((*isolation, "--", *spec.argv), spec.stdin)
+            safe_spec = LaunchSpec((*isolation.argv, "--", *spec.argv), spec.stdin)
         except Exception:
             return finished("launch_failed")
         if event.is_set():
@@ -435,7 +436,7 @@ def run_workflow(
             elapsed_seconds=time.monotonic() - attempt_started,
             exit_code=process.exit_code,
             stop_confirmed=process.stop_confirmed,
-            checkout_isolated=True,
+            checkout_isolated=isolation.complete,
             sensitive_paths=sensitive_paths,
             **paths,
         )
@@ -518,7 +519,9 @@ def run_workflow(
         results=results,
         outside_changes=[finding.path for finding in checkout_audit],
         checkout_audit=checkout_audit,
-        checkout_isolated=bool(attempts) and all(attempt.checkout_isolated for attempt in attempts),
+        # A live process or an unprotected registration leaves the run without proof of isolation.
+        checkout_isolated=bool(attempts)
+        and all(attempt.checkout_isolated and attempt.stop_confirmed for attempt in attempts),
         elapsed_seconds=time.monotonic() - started,
         artifact_dir=artifact_dir,
     )
