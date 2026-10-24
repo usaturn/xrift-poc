@@ -362,9 +362,9 @@ after_run = []
 run は各担当の独立した detached worktree を確定済み commit から作り、
 同時実行数を制限して終了まで待つ。担当は bubblewrap の mount 名前空間で起動し、
 開始前から登録済みで保護できる checkout・その Git 管理領域を読み取り専用にし、祖先のディレクトリを rename できない mountpoint にする。
-許可した保存先の内側にある登録済み checkout も読み取り専用のまま残る。
+許可した保存先の内側にある登録済み checkout も、保護できるものは読み取り専用のまま残る。
 保護できない登録（開始前から監査できない、起動時に無いなど）があっても担当は起動し、`checkout_isolated` を false にする。
-既存 checkout の内容の前後比較も行い、変化は警告として返して止めない。ignored 資源や Git 外の任意のパスは監査範囲外。
+監査できる既存 checkout の内容の前後比較も行い、変化は警告として返して止めない。ignored 資源や Git 外の任意のパスは監査範囲外。
 
 結果は `result.json`、stdout/stderr は担当別ログに保存する。
 標準出力は run ID・状態・実際の保存先の JSON summary。

@@ -278,8 +278,8 @@ checkout 自体が無くなっていれば ``unavailable_after`` / ``checkout_mi
 その Git 管理領域を読み取り専用にする。担当用の detached worktree とその Git 管理領域、
 新しい Git object・worktree の保存先、runner の保存先は書き込み可能にする。
 呼び出し側が明示した ignored の保存先（``writable_paths``）も検査して書き込み可能にできる。
-mount は浅いパスから順に重ねるので、書き込みを許可した保存先の内側にある登録済み checkout も読み取り専用のまま残る。
-登録済み checkout の祖先のディレクトリは、それまでと同じ権限の mountpoint にする。
+mount は浅いパスから順に重ねるので、書き込みを許可した保存先の内側にある登録済み checkout も、保護できるものは読み取り専用のまま残る。
+保護できる登録済み checkout の祖先のディレクトリは、それまでと同じ権限の mountpoint にする。
 担当は祖先を rename できず、checkout を移して同じパスに別のディレクトリを置けない。
 PR レビュー helper の保存ロックは単一のファイルだけを許可する。
 ``private_review_refs`` を指定した場合、Git 管理領域の一時 overlay で
