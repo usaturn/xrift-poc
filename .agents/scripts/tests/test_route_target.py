@@ -33,9 +33,10 @@ def summary(path: Path, env: EnvRepo) -> tuple[str, str, str | None]:
 
 
 def test_work_directories_themselves_stop(env: EnvRepo) -> None:
-    """`items/`・`worlds/` そのものを止めないと、
+    """`items/`・`worlds/` そのものと、その直下のまだ無い名前を止めないと、
     祖先の親の Git が見つかって env と黙って判定し、制作物の作業を親に起票・commit する。"""
     assert summary(env.root / "worlds", env)[:2] == ("stop", "product_base")
+    assert summary(env.root / "worlds" / "new-world" / "src" / "a.tsx", env)[:2] == ("stop", "product_base")
 
 
 def test_uninitialized_product_stops_instead_of_using_the_ancestor_git(env: EnvRepo) -> None:
