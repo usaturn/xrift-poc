@@ -595,7 +595,9 @@ def main(argv: list[str] | None = None, *, adapter_loader: Callable[[str], Adapt
         )
     )
     diagnostics = [CheckoutAudit.model_validate(item) for item in batch["checkout_audit"]]
-    blocked = blocking_checkout_audit(outside, diagnostics, isolated=batch.get("checkout_isolated") is True)
+    blocked = blocking_checkout_audit(
+        outside, diagnostics, isolated=batch.get("checkout_isolated") is True or batch["state"] == "self"
+    )
     return 0 if batch["state"] in ("self", "success") and not blocked and changes == [] else 1
 
 

@@ -432,6 +432,7 @@ PY
 汎用 runner の子の成功と監査警告は別であり、厳格な受け取り入口は監査不能も拒否する。
 例外は `checkout_isolated` が true の run の `content_changed` と、`unavailable_after` の `checkout_missing`
 （別のセッションの変更・後片付け）だけで、`replaced` と停止未確認は拒否する。
+外部担当の `checkout_isolated` が false なら、`outside_changes` と `checkout_audit` が空でも厳格な入口は拒否する。
 
 ## エージェント向けツールの導入
 

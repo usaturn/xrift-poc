@@ -135,8 +135,8 @@ uv run --project "$TOPLEVEL/tools/devenv" python "$SKILL_DIR/scripts/dispatch.py
 
 dispatch の終了コードは次のとおり。出力の JSON 行は `state`・`artifact_dir`・`outside_changes`・`review_changes`。起動前に `review_dir` の全エントリの種類・権限・内容ハッシュを固定し、停止確認後に照合する。Gitignored・対象 repository 外の保存先も検査する。リンクはリンク先の文字列のハッシュだけを記録し、参照先は走査しない。保存入口の `review_dir` 本体・`verified` のリンクは起動前に拒否する。
 
-- 0: `self`、または `success` で `review_changes` が空、かつ `outside_changes` が空か、隔離した実行で別のセッションの変更として受け付けられるものだけ（`checkout_isolated` が true で、`checkout_audit` の全件が `content_changed`、または `unavailable_after` の `checkout_missing`。runner の [インターフェース](../../../tools/agent_runner/interfaces.rst) の監査の節）。
-- 1: 失敗・停止未確認、`review_changes` がある、またはそれ以外の `outside_changes` がある（`success` でも 1）。`replaced`・ほかの監査不能・隔離が不完全な run の変化は拒否する。停止未確認では保存先を読み直さず `review_changes` は null、監査不能も無変更とはしない。
+- 0: `self`、または外部担当の `checkout_isolated` が true で `success`、`review_changes` が空、かつ `outside_changes` が空か別のセッションの変更として受け付けられるものだけ（`checkout_audit` の全件が `content_changed`、または `unavailable_after` の `checkout_missing`。runner の [インターフェース](../../../tools/agent_runner/interfaces.rst) の監査の節）。
+- 1: 失敗・停止未確認、`review_changes` がある、またはそれ以外の `outside_changes` がある（`success` でも 1）。`replaced`・ほかの監査不能・隔離が不完全な外部担当の結果は、監査結果が空でも拒否する。停止未確認では保存先を読み直さず `review_changes` は null、監査不能も無変更とはしない。
 - 2: 設定・入力の誤り。stderr に、秘密を含まない分類（設定・runner のカテゴリ、request の誤った欄名、入力の誤りの種類）を出す。
 
 `dispatch.json` の欄は、`batch`（runner の結果）・`request`（検証済みの入口）・`verified`（入力の確認済みの一覧）・`skill`（`path` と `sha256`）・`verifier`（`success` のときの実測値、ほかは null）・`time_limits`・`review_snapshot`（起動前の保存先の相対パスと観測値。内容そのものは保存しない）・`review_changes`（変更パス、停止未確認なら null）・`prompt`（`self` のときだけ）。

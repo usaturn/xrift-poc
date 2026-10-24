@@ -520,10 +520,13 @@ def main(argv: list[str] | None = None) -> int:
         result.state in {"self", "success"} and all(attempt.stop_confirmed for attempt in result.attempts)
         for result in batch.results
     )
+    self_only = bool(batch.results) and all(result.state == "self" and not result.attempts for result in batch.results)
     return (
         0
         if collected
-        and not blocking_checkout_audit(batch.outside_changes, batch.checkout_audit, isolated=batch.checkout_isolated)
+        and not blocking_checkout_audit(
+            batch.outside_changes, batch.checkout_audit, isolated=batch.checkout_isolated or self_only
+        )
         and (args.phase == "implement" or saved["review_changes"] == [])
         else 1
     )

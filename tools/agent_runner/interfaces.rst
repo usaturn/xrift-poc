@@ -293,7 +293,8 @@ BatchResult.checkout_isolated は、全試行をすべての登録の保護の�
 ``unavailable_after`` / ``checkout_missing`` で、outside_changes のパスと一致する場合に限り、
 それらを拒否条件から外せる。保護された担当は登録済み checkout を書き換えも移動もできないので、
 これらは別のセッションの変更・後片付けである。
-``replaced``、``unavailable_before``、``checkout_missing`` 以外の監査不能、停止未確認、保護が不完全な試行は引き続き拒否する。
+``replaced`` と ``unavailable_before`` は拒否する。``unavailable_after`` も ``checkout_missing`` 以外は拒否する。
+停止未確認や保護が不完全な外部試行は、監査結果が空でも拒否する。外部プロセスを起動しない ``self`` は隔離を要しない。
 Gitignored 資源、symlink の参照先、Git 外の任意のディレクトリは監査範囲外。
 外部セッションによる変更と委譲先による変更の因果までは断定しない。
 

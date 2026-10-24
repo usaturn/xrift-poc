@@ -105,3 +105,8 @@ def test_only_isolated_content_changes_are_nonblocking() -> None:
     assert blocking_checkout_audit([unavailable.path], [unavailable], isolated=True)
     assert blocking_checkout_audit([replaced.path], [replaced], isolated=True)
     assert blocking_checkout_audit([changed.path, "/unaccounted"], [changed], isolated=True)
+
+
+def test_incomplete_isolation_blocks_even_without_audit_findings() -> None:
+    """隔離できない既存 checkout の操作を監査結果が空という理由で受け付けると、無断変更を見逃す。"""
+    assert blocking_checkout_audit([], [], isolated=False)

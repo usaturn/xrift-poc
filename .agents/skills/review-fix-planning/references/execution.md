@@ -79,7 +79,7 @@ self-review・fix-checkには、writes=Falseの役割を読み取り専用で起
 
 - PLANNING_JSONは司令塔が起動前に作る仮のv2 planning（SKILL.md 5節の手順5）。形は `.agents/review-findings.md` 6章のv2例と同じで、`outcome` は仮の `stopped`、`comment_id` はnull、`activities` に `pre_push_review` を入れない。共有定義の「サイクルの最後に書く」は、最後に同じファイルを更新することで満たす（共有定義は変えない）。
 - run_roles.pyがpr/source_headを照合し、起動前に排他lockと一括置換で `activities.stage=pre_push_review` を1枠予約する。司令塔は手で予約しない。**この件数が自己レビュー呼出数**。同時/2回目は拒否。失敗/中断でも枠を戻さず、時間は未計測nullから始める。最後の更新でも予約の行を消さない。
-- roles.json: request、実batch、self_prompts、review_changes。stdoutはstate/artifact_dir/pending_self/outside_changes/review_changes。exit 0は依頼の回収（selfを含む）、1は失敗/未停止/領域変更（隔離した実行で別セッションの変更・削除として受け付けるものを除く。条件はreview-verifyのSKILL.mdのdispatchの終了コード0と同じ）、2は入力/設定/起動失敗（run_roles自身の入力の誤りはstderrに理由を出す）。exit 0はレビュー合格でない。
+- roles.json: request、実batch、self_prompts、review_changes。stdoutはstate/artifact_dir/pending_self/outside_changes/review_changes。exit 0は依頼の回収（selfを含む）、1は失敗/未停止/領域変更/外部担当の隔離不完全（監査結果が空の場合も含む。別セッションの変更・削除の条件はreview-verifyのSKILL.mdのdispatchの終了コード0と同じ）、2は入力/設定/起動失敗（run_roles自身の入力の誤りはstderrに理由を出す）。exit 0はレビュー合格でない。
 - all-self/混合のself_promptsは司令塔が実行。実行していないものを完了にしない。レビューと修正確認の両方を回収する。
 - `fix-check-receipt/dispatch.json` は既存dispatcherの固定request/verified/skill/time_limits/snapshot/verifierと、同じbatchからfix-checkだけを抽出した実結果。誰かが停止未確認ならaccept可能なsuccessを作らない。外部結果は次で受け取る。
 

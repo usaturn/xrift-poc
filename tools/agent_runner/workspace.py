@@ -503,16 +503,14 @@ def blocking_checkout_audit(
     session's. Replacement at the same path, any other unauditable state, a path
     mismatch and incomplete isolation still block.
     """
+    if not isolated:
+        return True
     if not outside_changes and not diagnostics:
         return False
-    return (
-        not isolated
-        or list(outside_changes) != [finding.path for finding in diagnostics]
-        or any(
-            (finding.kind, finding.reason)
-            not in {("content_changed", "content_changed"), ("unavailable_after", "checkout_missing")}
-            for finding in diagnostics
-        )
+    return list(outside_changes) != [finding.path for finding in diagnostics] or any(
+        (finding.kind, finding.reason)
+        not in {("content_changed", "content_changed"), ("unavailable_after", "checkout_missing")}
+        for finding in diagnostics
     )
 
 

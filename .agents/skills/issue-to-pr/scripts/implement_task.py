@@ -441,6 +441,10 @@ def assess(request: TaskRequest, batch: BatchResult) -> Assessment:
         result = TaskResult.model_validate(attempt.payload)
     except ValidationError as error:
         return Assessment(verdict="rejected", reasons=[f"invalid_result: {_fields(error)}"], work_dir=work_dir)
+    if not batch.checkout_isolated:
+        return Assessment(
+            verdict="rejected", reasons=["checkout_isolation: incomplete"], work_dir=work_dir, result=result
+        )
     if blocking_checkout_audit(batch.outside_changes, batch.checkout_audit, isolated=batch.checkout_isolated):
         return Assessment(
             verdict="rejected",
