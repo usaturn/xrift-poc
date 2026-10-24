@@ -6,8 +6,10 @@ from pathlib import Path
 import pytest
 
 from tools.agent_runner import workspace
+from tools.agent_runner.models import CheckoutAudit
 from tools.agent_runner.workspace import (
     WorkspaceError,
+    blocking_checkout_audit,
     changed_checkouts,
     create_worktree,
     snapshot_checkouts,
@@ -91,3 +93,20 @@ def test_registration_list_failure_still_stops_snapshot(repository: Path, monkey
     monkeypatch.setattr(workspace, "_git", unavailable)
     with pytest.raises(WorkspaceError):
         snapshot_checkouts(repository)
+
+
+def test_only_isolated_content_changes_are_nonblocking() -> None:
+    """隔離なし・監査不能・同じパスの置換を許すと、担当の既存 checkout 変更を黙って受け付ける。"""
+    changed = CheckoutAudit(path="/checkout", kind="content_changed", reason="content_changed")
+    unavailable = CheckoutAudit(path="/checkout", kind="unavailable_after", reason="filesystem_unavailable")
+    replaced = CheckoutAudit(path="/checkout", kind="replaced", reason="checkout_replaced")
+    assert not blocking_checkout_audit([changed.path], [changed], isolated=True)
+    assert blocking_checkout_audit([changed.path], [changed], isolated=False)
+    assert blocking_checkout_audit([unavailable.path], [unavailable], isolated=True)
+    assert blocking_checkout_audit([replaced.path], [replaced], isolated=True)
+    assert blocking_checkout_audit([changed.path, "/unaccounted"], [changed], isolated=True)
+
+
+def test_incomplete_isolation_blocks_even_without_audit_findings() -> None:
+    """隔離できない既存 checkout の操作を監査結果が空という理由で受け付けると、無断変更を見逃す。"""
+    assert blocking_checkout_audit([], [], isolated=False)

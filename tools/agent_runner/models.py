@@ -244,6 +244,7 @@ class Attempt(StrictModel):
     exit_code: int | None = None
     elapsed_seconds: ElapsedSeconds
     stop_confirmed: bool
+    checkout_isolated: bool = False
     work_dir: Path | None = None
     stdout_path: Path | None = None
     stderr_path: Path | None = None
@@ -269,6 +270,7 @@ AuditReason = Literal[
     "filesystem_unavailable",
     "audit_unavailable",
     "content_changed",
+    "checkout_replaced",
 ]
 
 
@@ -276,7 +278,7 @@ class CheckoutAudit(StrictModel):
     """Observations only: fixed reasons, no Git stderr or attribution to a worker."""
 
     path: str
-    kind: Literal["unavailable_before", "unavailable_after", "content_changed"]
+    kind: Literal["unavailable_before", "unavailable_after", "content_changed", "replaced"]
     reason: AuditReason
     locked: bool = False
     prunable: bool = False
@@ -290,5 +292,6 @@ class BatchResult(StrictModel):
     results: list[Result]
     outside_changes: list[str]
     checkout_audit: list[CheckoutAudit] = Field(default_factory=list[CheckoutAudit])
+    checkout_isolated: bool = False
     elapsed_seconds: ElapsedSeconds
     artifact_dir: Path

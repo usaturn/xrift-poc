@@ -269,7 +269,32 @@ PID/starttime が一致する場合だけ追加の group member を観測する�
 
 監査は開始前から登録されていた checkout の HEAD・index・tracked ファイル・
 非 ignored untracked ファイルの内容を比較する。initialized submodule も含む。
-変更は outside_changes に警告として返し、処理自体は止めない。
+変更・監査不能は outside_changes と checkout_audit に警告として返し、処理自体は止めない。
+checkout のパスか祖先のディレクトリが開始時と別の inode に置き換わっていれば、
+内容の比較より先に kind ``replaced``（reason ``checkout_replaced``）とする。
+checkout 自体が無くなっていれば ``unavailable_after`` / ``checkout_missing`` とする（祖先は残っていても消えていてもよい）。
+
+外部の担当は bubblewrap の mount 名前空間で起動し、開始前から登録済みで保護できる checkout と
+その Git 管理領域を読み取り専用にする。担当用の detached worktree とその Git 管理領域、
+新しい Git object・worktree の保存先、runner の保存先は書き込み可能にする。
+呼び出し側が明示した ignored の保存先（``writable_paths``）も検査して書き込み可能にできる。
+mount は浅いパスから順に重ねるので、書き込みを許可した保存先の内側にある登録済み checkout も、保護できるものは読み取り専用のまま残る。
+保護できる登録済み checkout の祖先のディレクトリは、それまでと同じ権限の mountpoint にする。
+担当は祖先を rename できず、checkout を移して同じパスに別のディレクトリを置けない。
+PR レビュー helper の保存ロックは単一のファイルだけを許可する。
+``private_review_refs`` を指定した場合、Git 管理領域の一時 overlay で
+``refs/pr-review/`` と ``packed-refs.lock`` の操作を受け、ホスト側の ref は変わらない。
+保護を構成できず起動に失敗した試行は成功にしない。
+開始前から監査できない登録、起動時に無い登録、symlink を経由する登録、Git 管理領域を解決できない登録は、
+保護できる範囲だけ保護して担当を起動し、その試行の checkout_isolated を false にする。
+
+BatchResult.checkout_isolated は、全試行をすべての登録の保護の下で実行し、全試行の停止を確認した場合だけ true となる。
+受け取り側はこの値が true で、checkout_audit の全件が content_changed、または
+``unavailable_after`` / ``checkout_missing`` で、outside_changes のパスと一致する場合に限り、
+それらを拒否条件から外せる。保護された担当は登録済み checkout を書き換えも移動もできないので、
+これらは別のセッションの変更・後片付けである。
+``replaced`` と ``unavailable_before`` は拒否する。``unavailable_after`` も ``checkout_missing`` 以外は拒否する。
+停止未確認や保護が不完全な外部試行は、監査結果が空でも拒否する。外部プロセスを起動しない ``self`` は隔離を要しない。
 Gitignored 資源、symlink の参照先、Git 外の任意のディレクトリは監査範囲外。
 外部セッションによる変更と委譲先による変更の因果までは断定しない。
 
@@ -318,12 +343,16 @@ CLI と API
      --repository /path/to/repository --revision HEAD \
      --prompt-file /path/to/prompt.txt --concurrency 2 \
      --assign inspect=agent-a,agent-b --output-dir /tmp/unique-new-directory \
-     --write-exception '/path/to/notes: the notes this run may write'
+     --write-exception '/path/to/notes: the notes this run may write' \
+     --writable-path /path/to/repository/ignored-notes
 
 グローバルの --template / --config はサブコマンドの前に置く。
 output-dir は既存 directory/symlink を拒否する。省略時は /tmp 内の一意の directory。
 ``--write-exception`` は API の ``write_exceptions`` の 1 件にあたる。繰り返し指定でき、指定した順に並ぶ。
 workflow のすべての役割に同じ例外が付く（役割ごとには分けない）。
+例外の行は作業範囲の指示であり、mount の書き込み許可にはならない。
+登録済み checkout の中に書かせる先は ``--writable-path``（API の ``writable_paths`` の 1 件。繰り返し指定できる）で渡し、
+PR レビュー helper の一時 ref は ``--private-review-refs``（API の ``private_review_refs``）で受ける。
 値の条件と拒否は下の API の段落に従う。CLI は API と同じ検査を使い、値を含まない拒否理由を stderr に出す。
 stdout のエラー JSON と終了コード 2 は維持する。API の入力は run_workflow が検査する。
 ``-`` で始まる値は、argparse が別の引数をオプションと読むことがある（``--write-exception -x`` は invalid_input になる）ので、

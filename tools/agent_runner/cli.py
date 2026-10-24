@@ -45,6 +45,8 @@ class _Arguments(argparse.Namespace):
     output_dir: Path | None
     assign: list[str]
     write_exception: list[str]
+    writable_path: list[Path]
+    private_review_refs: bool
 
 
 def _write_exception(value: str) -> str:
@@ -76,6 +78,9 @@ def _parse(argv: list[str] | None) -> _Arguments:
     run.add_argument("--assign", action="append", default=[])
     # run_workflow checks API inputs too, before anything is created.
     run.add_argument("--write-exception", action="append", type=_write_exception, default=[])
+    # Mount permissions are explicit paths; a --write-exception line is never read as one.
+    run.add_argument("--writable-path", action="append", type=Path, default=[])
+    run.add_argument("--private-review-refs", action="store_true")
     return cast(_Arguments, parser.parse_args(argv))
 
 
@@ -158,6 +163,8 @@ def _run(arguments: _Arguments, config: Config) -> int:
             output_dir=arguments.output_dir,
             cancel=cancel,
             write_exceptions=arguments.write_exception,
+            writable_paths=arguments.writable_path,
+            private_review_refs=arguments.private_review_refs,
         )
         result_path = _save(batch)
         after_run = run_after_run(

@@ -34,12 +34,78 @@ pytestmark = pytest.mark.usefixtures("outside_runner")
 
 # A fake CLI: options pick its receipt, exit code, and side effects; it echoes inherited values to its logs.
 _SCRIPT = """
-import json, os, pathlib, sys
+import json, os, pathlib, subprocess, sys, time
 incoming = json.loads(sys.stdin.read())
 request = incoming['request']
 options = incoming['options']
 if options.get('outside'):
     pathlib.Path(options['outside']).write_text('changed again')
+probes = {}
+for name in options.get('probe_paths', []):
+    try:
+        pathlib.Path(name).write_text('changed again')
+    except OSError:
+        probes[name] = True
+    else:
+        probes[name] = False
+lock_written = None
+if options.get('review_lock'):
+    try:
+        pathlib.Path(options['review_lock']).write_text('held')
+    except OSError:
+        lock_written = False
+    else:
+        lock_written = True
+review_ref_written = None
+if options.get('review_ref'):
+    review_ref = options['review_ref']
+    added = subprocess.run(
+        ['git', '-C', request['work_dir'], 'update-ref', review_ref, 'HEAD'], capture_output=True
+    ).returncode
+    removed = subprocess.run(
+        ['git', '-C', request['work_dir'], 'update-ref', '-d', review_ref], capture_output=True
+    ).returncode if added == 0 else None
+    review_ref_written = added == removed == 0
+other_commit = None
+if options.get('other_commit'):
+    other_commit = subprocess.run(
+        ['git', '-C', options['other_commit'], 'commit', '--allow-empty', '-qm', 'outside']
+    ).returncode
+own_commit = None
+if options.get('own_commit'):
+    own = pathlib.Path(request['work_dir'])
+    (own / 'own.txt').write_text('own change')
+    added = subprocess.run(['git', '-C', str(own), 'add', 'own.txt']).returncode
+    committed = subprocess.run(
+        ['git', '-C', str(own), '-c', 'commit.gpgsign=false', 'commit', '-qm', 'own']
+    ).returncode
+    own_commit = added == committed == 0
+temporary_worktree = None
+if options.get('temporary_worktree'):
+    target = options['temporary_worktree']
+    added = subprocess.run(
+        ['git', '-C', request['work_dir'], 'worktree', 'add', '--detach', target, 'HEAD'], capture_output=True
+    ).returncode
+    removed = subprocess.run(
+        ['git', '-C', request['work_dir'], 'worktree', 'remove', target], capture_output=True
+    ).returncode if added == 0 else None
+    temporary_worktree = added == removed == 0
+replaced = None
+if options.get('replace_parent'):
+    import shutil
+    parent = pathlib.Path(options['replace_parent'])
+    moved = parent.with_name(parent.name + '.moved')
+    try:
+        parent.rename(moved)
+        shutil.copytree(moved, parent, symlinks=True)
+        (parent / options['replace_file']).write_text('changed by agent')
+    except OSError:
+        replaced = False
+    else:
+        replaced = True
+if options.get('marker'):
+    pathlib.Path(options['marker']).write_text('ready')
+    time.sleep(0.3)
 token = os.environ.get('SERVICE_TOKEN', 'no-token')
 _export_file = pathlib.Path(sys.argv[1]).parent.joinpath('export.json')
 if options.get('export_link'):
@@ -49,7 +115,10 @@ elif options.get('devin_export') is not None:
 print(os.environ.get('SERVICE_TOKEN', 'no-token'))
 print(os.environ.get('Extra_Password', 'no-password'), file=sys.stderr)
 payload = options.get('payload', {'prompt': request['prompt'], 'depth': os.environ.get('AGENT_RUNNER_DEPTH'),
-    'ambient': os.environ.get('UNCONFIGURED_SECRET'), 'git': os.environ.get('GIT_DIR')})
+    'ambient': os.environ.get('UNCONFIGURED_SECRET'), 'git': os.environ.get('GIT_DIR'),
+    'probes': probes, 'other_commit': other_commit, 'own_commit': own_commit,
+    'temporary_worktree': temporary_worktree, 'lock_written': lock_written,
+    'review_ref_written': review_ref_written, 'replaced': replaced})
 receipt = {key: request[key] for key in ('schema_version', 'run_id', 'request_id', 'agent_id', 'role')}
 receipt.update(status='success', payload=payload)
 if not options.get('missing'):
@@ -237,20 +306,177 @@ def test_only_explicit_fallback_is_tried_in_order(repository: Path, tmp_path: Pa
     assert [attempt.agent_id for attempt in alone.results[0].attempts] == ["a"]
 
 
-def test_outside_change_to_already_dirty_file_is_warning_only(repository: Path, tmp_path: Path) -> None:
-    """開始前から dirty な追跡ファイルを担当が書き換えても outside_changes に出ず、呼び出し側が黙って受け入れる。"""
-    dirty = repository / "tracked.txt"
+def test_concurrent_dirty_checkout_change_keeps_warning_without_rejecting_agent(
+    repository: Path, tmp_path: Path
+) -> None:
+    """別セッションの dirty な checkout の更新だけで担当を拒否すると、変更を取り込めず作業が止まる。"""
+    external = workspace.create_worktree(repository, "HEAD", tmp_path / "parallel checkout")
+    dirty = external / "tracked.txt"
     dirty.write_text("already dirty")
+    marker = tmp_path / "agent-ready"
+    ready = threading.Event()
+
+    def change() -> None:
+        if ready.wait(5):
+            dirty.write_text("another session changed it")
+
+    writer = threading.Thread(target=change)
+    writer.start()
+    try:
+        with set_when(ready, marker.exists):
+            batch = run_workflow(
+                configuration(),
+                "audit",
+                "prompt",
+                repository,
+                output_dir=tmp_path / "run",
+                adapter_loader=lambda _: FakeAdapter({"a": {"marker": str(marker)}}),
+            )
+    finally:
+        writer.join()
+    assert dirty.read_text() == "another session changed it"
+    assert batch.state == "success" and batch.checkout_isolated
+    assert batch.outside_changes == [str(external)]
+
+
+def test_agent_cannot_write_registered_checkouts_but_can_commit_own_worktree(repository: Path, tmp_path: Path) -> None:
+    """担当の既存 checkout への書き込みを許すと、監査差を並行変更扱いにした後に無断変更を取り込む。"""
+    external = workspace.create_worktree(repository, "HEAD", tmp_path / "別セッション checkout\n2")
+    external_gitdir = Path(
+        subprocess.run(
+            ["git", "-C", str(external), "rev-parse", "--path-format=absolute", "--git-dir"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
+    protected = [
+        repository / "tracked.txt",
+        repository / ".git/index",
+        external / "tracked.txt",
+        external_gitdir / "index",
+    ]
+    before = [path.read_bytes() for path in protected]
+    head = subprocess.run(
+        ["git", "-C", str(external), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout
     batch = run_workflow(
         configuration(),
         "audit",
         "prompt",
         repository,
         output_dir=tmp_path / "run",
-        adapter_loader=lambda _: FakeAdapter({"a": {"outside": str(dirty)}}),
+        adapter_loader=lambda _: FakeAdapter(
+            {
+                "a": {
+                    "probe_paths": [str(path) for path in protected],
+                    "other_commit": str(external),
+                    "own_commit": True,
+                    "temporary_worktree": str(tmp_path / "temporary worktree"),
+                }
+            }
+        ),
     )
-    assert dirty.read_text() == "changed again"
-    assert batch.outside_changes == [str(repository)]
+    assert batch.state == "success" and batch.checkout_isolated
+    payload = batch.results[0].attempts[0].payload
+    assert isinstance(payload, dict)
+    assert payload["probes"] == {str(path): True for path in protected} and payload["other_commit"] != 0
+    assert payload["own_commit"] and payload["temporary_worktree"]
+    assert [path.read_bytes() for path in protected] == before
+    assert (
+        subprocess.run(
+            ["git", "-C", str(external), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+        ).stdout
+        == head
+    )
+
+
+def test_allowed_storage_keeps_registered_checkout_inside_it_read_only(repository: Path, tmp_path: Path) -> None:
+    """許可した保存先の内側の既存 worktree を担当が書けると、他者の無断変更を並行変更の警告だけで取り込む。"""
+    (repository / ".git/info").mkdir(exist_ok=True)
+    (repository / ".git/info/exclude").write_text("/tmp/\n")
+    storage = repository / "tmp/agents"
+    storage.mkdir(parents=True)
+    nested = workspace.create_worktree(repository, "HEAD", storage / "別セッション checkout\n2")
+    protected, scratch = nested / "tracked.txt", storage / "scratch.txt"
+    batch = run_workflow(
+        configuration(),
+        "audit",
+        "prompt",
+        repository,
+        output_dir=tmp_path / "run",
+        adapter_loader=lambda _: FakeAdapter({"a": {"probe_paths": [str(protected), str(scratch)]}}),
+        writable_paths=(storage,),
+    )
+    assert batch.state == "success" and batch.checkout_isolated
+    payload = batch.results[0].attempts[0].payload
+    assert isinstance(payload, dict)
+    assert payload["probes"] == {str(protected): True, str(scratch): False}
+    assert protected.read_text() == "original"
+
+
+def test_agent_cannot_replace_registered_checkout_by_moving_its_parent(repository: Path, tmp_path: Path) -> None:
+    """書ける祖先を移して同じパスに複製を置けると、他者の checkout を動かした無断変更を並行変更として取り込む。"""
+    parent = tmp_path / "other session"
+    parent.mkdir()
+    external = workspace.create_worktree(repository, "HEAD", parent / "checkout")
+    inode = external.stat().st_ino
+    batch = run_workflow(
+        configuration(),
+        "audit",
+        "prompt",
+        repository,
+        output_dir=tmp_path / "run",
+        adapter_loader=lambda _: FakeAdapter(
+            {"a": {"replace_parent": str(parent), "replace_file": "checkout/tracked.txt"}}
+        ),
+    )
+    assert batch.state == "success"
+    payload = batch.results[0].attempts[0].payload
+    assert isinstance(payload, dict)
+    assert payload["replaced"] is False
+    assert external.stat().st_ino == inode and (external / "tracked.txt").read_text() == "original"
+
+
+def test_review_save_lock_is_writable_without_exposing_existing_git_state(repository: Path, tmp_path: Path) -> None:
+    """レビュー用のロック・ref を開けても、既存 checkout の HEAD・index・refs を変えさせない。"""
+    common = repository / ".git"
+    branch = subprocess.run(
+        ["git", "-C", str(repository), "symbolic-ref", "--short", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    protected = [common / "HEAD", common / "index", common / "refs/heads" / branch]
+    before = [path.read_bytes() for path in protected]
+    lock = common / "pr-review-save.lock"
+    review_ref = "refs/pr-review/151"
+    batch = run_workflow(
+        configuration(),
+        "audit",
+        "prompt",
+        repository,
+        output_dir=tmp_path / "run",
+        adapter_loader=lambda _: FakeAdapter(
+            {
+                "a": {
+                    "probe_paths": [str(path) for path in protected],
+                    "review_lock": str(lock),
+                    "review_ref": review_ref,
+                }
+            }
+        ),
+        writable_paths=(lock,),
+        private_review_refs=True,
+    )
+    assert batch.state == "success" and batch.checkout_isolated
+    payload = batch.results[0].attempts[0].payload
+    assert isinstance(payload, dict)
+    assert payload["lock_written"] is True
+    assert payload["review_ref_written"] is True
+    assert not (common / review_ref).exists()
+    assert not (common / "packed-refs.lock").exists()
+    assert [path.read_bytes() for path in protected] == before
 
 
 def test_only_allowlisted_environment_and_redacted_results(

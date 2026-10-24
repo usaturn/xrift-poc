@@ -14,7 +14,7 @@ import pytest
 
 from tools.agent_runner import Config, ConfigError
 from tools.agent_runner.adapters import AdapterContext, AdapterOutcome, Capabilities, LaunchSpec
-from tools.agent_runner.models import Agent, Assignment, Identity, Receipt, Role, Runtime, Workflow
+from tools.agent_runner.models import Agent, Assignment, CheckoutAudit, Identity, Receipt, Role, Runtime, Workflow
 from tools.agent_runner.runner import EXCEPTIONS_HEADING
 
 pytest_plugins = ("tools.test_support.plugin",)
@@ -620,6 +620,45 @@ def test_read_only_review_assignment_does_not_stop_implement(inputs: Any, tmp_pa
     adapter = ReadOnlyAdapter()
     batch = mod.run(config("b", "b"), "implement", inputs[0], tmp_path / "implement", adapter_loader=adapter)
     assert batch.state == "success" and [result.role for result in batch.results] == ["implement"]
+
+
+@pytest.mark.parametrize("phase", ["implement", "self-review"])
+def test_main_accepts_isolated_concurrent_checkout_change(
+    inputs: Any,
+    tmp_path: Path,
+    parent: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    phase: str,
+) -> None:
+    """別セッションの checkout 更新で implement や一回枠のレビューを拒否すると作業が止まる。"""
+    selected = config("a", "b")
+
+    def selected_config(*_args: object, **_kwargs: object) -> Config:
+        return selected
+
+    monkeypatch.setattr(mod, "load_config", selected_config)
+    original = mod.run
+
+    def with_concurrent_change(*args: Any, **kwargs: Any) -> Any:
+        kwargs["adapter_loader"] = FakeAdapter()
+        batch = original(*args, **kwargs)
+        batch.outside_changes = [str(parent)]
+        batch.checkout_audit = [CheckoutAudit(path=str(parent), kind="content_changed", reason="content_changed")]
+        return batch
+
+    monkeypatch.setattr(mod, "run", with_concurrent_change)
+    request_file = tmp_path / "request.json"
+    request_file.write_text(json.dumps(inputs[0]), encoding="utf-8")
+    args = ["--phase", phase, "--request", str(request_file), "--output-dir", str(tmp_path / "run")]
+    if phase == "self-review":
+        fix_file = tmp_path / "fix-input.json"
+        fix_file.write_text(json.dumps(inputs[2]), encoding="utf-8")
+        args += ["--planning-file", str(inputs[1]), "--fix-input", str(fix_file)]
+
+    assert mod.main(args) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["outside_changes"] == [str(parent)]
 
 
 def test_review_directory_tampering_is_not_accepted_or_cleaned(inputs: Any, tmp_path: Path) -> None:

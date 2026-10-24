@@ -17,6 +17,7 @@ import stat
 import subprocess
 import threading
 import time
+from collections.abc import Sequence
 from pathlib import Path
 
 from tools.agent_runner.adapters import LaunchSpec
@@ -34,12 +35,25 @@ class WorkspaceError(Exception):
 
 
 class CheckoutSnapshot(dict[str, str | None]):
-    """Keep the historical mapping API while preserving checkout-local diagnostics."""
+    """Keep the historical mapping API while preserving checkout-local diagnostics.
+
+    identities holds the device/inode of each checkout path and its ancestors, so an
+    audit can tell a checkout replaced at the same path from a changed one.
+    """
 
     def __init__(self) -> None:
         super().__init__()
         self.failures: dict[str, CheckoutAudit] = {}
         self.flags: dict[str, tuple[bool, bool]] = {}
+        self.identities: dict[str, tuple[tuple[str, int, int], ...]] = {}
+
+
+@dataclasses.dataclass(frozen=True)
+class CheckoutIsolation:
+    """bwrap arguments, and whether every registered checkout is protected under them."""
+
+    argv: tuple[str, ...]
+    complete: bool
 
 
 class CheckoutAuditError(Exception):
@@ -246,6 +260,35 @@ def _fingerprint(checkout: Path) -> str:
     return digest.hexdigest()
 
 
+def _identities(checkout: Path) -> tuple[tuple[str, int, int], ...]:
+    """Device/inode of the checkout path and each ancestor, as registered (not resolved)."""
+    try:
+        return tuple(
+            (str(path), info.st_dev, info.st_ino)
+            for path in (checkout, *checkout.parents)
+            if path != path.parent
+            for info in (os.lstat(path),)
+        )
+    except FileNotFoundError:
+        raise WorkspaceError("checkout_missing") from None
+    except OSError:
+        raise WorkspaceError("filesystem_unavailable") from None
+
+
+def _replaced(identities: Sequence[tuple[str, int, int]]) -> bool:
+    """Whether a recorded path now exists as another file; a removed path is not a replacement."""
+    for path, device, inode in identities:
+        try:
+            info = os.lstat(path)
+        except FileNotFoundError, NotADirectoryError:
+            continue
+        except OSError:
+            raise WorkspaceError("filesystem_unavailable") from None
+        if (info.st_dev, info.st_ino) != (device, inode):
+            return True
+    return False
+
+
 def snapshot_checkouts(repository: Path) -> CheckoutSnapshot:
     """Fingerprint all registered checkouts, retaining None and safe failure metadata."""
     records = _git(repository, "worktree", "list", "--porcelain", "-z").split(b"\x00\x00")
@@ -261,7 +304,9 @@ def snapshot_checkouts(repository: Path) -> CheckoutSnapshot:
                 path = os.fsdecode(field[len(b"worktree ") :])
                 result.flags[path] = (locked, prunable)
                 try:
+                    identities = _identities(Path(path))
                     result[path] = _fingerprint(Path(path))
+                    result.identities[path] = identities
                 except WorkspaceError as error:
                     result[path] = None
                     result.failures[path] = CheckoutAudit(
@@ -272,6 +317,111 @@ def snapshot_checkouts(repository: Path) -> CheckoutSnapshot:
                         prunable=prunable,
                     )
     return result
+
+
+def checkout_isolation(
+    repository: Path,
+    before: CheckoutSnapshot,
+    work_dir: Path,
+    artifact_dir: Path,
+    writable_paths: Sequence[Path] = (),
+    private_review_refs: bool = False,
+) -> CheckoutIsolation:
+    """Protect registered checkouts from the agent while retaining detached Git worktree writes.
+
+    Mounts apply from the shallowest path down, so a writable directory never hides a
+    protected checkout or Git directory inside it. Each ancestor of a protected checkout
+    becomes a mountpoint with the access it already had, so the agent cannot rename it
+    and put another directory at the checkout's path. A registration that cannot be
+    protected now (missing, unauditable at the snapshot, reached through a symlink, or
+    without a resolvable Git directory) is skipped or protected only partly, and the
+    isolation is incomplete; the others stay protected. Another session may still remove
+    a protected checkout or its ancestors before the mounts are made.
+    """
+    complete = True
+    checkouts: set[Path] = set()
+    gitdirs: set[Path] = set()
+    for path, fingerprint in before.items():
+        try:
+            checkout = Path(path).resolve(strict=True)
+        except OSError, RuntimeError:
+            complete = False
+            continue
+        checkouts.add(checkout)
+        if fingerprint is None or checkout != Path(path):
+            complete = False
+        try:
+            output = _git(checkout, "rev-parse", "--path-format=absolute", "--git-dir")
+            gitdirs.add(Path(os.fsdecode(output.removesuffix(b"\n"))).resolve(strict=True))
+        except WorkspaceError, OSError, RuntimeError:
+            complete = False
+    try:
+        common = git_common_dir(repository)
+        own_gitdir = Path(
+            os.fsdecode(_git(work_dir, "rev-parse", "--path-format=absolute", "--git-dir").removesuffix(b"\n"))
+        ).resolve(strict=True)
+        if not own_gitdir.is_relative_to(common / "worktrees"):
+            raise WorkspaceError()
+        allowed = {artifact_dir.resolve(strict=True)}
+        for requested in writable_paths:
+            if requested.name == "pr-review-save.lock" and requested.parent.resolve(strict=True) == common:
+                descriptor = os.open(requested, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+                try:
+                    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                        raise WorkspaceError()
+                finally:
+                    os.close(descriptor)
+                allowed.add(requested.resolve(strict=True))
+            else:
+                allowed.add(requested.resolve(strict=True))
+        for path in allowed:
+            if path == common / "pr-review-save.lock":
+                continue
+            if not path.is_dir() or path.is_symlink() or path.is_relative_to(common):
+                raise WorkspaceError()
+            for checkout in checkouts:
+                if path.is_relative_to(checkout) and not path.is_relative_to(work_dir):
+                    _git(checkout, "check-ignore", "-q", "--", str(path))
+        objects = (common / "objects").resolve(strict=True)
+        registrations = (common / "worktrees").resolve(strict=True)
+    except OSError, ValueError:
+        raise WorkspaceError() from None
+
+    # Registered checkouts, their Git directories and ancestors may vanish with another
+    # session's cleanup before bwrap mounts them; the -try forms skip what is gone.
+    modes: dict[Path, str] = {checkout: "ro-try" for checkout in checkouts}
+    modes.update({gitdir: "ro-try" for gitdir in gitdirs if gitdir != common})
+    # Git may create packed-refs.lock while deleting a temporary review ref.
+    # An invisible overlay lets those operations complete without changing host refs.
+    modes[common] = "overlay" if private_review_refs else "ro"
+    modes.update({objects: "rw", registrations: "rw", own_gitdir: "rw"})
+    modes.update({path: "rw" for path in allowed})
+    explicit = dict(modes)
+    for protected in (*checkouts, common):
+        for ancestor in protected.parents:
+            if ancestor in modes or ancestor == ancestor.parent or ancestor.is_relative_to(common):
+                continue
+            enclosing = max((path for path in explicit if ancestor.is_relative_to(path)), key=_depth, default=None)
+            modes[ancestor] = "rw-try" if enclosing is None or explicit[enclosing] == "rw" else "ro-try"
+    options = {
+        "ro": ("--ro-bind",),
+        "ro-try": ("--ro-bind-try",),
+        "rw": ("--bind",),
+        "rw-try": ("--bind-try",),
+        "overlay": ("--overlay-src", "--tmp-overlay"),
+    }
+    arguments = ["bwrap", "--unshare-pid", "--die-with-parent", "--bind", "/", "/"]
+    arguments += ["--dev-bind", "/dev", "/dev", "--proc", "/proc"]
+    for path in sorted(modes, key=lambda path: (_depth(path), str(path))):
+        for option in options[modes[path]]:
+            arguments += [option, str(path)]
+        if modes[path] != "overlay":
+            arguments.append(str(path))
+    return CheckoutIsolation(tuple(arguments), complete)
+
+
+def _depth(path: Path) -> int:
+    return len(path.parts)
 
 
 def require_auditable_checkouts(repository: Path) -> CheckoutSnapshot:
@@ -291,6 +441,9 @@ def audit_checkouts(before: dict[str, str | None]) -> list[CheckoutAudit]:
     """Distinguish unavailable baselines, later failures and observed content changes.
 
     A recovered checkout cannot retroactively prove a run's missing baseline.
+    A checkout path, or one of its ancestors, that now exists as another file is a
+    replacement rather than a content change; checkout_missing means the checkout
+    itself no longer exists, its ancestors kept or removed.
     Ordinary historical dictionaries remain accepted with an unknown fixed reason.
     Flags describe the captured registration, not permission to delete it.
     """
@@ -304,13 +457,24 @@ def audit_checkouts(before: dict[str, str | None]) -> list[CheckoutAudit]:
             findings.append(failure or CheckoutAudit(path=path, kind="unavailable_before", reason="audit_unavailable"))
             continue
         try:
+            if _replaced(before.identities.get(path, ()) if isinstance(before, CheckoutSnapshot) else ()):
+                findings.append(
+                    CheckoutAudit(
+                        path=path, kind="replaced", reason="checkout_replaced", locked=locked, prunable=prunable
+                    )
+                )
+                continue
             current = _fingerprint(Path(path))
         except WorkspaceError as error:
+            reason = error.reason
+            if reason == "checkout_missing" and os.path.lexists(path):
+                # A nested checkout vanished, not this one.
+                reason = "filesystem_unavailable"
             findings.append(
                 CheckoutAudit(
                     path=path,
                     kind="unavailable_after",
-                    reason=error.reason,
+                    reason=reason,
                     locked=locked,
                     prunable=prunable,
                 )
@@ -327,6 +491,27 @@ def audit_checkouts(before: dict[str, str | None]) -> list[CheckoutAudit]:
                     )
                 )
     return findings
+
+
+def blocking_checkout_audit(
+    outside_changes: Sequence[str], diagnostics: Sequence[CheckoutAudit], *, isolated: bool
+) -> bool:
+    """Treat only changes a fully protected, stopped agent could not make as warnings.
+
+    Under complete isolation the agent can neither write a registered checkout nor
+    move it or an ancestor, so a content change or a removed checkout is another
+    session's. Replacement at the same path, any other unauditable state, a path
+    mismatch and incomplete isolation still block.
+    """
+    if not isolated:
+        return True
+    if not outside_changes and not diagnostics:
+        return False
+    return list(outside_changes) != [finding.path for finding in diagnostics] or any(
+        (finding.kind, finding.reason)
+        not in {("content_changed", "content_changed"), ("unavailable_after", "checkout_missing")}
+        for finding in diagnostics
+    )
 
 
 def changed_checkouts(before: dict[str, str | None]) -> list[str]:

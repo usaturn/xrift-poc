@@ -1079,7 +1079,7 @@ def session_worktrees(env: Any) -> list[str]:
 
 
 def test_rerun_keeps_the_first_attempt_retained_paths_and_outside_changes(loop: Any, env: Any) -> None:
-    # Issue #41 の再現: 1 回目の alpha は後片付けに失敗して worktree を残し、tool_root も書き換える。再実行は成功する
+    # Issue #41 の再現: 1 回目の alpha は後片付けに失敗して worktree を残し、別セッションが tool_root を更新する。
     run_dir = started_cycle(loop, env)
     adapter = env.reviewers({"alpha": ["failed+retained+outside", "success"], "beta": "success"})
 

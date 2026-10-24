@@ -8,6 +8,7 @@ accept は判定を今の状態でやり直してから --ff-only で取り込�
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -38,7 +39,22 @@ from tools.agent_runner.adapters import Adapter, load_adapter  # noqa: E402
 from tools.agent_runner.config import validate_config  # noqa: E402
 from tools.agent_runner.environ import literal_environ  # noqa: E402
 from tools.agent_runner.models import Assignment, BatchResult  # noqa: E402
-from tools.agent_runner.workspace import CheckoutAuditError, require_auditable_checkouts  # noqa: E402
+from tools.agent_runner.workspace import (  # noqa: E402
+    CheckoutAuditError,
+    blocking_checkout_audit,
+    require_auditable_checkouts,
+)
+
+
+def _load_agent_tmp() -> Any:
+    spec = importlib.util.spec_from_file_location("implement_agent_tmp", ROOT / ".agents/scripts/agent_tmp.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+agent_tmp = _load_agent_tmp()
 
 DEFAULT_TEMPLATE = ROOT / ".devcontainer/agent-runner.toml"
 WORKFLOW = "issue"
@@ -425,7 +441,11 @@ def assess(request: TaskRequest, batch: BatchResult) -> Assessment:
         result = TaskResult.model_validate(attempt.payload)
     except ValidationError as error:
         return Assessment(verdict="rejected", reasons=[f"invalid_result: {_fields(error)}"], work_dir=work_dir)
-    if batch.outside_changes:
+    if not batch.checkout_isolated:
+        return Assessment(
+            verdict="rejected", reasons=["checkout_isolation: incomplete"], work_dir=work_dir, result=result
+        )
+    if blocking_checkout_audit(batch.outside_changes, batch.checkout_audit, isolated=batch.checkout_isolated):
         return Assessment(
             verdict="rejected",
             reasons=[f"outside_changes: {', '.join(batch.outside_changes)}"],
@@ -505,6 +525,8 @@ def run(
         concurrency=1,
         output_dir=output_dir,
         adapter_loader=adapter_loader,
+        # AGENTS.md の置き場所の規則どおり、担当が agent_tmp.py mkdir でスクラッチを作れるようにする
+        writable_paths=agent_tmp.runner_scratch(repository),
         payload_check=is_task_result,
     )
     assessment = assess(request, batch)

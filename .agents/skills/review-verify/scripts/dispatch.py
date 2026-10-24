@@ -41,6 +41,7 @@ from tools.agent_runner.models import BatchResult, CheckoutAudit  # noqa: E402
 from tools.agent_runner.workspace import (  # noqa: E402
     CheckoutAuditError,
     WorkspaceError,
+    blocking_checkout_audit,
     git_common_dir,
     require_auditable_checkouts,
     resolve_revision,
@@ -325,6 +326,8 @@ def dispatch(
         + body
     )
     exceptions = fix_check_write_exceptions(repository) if assigned_externally(config, "fix-check") else ()
+    environment = ROOT / "tools/devenv/.venv"
+    writable_paths = (environment,) if exceptions and environment.is_dir() else ()
     batch = run_workflow(
         config,
         "fix",
@@ -335,6 +338,7 @@ def dispatch(
         output_dir=output_dir,
         adapter_loader=adapter_loader,
         write_exceptions=exceptions,
+        writable_paths=writable_paths,
     )
     result: dict[str, Any] = {
         "batch": batch.model_dump(mode="json"),
@@ -422,10 +426,13 @@ def check_batch(batch: Mapping[str, Any]) -> None:
         diagnostics = [CheckoutAudit.model_validate(item) for item in cast(list[object], raw_diagnostics)]
     except ValidationError:
         raise AcceptError("invalid checkout audit diagnostics") from None
+    if not blocking_checkout_audit(
+        cast(list[str], batch.get("outside_changes", [])), diagnostics, isolated=batch.get("checkout_isolated") is True
+    ):
+        return
     if any(item.kind in {"unavailable_before", "unavailable_after"} for item in diagnostics):
         raise AcceptError("a checkout registered before the run cannot be audited; see batch.checkout_audit")
-    if diagnostics or batch.get("outside_changes"):
-        raise AcceptError("a checkout registered before the run was changed")
+    raise AcceptError("a checkout registered before the run was changed")
 
 
 def final_payload(batch: Mapping[str, Any]) -> dict[str, Any]:
@@ -587,7 +594,11 @@ def main(argv: list[str] | None = None, *, adapter_loader: Callable[[str], Adapt
             }
         )
     )
-    return 0 if batch["state"] in ("self", "success") and not outside and changes == [] else 1
+    diagnostics = [CheckoutAudit.model_validate(item) for item in batch["checkout_audit"]]
+    blocked = blocking_checkout_audit(
+        outside, diagnostics, isolated=batch.get("checkout_isolated") is True or batch["state"] == "self"
+    )
+    return 0 if batch["state"] in ("self", "success") and not blocked and changes == [] else 1
 
 
 if __name__ == "__main__":

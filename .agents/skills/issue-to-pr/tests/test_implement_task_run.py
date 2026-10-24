@@ -13,7 +13,7 @@ import pytest
 
 from tools.agent_runner import Config
 from tools.agent_runner.adapters import AdapterContext, AdapterOutcome, Capabilities, LaunchSpec
-from tools.agent_runner.models import Agent, Assignment, BatchResult, Identity, Receipt, Role, Workflow
+from tools.agent_runner.models import Agent, Assignment, BatchResult, CheckoutAudit, Identity, Receipt, Role, Workflow
 from tools.test_support.texts import FINDING_CONTENT
 
 pytest_plugins = ("tools.test_support.plugin",)
@@ -332,15 +332,33 @@ def test_reported_commit_other_than_head_is_rejected(fx: Fixture) -> None:
     assert any("HEAD" in reason for reason in summary["reasons"])
 
 
-def test_outside_change_is_rejected(fx: Fixture) -> None:
+def test_agent_write_to_existing_checkout_is_blocked(fx: Fixture) -> None:
+    """担当が feature checkout に書けると、監査警告を許可した後に無断変更が取り込まれる。"""
     agent = fx.scenario(
         "a", done(), steps=[WRITE_A, COMMIT, {"kind": "outside", "path": str(fx.feature / "stray.txt")}]
     )
 
     summary = fx.run(fx.config(("a", agent)))
 
-    assert summary["verdict"] == "rejected"
-    assert str(fx.feature) in summary["outside_changes"]
+    assert summary["verdict"] == "failed"
+    assert not (fx.feature / "stray.txt").exists()
+
+
+def test_accept_imports_isolated_result_after_other_checkout_changes(fx: Fixture) -> None:
+    """別セッションの checkout 更新で importable な Task を拒否すると、実装結果を取り込めない。"""
+    fx.run(fx.config(("a", fx.scenario("a", done(), steps=[WRITE_A, COMMIT]))))
+    record_path = fx.output / "task.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    record["batch"]["outside_changes"] = [str(fx.main)]
+    record["batch"]["checkout_audit"] = [
+        CheckoutAudit(path=str(fx.main), kind="content_changed", reason="content_changed").model_dump()
+    ]
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+
+    result = mod.accept(fx.output)
+
+    assert result["state"] == "accepted"
+    assert git(fx.feature, "rev-parse", "HEAD") == result["commit"]
 
 
 @pytest.mark.parametrize("status", ["BLOCKED", "NEEDS_CONTEXT"])

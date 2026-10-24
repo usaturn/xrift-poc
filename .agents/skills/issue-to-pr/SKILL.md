@@ -149,7 +149,7 @@ herdr-agent-task set "Issue #$NUMBER 実装・PR作成"
    | `importable` | `implement_task.py accept --run-dir "$RUN_DIR"`。判定を今の状態でやり直し、担当が commit しなかったとき（`helper_commit`）は helper が `commit_message` で commit してから、feature worktree に `--ff-only` で取り込む |
    | `no_changes` | 取り込むものは無い。Task のレビューで、変更が要らないことを確かめる |
    | `retry`（担当が `BLOCKED`・`NEEDS_CONTEXT`） | `result.concerns`・`result.incomplete` に答える文脈を `prompt` に足し、同じ担当に新しい依頼をする（新しい `RUN_DIR`）。回数は Plan の「実行予算」の再試行の上限まで。上限に達したら止まる |
-   | `rejected`（`outside_changes`、取り込みの前の確認に反した） | 取り込まない。再試行の上限の中で依頼し直すか止まるかを決め、`reasons` と理由を ledger に書く |
+   | `rejected`（`outside_changes`、外部担当の隔離不完全、取り込みの前の確認に反した） | 取り込まない。再試行の上限の中で依頼し直すか止まるかを決め、`reasons` と理由を ledger に書く |
    | `failed`（停止を確認できない、期限切れ・認証待ち・起動の失敗、`fallback` が尽きた。結果の形の誤り（`TaskResult` に合わない）は runner が `fallback` の次の候補を試し、候補が無いか尽きたらここに入る） | その Task で止まる |
 
 4. **確認とレビュー:** 取り込んだ後、feature worktree で関連テストと静的チェックを実行し、SDD の Task のレビューを行う。指摘の修正も同じ担当に新しい依頼として出す（新しい `RUN_DIR`。`revision` は取り込んだ後の HEAD）

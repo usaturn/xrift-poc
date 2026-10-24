@@ -909,6 +909,20 @@ def review_write_exceptions(run: RunRecord) -> tuple[str, ...]:
     )
 
 
+def review_writable_paths(run: RunRecord) -> tuple[Path, ...]:
+    """Allow the review helper's saved output without exposing other checkout content."""
+    review_dir = Path(run.review_dir)
+    parent = review_dir.parents[3]
+    scratch = parent / "tmp/agents"
+    scratch.mkdir(parents=True, exist_ok=True)
+    common = Path(git_output(parent, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+    paths = [review_dir, scratch, common / "pr-review-save.lock"]
+    environment = Path(run.tool_root) / "tools/devenv/.venv"
+    if environment.is_dir():
+        paths.append(environment)
+    return tuple(paths)
+
+
 def reviewer_prompt(
     *,
     tool_root: Path,
@@ -1757,6 +1771,8 @@ def _review_batch(
                 output_dir=output_dir,
                 adapter_loader=adapter_loader,
                 write_exceptions=review_write_exceptions(run),
+                writable_paths=review_writable_paths(run),
+                private_review_refs=True,
             )
         except (ConfigError, RunnerError) as error:
             if output_dir.exists():
