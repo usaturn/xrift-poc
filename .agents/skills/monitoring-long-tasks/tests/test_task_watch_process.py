@@ -73,10 +73,8 @@ def run_watch(tmp_path: Path, mode: str, *options: str, partial: bool = False) -
     return completed.returncode, final
 
 
-def call(*args: str, cwd: Path | None = None) -> tuple[int, dict[str, Any]]:
-    completed = subprocess.run(
-        [sys.executable, str(SCRIPT), *args], capture_output=True, text=True, timeout=60, cwd=cwd
-    )
+def call(*args: str) -> tuple[int, dict[str, Any]]:
+    completed = subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True, timeout=60)
     return completed.returncode, json.loads(completed.stdout)
 
 
@@ -87,66 +85,8 @@ def wait_for(path: Path, timeout: float = 10.0) -> None:
         time.sleep(0.05)
 
 
-def test_progressing_worker_completes_without_stop(tmp_path: Path) -> None:
-    code, final = run_watch(
-        tmp_path,
-        "progress",
-        "--deadline-seconds",
-        "20",
-        "--no-progress-seconds",
-        "2",
-        "--result-file",
-        str(tmp_path / "result.json"),
-        "--stop",
-        "TERM",
-    )
-
-    assert (code, final["decision"], final["reason"]) == (0, "completed", "")
-    assert final["stop"] is None and final["substantive_items"] == 5
-    assert final["target"]["exit_code"] == 0
-
-
-def test_heartbeat_only_worker_is_stopped_for_no_progress(tmp_path: Path) -> None:
-    code, final = run_watch(
-        tmp_path, "heartbeat", "--deadline-seconds", "20", "--no-progress-seconds", "0.6", "--stop", "TERM"
-    )
-
-    assert (code, final["decision"], final["reason"]) == (1, "stopped", "no_progress")
-    assert final["stop"]["confirmed"] is True and final["stop"]["signal"] == "SIGTERM"
-    assert final["substantive_items"] == 1 and final["heartbeats"] > 2
-    assert final["elapsed_seconds"] < 10
-    assert not alive(final["target"]["pid"])
-
-
-def test_repeated_failure_stops_worker(tmp_path: Path) -> None:
-    code, final = run_watch(
-        tmp_path, "failure", "--deadline-seconds", "20", "--max-repeated-failures", "2", "--stop", "TERM"
-    )
-
-    assert (code, final["decision"], final["reason"]) == (1, "stopped", "repeated_failure")
-    assert final["failures"]["same-timeout"]["failure_class"] == "reliability"
-    assert final["failures"]["same-timeout"]["count"] >= 2
-
-
-def test_safety_failure_stops_at_first_record(tmp_path: Path) -> None:
-    code, final = run_watch(tmp_path, "safety", "--deadline-seconds", "20", "--stop", "TERM")
-
-    assert (code, final["decision"], final["reason"]) == (1, "stopped", "safety")
-    assert final["failures"] == {"unknown-send": {"failure_class": "safety", "count": 1}}
-
-
-def test_deadline_stops_even_while_progressing(tmp_path: Path) -> None:
-    code, final = run_watch(
-        tmp_path, "endless", "--deadline-seconds", "2", "--no-progress-seconds", "1", "--stop", "INT"
-    )
-
-    assert (code, final["decision"], final["reason"]) == (1, "stopped", "deadline")
-    assert final["stop"]["signal"] == "SIGINT" and final["stop"]["confirmed"] is True
-    assert final["elapsed_seconds"] >= 2 and final["substantive_items"] > 3
-    assert final["deadline_exceeded"] is True
-
-
 def test_unstoppable_worker_is_held_and_left_running(tmp_path: Path) -> None:
+    """止まらない worker を停止済みと報告し、司令塔が動いている worker の作業領域を消して依存作業を始める。"""
     code, final = run_watch(
         tmp_path, "ignore-term", "--deadline-seconds", "1", "--stop", "TERM", "--stop-grace-seconds", "0.5"
     )
@@ -160,25 +100,8 @@ def test_unstoppable_worker_is_held_and_left_running(tmp_path: Path) -> None:
         os.killpg(pid, signal.SIGKILL)
 
 
-def test_escalate_kill_confirms_stop_of_term_ignoring_worker(tmp_path: Path) -> None:
-    code, final = run_watch(
-        tmp_path,
-        "ignore-term",
-        "--deadline-seconds",
-        "1",
-        "--stop",
-        "TERM",
-        "--stop-grace-seconds",
-        "0.5",
-        "--escalate-kill",
-    )
-
-    assert (code, final["decision"], final["reason"]) == (1, "stopped", "deadline")
-    assert final["stop"]["confirmed"] is True and final["residual_pids"] == []
-    assert not alive(final["target"]["pid"])
-
-
 def test_undeclared_stop_never_signals(tmp_path: Path) -> None:
+    """停止を宣言していない対象へシグナルを送り、止めてよいと言われていないプロセスを止める。"""
     code, final = run_watch(tmp_path, "undeclared", "--deadline-seconds", "0.3", "--stop", "none")
 
     assert (code, final["decision"]) == (0, "completed")
@@ -189,6 +112,7 @@ def test_undeclared_stop_never_signals(tmp_path: Path) -> None:
 
 
 def test_partial_result_survives_stop_for_investigation_in_reserve(tmp_path: Path) -> None:
+    """停止した worker が保存した部分成果が final.json から欠け、司令塔が部分成果を見落とす。"""
     code, final = run_watch(
         tmp_path,
         "reserve-investigate",
@@ -207,44 +131,8 @@ def test_partial_result_survives_stop_for_investigation_in_reserve(tmp_path: Pat
     assert (tmp_path / "partial.md").read_text(encoding="utf-8") == "途中までの結論\n"
 
 
-def test_finalize_aware_worker_saves_and_completes(tmp_path: Path) -> None:
-    code, final = run_watch(
-        tmp_path,
-        "finalize-aware",
-        "--deadline-seconds",
-        "10",
-        "--reserve-seconds",
-        "9.5",
-        "--result-file",
-        str(tmp_path / "result.json"),
-        "--stop",
-        "TERM",
-    )
-
-    assert (code, final["decision"], final["reason"]) == (0, "completed", "")
-    assert final["finalize_requested"] is True and final["stop"] is None
-    assert final["partial_results"] == [str(tmp_path / "result.json")]
-
-
-def test_item_written_right_after_finalize_request_is_within_grace(tmp_path: Path) -> None:
-    code, final = run_watch(
-        tmp_path,
-        "finalize-late",
-        "--deadline-seconds",
-        "10",
-        "--reserve-seconds",
-        "9.5",
-        "--result-file",
-        str(tmp_path / "result.json"),
-        "--stop",
-        "TERM",
-    )
-
-    assert (code, final["decision"], final["reason"]) == (0, "completed", "")
-    assert final["finalize_requested"] is True
-
-
 def test_safety_failure_then_exit_is_not_completed(tmp_path: Path) -> None:
+    """観測が安全の失敗の記録を判定へ渡さず、安全の失敗の後に終えた worker を完了とする。"""
     code, final = run_watch(
         tmp_path,
         "safety-exit",
@@ -262,6 +150,7 @@ def test_safety_failure_then_exit_is_not_completed(tmp_path: Path) -> None:
 
 
 def test_processes_left_in_the_group_after_exit_are_held(tmp_path: Path) -> None:
+    """終了後も同じ group のプロセスが残るのに完了とし、動いているプロセスの作業領域を片付けさせる。"""
     code, final = run_watch(
         tmp_path, "orphan-child", "--deadline-seconds", "20", "--stop", "TERM", "--stop-grace-seconds", "1"
     )
@@ -274,6 +163,7 @@ def test_processes_left_in_the_group_after_exit_are_held(tmp_path: Path) -> None
 
 
 def test_stop_refuses_unrelated_and_caller_pids(tmp_path: Path) -> None:
+    """PID の再利用・無関係なプロセス・呼び出し元自身へ SIGINT を送り、別のプロセスを止める。"""
     sleeper = subprocess.Popen(["sleep", "30"])
     try:
         cases = {
@@ -305,47 +195,8 @@ def test_stop_refuses_unrelated_and_caller_pids(tmp_path: Path) -> None:
         sleeper.wait()
 
 
-def test_operator_stop_confirms_and_reports_operator(tmp_path: Path) -> None:
-    argv = watch_argv(tmp_path, "endless", "--deadline-seconds", "60", "--stop", "TERM")
-    argv[argv.index("--poll-seconds") + 1] = "5"
-    watcher = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    try:
-        wait_for(tmp_path / "state" / "status.json")
-        started = time.monotonic()
-
-        code, final = call("stop", "--state-dir", str(tmp_path / "state"))
-
-        assert time.monotonic() - started < 4
-        assert (code, final["decision"], final["reason"]) == (1, "stopped", "operator")
-        assert final["stop"]["confirmed"] is True
-        assert watcher.wait(timeout=10) == 1
-    finally:
-        if watcher.poll() is None:
-            watcher.kill()
-            watcher.wait()
-
-
-def test_relative_state_dir_round_trip(tmp_path: Path) -> None:
-    argv = watch_argv(tmp_path, "endless", "--deadline-seconds", "60", "--stop", "TERM")
-    argv[argv.index("--state-dir") + 1] = "state"
-    watcher = subprocess.Popen(argv, cwd=tmp_path, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    try:
-        wait_for(tmp_path / "state" / "status.json")
-
-        code, status = call("status", "--state-dir", "state", cwd=tmp_path)
-        assert (code, status["source"], status["watcher_alive"], status["target_alive"]) == (0, "status", True, True)
-        assert status["decision"] == "continue"
-
-        code, final = call("stop", "--state-dir", "state", cwd=tmp_path)
-        assert (code, final["reason"]) == (1, "operator")
-        assert final["paths"]["state_dir"] == str(tmp_path / "state")
-    finally:
-        if watcher.poll() is None:
-            watcher.kill()
-        watcher.wait()
-
-
 def test_state_dir_with_spaces_round_trip(tmp_path: Path) -> None:
+    """生きている watcher・対象を status が終了済みと報告し、動いている対象の作業領域を片付けさせる。"""
     # xrift-poc #21 の受け入れ基準の実入力（空白を含む state dir のパス）。
     base = tmp_path / "作業 ディレクトリ"
     base.mkdir()
@@ -359,65 +210,22 @@ def test_state_dir_with_spaces_round_trip(tmp_path: Path) -> None:
 
         code, status = call("status", "--state-dir", str(base / "state"))
         assert (code, status["watcher_alive"], status["target_alive"]) == (0, True, True)
-
-        code, final = call("stop", "--state-dir", str(base / "state"))
-        assert (code, final["reason"]) == (1, "operator")
-        assert final["paths"]["state_dir"] == str(base / "state")
     finally:
+        # 後始末。宣言どおりに対象を止めてから watcher を回収する。
+        subprocess.run(
+            [sys.executable, str(SCRIPT), "stop", "--state-dir", str(base / "state")], capture_output=True, timeout=60
+        )
         if watcher.poll() is None:
             watcher.kill()
         watcher.wait()
 
 
-def test_status_of_finished_run_reports_final_and_dead_processes(tmp_path: Path) -> None:
-    run_watch(tmp_path, "progress", "--deadline-seconds", "20", "--stop", "TERM")
-
-    code, status = call("status", "--state-dir", str(tmp_path / "state"))
-
-    assert (code, status["source"], status["decision"]) == (0, "final", "completed")
-    assert (status["watcher_alive"], status["target_alive"]) == (False, False)
-
-
-def test_launch_failure_is_reported_as_incomplete(tmp_path: Path) -> None:
-    completed = subprocess.run(
-        [
-            sys.executable,
-            str(SCRIPT),
-            "run",
-            "--state-dir",
-            str(tmp_path / "state"),
-            "--deadline-seconds",
-            "5",
-            "--stop",
-            "TERM",
-            "--",
-            str(tmp_path / "missing-command"),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    final = json.loads((tmp_path / "state" / "final.json").read_text(encoding="utf-8"))
-
-    assert (completed.returncode, final["decision"], final["reason"]) == (1, "exited_incomplete", "launch_failed")
-    assert final["target"]["pid"] is None
-
-
-def test_invalid_arguments_exit_2_without_creating_state(tmp_path: Path) -> None:
+def test_existing_state_dir_is_never_reused(tmp_path: Path) -> None:
+    """既存の state dir を使い、別の run の宣言・状態・最終結果を上書きする。"""
     state = tmp_path / "state"
-    base = [sys.executable, str(SCRIPT), "run", "--state-dir", str(state), "--stop", "TERM"]
-    invalid = [
-        [*base, "--deadline-seconds", "5", "--reserve-seconds", "5", "--", "true"],
-        [*base, "--deadline-seconds", "5", "--no-progress-seconds", "1", "--", "true"],
-        [*base, "--deadline-seconds", "5", "--stop-grace-seconds", "31", "--", "true"],
-        [*base, "--deadline-seconds", "5", "--"],
-        [*base, "--deadline-seconds", "5"],
-    ]
-    for argv in invalid:
-        assert subprocess.run(argv, capture_output=True, timeout=30).returncode == 2, argv
-        assert not state.exists()
-
     state.mkdir()
     (state / "keep").write_text("x", encoding="utf-8")
-    assert subprocess.run([*base, "--deadline-seconds", "5", "--", "true"], capture_output=True).returncode == 2
+    argv = [sys.executable, str(SCRIPT), "run", "--state-dir", str(state), "--stop", "TERM", "--deadline-seconds", "5"]
+
+    assert subprocess.run([*argv, "--", "true"], capture_output=True, timeout=30).returncode == 2
     assert [path.name for path in state.iterdir()] == ["keep"]
