@@ -57,6 +57,8 @@ def test_make_session_dir_creates_unique_dirs_under_tmp_agents(tmp_path: Path) -
     for path in (first, second):
         assert path.is_dir()
         assert path.is_relative_to(main)
+        # Git は空の未追跡ディレクトリを status に出さない。ファイルを置いて、無視されていることを確かめる。
+        (path / "note.txt").write_text("x\n", encoding="utf-8")
     assert git(main, "status", "--porcelain") == ""
 
 
