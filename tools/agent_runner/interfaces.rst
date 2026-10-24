@@ -348,9 +348,16 @@ CLI と API
 
 グローバルの --template / --config はサブコマンドの前に置く。
 output-dir は既存 directory/symlink を拒否する。省略時は /tmp 内の一意の directory（``/tmp/xrift-poc-agent-runner-*``）。
-runner はこの directory を消さない（実行の後に成果物を読むための出力先である）。不要になったら利用者が directory ごと消す
-（例: ``rm -rf -- "${dir:?}"``）。中に通常のファイルでないもの（FIFO の ``receipt.json`` など）があると、開いた処理が止まるので、
-中身を開いて確かめない。種類を見るときは ``find "${dir:?}" -type p`` のように開かずに調べる。Dev Container を作り直すと消える。
+runner はこの directory を消さない（実行の後に成果物を読むための出力先である）。
+中にある ``<request_id>/attempt-<n>/worktree`` は対象 repository に登録した worktree なので、不要になったら利用者が、
+この節の末尾の回収の手順（``git worktree remove <work_dir>``。変更が残る worktree は force で消さない）で
+各 worktree の登録を外してから directory を消す（例: 登録を外した後に ``rm -rf -- "${dir:?}"``）。
+登録を外さずに消すと、登録だけが対象 repository に残り、その repository に対する ``implement_task.py run``・
+``run_roles.py``・``dispatch.py`` が起動の前の監査で止まる。変更が残る worktree の内容も確かめないまま消える。
+中に通常のファイルでないもの（FIFO の ``receipt.json`` など）があると、開いた処理が止まるので、
+中身を開いて確かめない。種類を見るときは ``find "${dir:?}" -type p`` のように開かずに調べる。
+Dev Container を作り直すと /tmp の directory は消えるが、対象 repository の登録は残る。
+残った登録は ``.devcontainer/README.md`` の「完了・停止・保持」の手順で確かめてから外す。
 ``--write-exception`` は API の ``write_exceptions`` の 1 件にあたる。繰り返し指定でき、指定した順に並ぶ。
 workflow のすべての役割に同じ例外が付く（役割ごとには分けない）。
 例外の行は作業範囲の指示であり、mount の書き込み許可にはならない。
