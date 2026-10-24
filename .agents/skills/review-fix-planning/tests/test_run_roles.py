@@ -269,7 +269,8 @@ def test_unconfirmed_stop_blocks_fix_check_accept_and_keeps_budget(
 
     def no_stop(*args: Any, **kwargs: Any) -> Any:
         batch = original(*args, **kwargs)
-        batch.results[0].attempts[-1].stop_confirmed = False
+        fix_check = next(result for result in batch.results if result.role == "fix-check")
+        fix_check.attempts[-1].stop_confirmed = False
         return batch
 
     monkeypatch.setattr(mod, "run_workflow", no_stop)

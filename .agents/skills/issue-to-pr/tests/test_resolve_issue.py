@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.test_support.repos import EnvRepo, create_env_repo, create_product
+from tools.test_support.repos import EnvRepo, create_env_repo, create_owned_worktree, create_product
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "resolve_issue.py"
 
@@ -33,6 +33,11 @@ def location(env: EnvRepo, where: str) -> Path:
         return create_product(env.root, "worlds", "plain", git=False)
     if where == "no-origin":
         return create_product(env.root, "items", "local-only")
+    if where == "env-worktree-product":
+        worktree = create_owned_worktree(env.root, env.root / ".worktrees", name="feature")
+        project = worktree / "worlds" / "w"
+        project.mkdir(parents=True)
+        return project
     raise AssertionError(where)
 
 
@@ -111,6 +116,8 @@ def test_number_in_a_product_resolves_to_the_product_repository(
         pytest.param("#42", "uninitialized", "usaturn/xrift-poc", id="uninitialized"),
         # repository が null の制作物を親に読み替えない
         pytest.param("#42", "no-origin", "usaturn/xrift-poc", id="no-origin"),
+        # 親の feature worktree の worlds/ の下（制作物の置き場所ではない）を親と判定しない
+        pytest.param("#42", "env-worktree-product", "usaturn/xrift-poc", id="env-worktree-product"),
     ],
 )
 def test_rejected_targets(
