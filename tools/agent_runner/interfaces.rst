@@ -116,10 +116,10 @@ nested_invocation / invalid_config。原文・値・Git 診断は返さない。
   receipt_path は attempt 領域の新規ファイル。
   スキル・追加引数・モデル・effort・承認設定を実際の CLI に適用するのは adapter の責務。
 
-``LaunchSpec(argv: tuple[str, ...], stdin: bytes, env: dict[str, str] = {})``
+``LaunchSpec(argv: tuple[str, ...], stdin: bytes)``
   プロンプトは stdin または request ファイルで渡す。argv に埋め込まない。
-  シェルは使用しない。env は明示的な追加だけ。
-  入れ子防止の AGENT_RUNNER_DEPTH=1 と Git routing の除外は runner が強制する。
+  シェルは使用しない。adapter は環境変数を足さない。担当の環境は、agent の env の許可リストと
+  入れ子防止の AGENT_RUNNER_DEPTH=1 から runner が作り、Git routing の変数を除く。
 
 ``AdapterOutcome(receipt=None, identity=Identity(), state=None, diagnosis=None)``
   collect は CLI イベント・終了情報を解釈し、receipt と実測の identity を返す。
