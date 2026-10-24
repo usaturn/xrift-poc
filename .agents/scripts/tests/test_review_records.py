@@ -159,6 +159,9 @@ INVALID_RECORDS = [
     # 今の HEAD をレビューしたレビュアーのいないサイクルで no_fix_needed にする
     pytest.param(
         apply(
+            set_value("outcome", value="no_fix_needed"),
+            delete("commit"),
+            set_value("decisions", 0, "state", value="resolved"),
             set_value("seats", 0, "file_head", value=UNSYNCED),
             set_value("seats", 0, "rerun", value=False),
             set_value("seats", 1, "file_head", value=UNSYNCED),
@@ -211,9 +214,16 @@ INVALID_RECORDS = [
         id="duplicate-decision-id",
     ),
     # planner.agent_id を model から作らない記録を通すと、
-    # 別の planner の同じ巡の状況コメントを自分のものとして上書きし、同じ巡の照合もすり抜ける
+    # 別の planner の同じサイクルの状況コメントを自分のものとして上書きし、同じサイクルの照合もすり抜ける
     pytest.param(
         set_value("planner", "agent_id", value="gpt-6-sol"), "planner.agent_id", id="agent-id-not-derived-from-model"
+    ),
+    # 空白の planner.model を通すと、agent_id の導出の照合（空白でない model にだけ働く）を飛ばし、
+    # 別の planner の同じサイクルの状況コメントを上書きする
+    pytest.param(
+        apply(set_value("planner", "model", value=" "), set_value("planner", "agent_id", value="gpt-6-sol")),
+        "planner.model",
+        id="blank-planner-model",
     ),
 ]
 
@@ -226,14 +236,14 @@ def test_invalid_records_are_rejected(mutate: Mutation, where: str) -> None:
     record = round_one()
     mutate(record)
     problems = problems_of(lambda: review_records.validate_record(record))
-    assert all(problem.startswith(where) for problem in problems), problems
+    assert all(problem.startswith(f"{where}:") for problem in problems), problems
 
 
 POC_PR: dict[str, Any] = {"repository": "usaturn/xrift-poc", "number": 484}
 
 
 def test_fold_keeps_the_latest_state_of_each_decision() -> None:
-    """fold が巡の順に後の記載を優先しなくなると、
+    """fold がサイクルの順に後の記載を優先しなくなると、
     判断の今の状態を黙って誤り、マージの判定・持ち越し・次のサイクルの照合がそれを使う。"""
     first = review_records.validate_record(round_one())
     second = review_records.validate_record(round_two())
@@ -271,7 +281,7 @@ def test_fold_blames_the_records_that_differ_from_the_expected_pull_request() ->
 
 
 def test_check_against_keeps_one_planner_per_round() -> None:
-    """同じ巡を別の planner が記録できると、fold が後の記録で前の判断を黙って上書きし、
+    """同じサイクルを別の planner が記録できると、fold が後の記録で前の判断を黙って上書きし、
     前の planner の Fix・Hold が消えたまま `no_fix_needed` に進める（境界: 並行する planner のときだけ起きる）。"""
     prior = review_records.fold(
         [
@@ -281,18 +291,22 @@ def test_check_against_keeps_one_planner_per_round() -> None:
     )
     record = round_two()
     record["planner"] = {"model": "gpt-6-sol", "runtime": "codex", "agent_id": "gpt-6-sol"}
+    # 2 人目の planner は前の状態を引き継ぐだけにし、サイクルの番号以外の検査が反応しないようにする
+    for entry in record["decisions"]:
+        entry["change"] = "inherited"
+        entry.pop("previous_state", None)
     checked = review_records.validate_record(record)
-    assert any(
-        problem.startswith("round") for problem in problems_of(lambda: review_records.check_against(checked, prior))
-    )
+    problems = problems_of(lambda: review_records.check_against(checked, prior))
+    assert problems and all(problem.startswith("round:") for problem in problems)
 
 
 def test_check_against_rejects_finishing_with_an_earlier_hold() -> None:
-    """前の巡の Hold を残したまま `no_fix_needed` を通すと、
-    finalize がマージする（記録の中だけの検査では見えない、巡をまたぐ未解決）。"""
+    """前のサイクルの Hold を残したまま `no_fix_needed` を通すと、
+    finalize がマージする（記録の中だけの検査では見えない、サイクルをまたぐ未解決）。"""
     first = round_one()
     first["decisions"][1]["state"] = "hold"
     del first["decisions"][1]["revisit_when"]
+    held = first["decisions"][1]["id"]
     prior = review_records.fold([(101, review_records.validate_record(first))])
     record = round_two()
     record["decisions"] = [decision("Grok-4.7#M-1@25e76f6c513f", "resolved", change="changed", previous_state="fix")]
@@ -300,7 +314,8 @@ def test_check_against_rejects_finishing_with_an_earlier_hold() -> None:
     del record["commit"]
     checked = review_records.validate_record(record)
     problems = problems_of(lambda: review_records.check_against(checked, prior))
-    assert problems and all(problem.startswith("outcome") for problem in problems)
+    assert problems and all(problem.startswith("outcome:") for problem in problems)
+    assert any(held in problem for problem in problems)
 
 
 HUMAN_PART = "\n".join(["## review-fix-planning（claude-opus-5-5）", "", "### レビュー状況", "", "- 分類: 例"])
@@ -357,7 +372,7 @@ def test_collect_records_reads_trusted_round_status_comments_only() -> None:
 
 def test_collect_records_names_every_broken_comment() -> None:
     """読むべき状況コメントの記録が壊れているときに黙って読み飛ばすと、
-    その巡の判断（Hold・Fix）が状態から消え、`no_fix_needed` で最終化できる。"""
+    そのサイクルの判断（Hold・Fix）が状態から消え、`no_fix_needed` で最終化できる。"""
     marker_lines = "<!-- review-fix-planning:agent:claude-opus-5-5 -->\n" + review_records.round_marker(1, HEAD_1)
     broken = status_body(review_records.validate_record(round_one())).replace('"round": 1,', '"round": 0,')
     comments = [
