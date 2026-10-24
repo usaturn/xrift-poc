@@ -633,7 +633,11 @@ def test_main_accepts_isolated_concurrent_checkout_change(
 ) -> None:
     """別セッションの checkout 更新で implement や一回枠のレビューを拒否すると作業が止まる。"""
     selected = config("a", "b")
-    monkeypatch.setattr(mod, "load_config", lambda *args, **kwargs: selected)
+
+    def selected_config(*_args: object, **_kwargs: object) -> Config:
+        return selected
+
+    monkeypatch.setattr(mod, "load_config", selected_config)
     original = mod.run
 
     def with_concurrent_change(*args: Any, **kwargs: Any) -> Any:
