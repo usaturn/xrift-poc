@@ -48,6 +48,22 @@ for name in options.get('probe_paths', []):
         probes[name] = True
     else:
         probes[name] = False
+lock_written = None
+if options.get('review_lock'):
+    try:
+        pathlib.Path(options['review_lock']).write_text('held')
+    except OSError:
+        lock_written = False
+    else:
+        lock_written = True
+review_ref_written = None
+if options.get('review_ref'):
+    try:
+        pathlib.Path(options['review_ref']).write_text('temporary review head')
+    except OSError:
+        review_ref_written = False
+    else:
+        review_ref_written = True
 other_commit = None
 if options.get('other_commit'):
     other_commit = subprocess.run(
@@ -86,7 +102,8 @@ print(os.environ.get('Extra_Password', 'no-password'), file=sys.stderr)
 payload = options.get('payload', {'prompt': request['prompt'], 'depth': os.environ.get('AGENT_RUNNER_DEPTH'),
     'ambient': os.environ.get('UNCONFIGURED_SECRET'), 'git': os.environ.get('GIT_DIR'),
     'probes': probes, 'other_commit': other_commit, 'own_commit': own_commit,
-    'temporary_worktree': temporary_worktree})
+    'temporary_worktree': temporary_worktree, 'lock_written': lock_written,
+    'review_ref_written': review_ref_written})
 receipt = {key: request[key] for key in ('schema_version', 'run_id', 'request_id', 'agent_id', 'role')}
 receipt.update(status='success', payload=payload)
 if not options.get('missing'):
@@ -357,6 +374,47 @@ def test_agent_cannot_write_registered_checkouts_but_can_commit_own_worktree(rep
         ).stdout
         == head
     )
+
+
+def test_review_save_lock_is_writable_without_exposing_existing_git_state(repository: Path, tmp_path: Path) -> None:
+    """レビュー用のロック・ref を開けても、既存 checkout の HEAD・index・refs を変えさせない。"""
+    common = repository / ".git"
+    branch = subprocess.run(
+        ["git", "-C", str(repository), "symbolic-ref", "--short", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    protected = [common / "HEAD", common / "index", common / "refs/heads" / branch]
+    before = [path.read_bytes() for path in protected]
+    lock = common / "pr-review-save.lock"
+    review_ref = common / "refs/pr-review/151"
+    batch = run_workflow(
+        configuration(),
+        "audit",
+        "prompt",
+        repository,
+        output_dir=tmp_path / "run",
+        adapter_loader=lambda _: FakeAdapter(
+            {
+                "a": {
+                    "probe_paths": [str(path) for path in protected],
+                    "review_lock": str(lock),
+                    "review_ref": str(review_ref),
+                }
+            }
+        ),
+        writable_paths=(lock,),
+        private_review_refs=True,
+    )
+    assert batch.state == "success" and batch.checkout_isolated
+    payload = batch.results[0].attempts[0].payload
+    assert isinstance(payload, dict)
+    assert payload["lock_written"] is True
+    assert payload["review_ref_written"] is True
+    assert not review_ref.exists()
+    assert payload["probes"] == {str(path): True for path in protected}
+    assert [path.read_bytes() for path in protected] == before
 
 
 def test_only_allowlisted_environment_and_redacted_results(

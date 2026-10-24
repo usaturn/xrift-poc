@@ -40,6 +40,7 @@ from tools.agent_runner.models import BatchResult  # noqa: E402
 from tools.agent_runner.workspace import (  # noqa: E402
     CheckoutAuditError,
     WorkspaceError,
+    blocking_checkout_audit,
     git_common_dir,
     require_auditable_checkouts,
     resolve_revision,
@@ -243,6 +244,27 @@ def write_exceptions(config: Config, data: RoleInput) -> tuple[str, ...]:
     return tuple(lines)
 
 
+def writable_review_paths(config: Config, data: RoleInput) -> tuple[Path, ...]:
+    """Keep only the review helper's ignored storage and save lock writable in protected checkouts."""
+    if not verifier.assigned_externally(config, "self-review"):
+        return ()
+    try:
+        parent = review_target.default_parent_root()
+        reviews = review_target.repository_reviews_root(parent, data.pr.repository)
+        scratch = parent / "tmp/agents"
+        reviews.mkdir(parents=True, exist_ok=True)
+        scratch.mkdir(parents=True, exist_ok=True)
+        paths = [reviews, scratch]
+        if git_common_dir(parent) == git_common_dir(Path(data.repository)):
+            paths.append(git_common_dir(parent) / "pr-review-save.lock")
+    except review_target.TargetError, WorkspaceError, OSError:
+        raise RoleInputError("self-review storage is unavailable") from None
+    environment = ROOT / "tools/devenv/.venv"
+    if environment.is_dir():
+        paths.append(environment)
+    return tuple(paths)
+
+
 def fix_context(request: Mapping[str, Any], data: RoleInput, config: Config) -> dict[str, Any]:
     fixed = verifier.FixInput.model_validate(request)
     if (
@@ -305,6 +327,7 @@ def run(
     require_auditable_checkouts(repository)
     # 1 回枠の予約より前に求める。求められなければ枠を消費せずに止まる
     exceptions = write_exceptions(selected, data) if phase == "self-review" else ()
+    writable_paths = writable_review_paths(selected, data) if phase == "self-review" else ()
     context = None
     if phase == "self-review":
         if planning_file is None or fix_input is None:
@@ -352,6 +375,8 @@ def run(
         output_dir=output_dir,
         adapter_loader=adapter_loader,
         write_exceptions=exceptions,
+        writable_paths=writable_paths,
+        private_review_refs=phase == "self-review" and verifier.assigned_externally(selected, "self-review"),
     )
     stopped = all(attempt.stop_confirmed for result in batch.results for attempt in result.attempts)
     changes = (
@@ -490,7 +515,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     return (
         0
-        if collected and not batch.outside_changes and (args.phase == "implement" or saved["review_changes"] == [])
+        if collected
+        and not blocking_checkout_audit(batch.outside_changes, batch.checkout_audit, isolated=batch.checkout_isolated)
+        and (args.phase == "implement" or saved["review_changes"] == [])
         else 1
     )
 

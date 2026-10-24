@@ -281,6 +281,7 @@ def checkout_isolation_argv(
     work_dir: Path,
     artifact_dir: Path,
     writable_paths: Sequence[Path] = (),
+    private_review_refs: bool = False,
 ) -> tuple[str, ...]:
     """Protect registered checkouts from the agent while retaining detached Git worktree writes."""
     try:
@@ -297,8 +298,21 @@ def checkout_isolation_argv(
             ).resolve(strict=True)
             for checkout in checkouts
         }
-        allowed = {artifact_dir.resolve(strict=True), *(path.resolve(strict=True) for path in writable_paths)}
+        allowed = {artifact_dir.resolve(strict=True)}
+        for requested in writable_paths:
+            if requested.name == "pr-review-save.lock" and requested.parent.resolve(strict=True) == common:
+                descriptor = os.open(requested, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+                try:
+                    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                        raise WorkspaceError()
+                finally:
+                    os.close(descriptor)
+                allowed.add(requested.resolve(strict=True))
+            else:
+                allowed.add(requested.resolve(strict=True))
         for path in allowed:
+            if path == common / "pr-review-save.lock":
+                continue
             if not path.is_dir() or path.is_symlink() or path.is_relative_to(common):
                 raise WorkspaceError()
             for checkout in checkouts:
@@ -306,6 +320,11 @@ def checkout_isolation_argv(
                     _git(checkout, "check-ignore", "-q", "--", str(path))
         objects = (common / "objects").resolve(strict=True)
         registrations = (common / "worktrees").resolve(strict=True)
+        review_refs = common / "refs/pr-review"
+        if private_review_refs:
+            review_refs.mkdir(parents=True, exist_ok=True)
+            if review_refs.resolve(strict=True) != review_refs:
+                raise WorkspaceError()
     except OSError, ValueError:
         raise WorkspaceError() from None
 
@@ -314,6 +333,8 @@ def checkout_isolation_argv(
     for checkout in checkouts:
         arguments += ["--ro-bind", str(checkout), str(checkout)]
     arguments += ["--ro-bind", str(common), str(common)]
+    if private_review_refs:
+        arguments += ["--tmpfs", str(review_refs)]
     for path in (objects, registrations):
         arguments += ["--bind", str(path), str(path)]
     for gitdir in sorted(gitdirs, key=lambda path: len(path.parts)):

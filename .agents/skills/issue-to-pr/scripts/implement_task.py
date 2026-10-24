@@ -38,7 +38,11 @@ from tools.agent_runner.adapters import Adapter, load_adapter  # noqa: E402
 from tools.agent_runner.config import validate_config  # noqa: E402
 from tools.agent_runner.environ import literal_environ  # noqa: E402
 from tools.agent_runner.models import Assignment, BatchResult  # noqa: E402
-from tools.agent_runner.workspace import CheckoutAuditError, require_auditable_checkouts  # noqa: E402
+from tools.agent_runner.workspace import (  # noqa: E402
+    CheckoutAuditError,
+    blocking_checkout_audit,
+    require_auditable_checkouts,
+)
 
 DEFAULT_TEMPLATE = ROOT / ".devcontainer/agent-runner.toml"
 WORKFLOW = "issue"
@@ -425,7 +429,7 @@ def assess(request: TaskRequest, batch: BatchResult) -> Assessment:
         result = TaskResult.model_validate(attempt.payload)
     except ValidationError as error:
         return Assessment(verdict="rejected", reasons=[f"invalid_result: {_fields(error)}"], work_dir=work_dir)
-    if batch.outside_changes:
+    if blocking_checkout_audit(batch.outside_changes, batch.checkout_audit, isolated=batch.checkout_isolated):
         return Assessment(
             verdict="rejected",
             reasons=[f"outside_changes: {', '.join(batch.outside_changes)}"],

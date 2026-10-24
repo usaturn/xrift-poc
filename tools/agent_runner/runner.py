@@ -209,6 +209,7 @@ def run_workflow(
     adapter_loader: Callable[[str], Adapter] = load_adapter,
     write_exceptions: Sequence[str] = (),
     writable_paths: Sequence[Path] = (),
+    private_review_refs: bool = False,
     payload_check: Callable[[Payload], bool] | None = None,
 ) -> BatchResult:
     """Execute a batch synchronously; keep every artifact/worktree, even on failure.
@@ -223,6 +224,8 @@ def run_workflow(
     an agent that cannot perform them (read_only_assignments).
     writable_paths are existing ignored directories that a caller explicitly lets
     an agent write within a registered checkout. The mount guard validates them.
+    private_review_refs gives a review helper a temporary refs/pr-review namespace;
+    fetched review refs then cannot alter the shared Git metadata.
     payload_check, when given, also checks each well-shaped success payload (before
     redaction); anything but True, or an exception, is invalid_result and moves on
     to the next explicit fallback.
@@ -367,7 +370,9 @@ def run_workflow(
             secrets.update(secret_values(spec.env))
             env["AGENT_RUNNER_DEPTH"] = "1"
             # execute merges spec.env last; consume additions here to forbid a depth override.
-            isolation = checkout_isolation_argv(repository, before, work_dir, directory, writable_paths)
+            isolation = checkout_isolation_argv(
+                repository, before, work_dir, directory, writable_paths, private_review_refs
+            )
             safe_spec = LaunchSpec((*isolation, "--", *spec.argv), spec.stdin)
         except Exception:
             return finished("launch_failed")

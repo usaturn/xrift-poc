@@ -20,7 +20,7 @@ import pytest
 
 from tools.agent_runner import Config, ConfigError, RunnerError
 from tools.agent_runner.adapters import AdapterContext, AdapterOutcome, Capabilities, LaunchSpec
-from tools.agent_runner.models import Identity
+from tools.agent_runner.models import CheckoutAudit, Identity
 from tools.agent_runner.runner import EXCEPTIONS_HEADING
 
 pytest_plugins = ("tools.test_support.plugin",)
@@ -742,14 +742,14 @@ def test_accept_rejects_a_verifier_candidate_inserted_before_the_tool_candidates
     assert written(scenario.review_dir) == []
 
 
-def test_accept_rejects_outside_changes_and_dispatch_exits_1_for_them(
+def test_agent_write_to_existing_checkout_is_blocked_before_accept(
     dispatch: Any, scenario: Scenario, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # 開始前から登録されていた checkout（呼び出し元の repository）へ外部担当が書き込む。
+    """担当が開始前の checkout に書けると、並行変更を許可した後に無断変更を受け付ける。"""
     run_dir = run_external(dispatch, scenario, tmp_path, scenario.payload(), touch=scenario.root / "stray")
     saved = json.loads((run_dir / "dispatch.json").read_text(encoding="utf-8"))
-    assert saved["batch"]["state"] == "success"
-    assert saved["batch"]["outside_changes"]
+    assert saved["batch"]["state"] == "failed"
+    assert not (scenario.root / "stray").exists()
     capsys.readouterr()
     assert accept(dispatch, run_dir) == 1
     assert written(scenario.review_dir) == []
@@ -764,8 +764,42 @@ def test_dispatch_main_exits_1_and_names_outside_changes(
     )
     line = json.loads(capsys.readouterr().out)
     assert code == 1
-    assert line["state"] == "success"
-    assert line["outside_changes"]
+    assert line["state"] == "failed"
+    assert not (scenario.root / "stray").exists()
+
+
+def test_external_fix_check_accepts_isolated_concurrent_checkout_change(
+    dispatch: Any,
+    scenario: Scenario,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """別セッションの worktree 更新で fix-check を拒否すると、確認結果が公開されず修正が止まる。"""
+    original = dispatch.run_workflow
+
+    def with_concurrent_change(*args: Any, **kwargs: Any) -> Any:
+        batch = original(*args, **kwargs)
+        batch.outside_changes = [str(scenario.root)]
+        batch.checkout_audit = [
+            CheckoutAudit(path=str(scenario.root), kind="content_changed", reason="content_changed")
+        ]
+        return batch
+
+    monkeypatch.setattr(dispatch, "run_workflow", with_concurrent_change)
+    payload = scenario.payload()
+    payload["verified"]["skill"] = {
+        "path": ".agents/skills/review-verify/SKILL.md",
+        "sha256": hashlib.sha256(dispatch.SKILL.read_bytes()).hexdigest(),
+    }
+    code = dispatch.main(
+        main_argv(tmp_path, scenario.request, "probe"),
+        adapter_loader=loader_for(PayloadAdapter(payload)),
+    )
+    output = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert output["outside_changes"] == [str(scenario.root)]
+    assert accept(dispatch, Path(output["artifact_dir"])) == 0
 
 
 @pytest.mark.parametrize("diagnostics", [None, "unavailable", {}, [None]])
@@ -924,21 +958,21 @@ def test_review_directory_changes_are_rejected_before_publishing(
     if mutation != "create":
         target.write_text("previous accepted contents")
     payload = scenario.payload() if valid_payload else {"invalid": True}
-    actions = {
-        "create": "p.write_text('unvalidated contents')",
-        "overwrite": "p.write_text('unvalidated contents')",
-        "delete": "p.unlink()",
-        "rename": "p.rename(p.with_name('moved.json'))",
-        "chmod": "p.chmod(0o700)",
-        "symlink": "p.unlink(); p.symlink_to('missing')",
-    }
 
     class MutatingAdapter(PayloadAdapter):
-        def prepare(self, context: AdapterContext) -> LaunchSpec:
-            spec = super().prepare(context)
-            argv = list(spec.argv)
-            argv[2] = argv[2].replace("receipt={", f"p=pathlib.Path({str(target)!r}); {actions[mutation]}; receipt={{")
-            return LaunchSpec(tuple(argv), spec.stdin, spec.env)
+        def collect(self, context: AdapterContext, stdout_path: Path, stderr_path: Path) -> AdapterOutcome:
+            if mutation in {"create", "overwrite"}:
+                target.write_text("unvalidated contents")
+            elif mutation == "delete":
+                target.unlink()
+            elif mutation == "rename":
+                target.rename(target.with_name("moved.json"))
+            elif mutation == "chmod":
+                target.chmod(0o700)
+            else:
+                target.unlink()
+                target.symlink_to("missing")
+            return super().collect(context, stdout_path, stderr_path)
 
     code = dispatch.main(
         main_argv(tmp_path, scenario.request, "probe"), adapter_loader=loader_for(MutatingAdapter(payload))
