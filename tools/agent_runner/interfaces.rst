@@ -347,7 +347,10 @@ CLI と API
      --writable-path /path/to/repository/ignored-notes
 
 グローバルの --template / --config はサブコマンドの前に置く。
-output-dir は既存 directory/symlink を拒否する。省略時は /tmp 内の一意の directory。
+output-dir は既存 directory/symlink を拒否する。省略時は /tmp 内の一意の directory（``/tmp/xrift-poc-agent-runner-*``）。
+runner はこの directory を消さない（実行の後に成果物を読むための出力先である）。不要になったら利用者が directory ごと消す
+（例: ``rm -rf -- "${dir:?}"``）。中に通常のファイルでないもの（FIFO の ``receipt.json`` など）があると、開いた処理が止まるので、
+中身を開いて確かめない。種類を見るときは ``find "${dir:?}" -type p`` のように開かずに調べる。Dev Container を作り直すと消える。
 ``--write-exception`` は API の ``write_exceptions`` の 1 件にあたる。繰り返し指定でき、指定した順に並ぶ。
 workflow のすべての役割に同じ例外が付く（役割ごとには分けない）。
 例外の行は作業範囲の指示であり、mount の書き込み許可にはならない。
