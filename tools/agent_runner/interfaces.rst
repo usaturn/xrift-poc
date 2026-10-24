@@ -274,7 +274,7 @@ checkout のパスか祖先のディレクトリが開始時と別の inode に�
 内容の比較より先に kind ``replaced``（reason ``checkout_replaced``）とする。
 checkout 自体が無くなっていれば ``unavailable_after`` / ``checkout_missing`` とする（祖先は残っていても消えていてもよい）。
 
-外部の担当は bubblewrap の mount 名前空間で起動し、開始前から登録済みの checkout と
+外部の担当は bubblewrap の mount 名前空間で起動し、開始前から登録済みで保護できる checkout と
 その Git 管理領域を読み取り専用にする。担当用の detached worktree とその Git 管理領域、
 新しい Git object・worktree の保存先、runner の保存先は書き込み可能にする。
 呼び出し側が明示した ignored の保存先（``writable_paths``）も検査して書き込み可能にできる。

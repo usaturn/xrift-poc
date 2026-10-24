@@ -339,7 +339,7 @@ runtime が `cursor` の担当（雛形の `cursor`・`cursor-grok47`）は、wr
 （`inspect`・`self-review`・`fix-check`）も `-f --sandbox disabled` で起動する（#75。writes=true の役割は今までどおり `-f` だけ）。
 シェルを使えるので、PR レビューの役割でも pr-review・review-verify の helper を実行できる。
 writes=false は claude-code・devin・pi と同じく runner の指示であり、sandbox ではない。
-開始前から登録済みの checkout は、どの runtime でも runner が読み取り専用にし、変化は `outside_changes` として報告する。
+開始前から登録済みで保護できる checkout は、どの runtime でも runner が読み取り専用にし、変化は `outside_changes` として報告する。
 Ask mode では pr-review の helper を実行できないことと、Cursor の sandbox の範囲・実機の確認は `tools/agent_runner/runtimes/cursor.rst` に記録した。
 
 ### レビューの後処理
@@ -361,7 +361,7 @@ after_run = []
 
 run は各担当の独立した detached worktree を確定済み commit から作り、
 同時実行数を制限して終了まで待つ。担当は bubblewrap の mount 名前空間で起動し、
-開始前から登録済みの checkout・その Git 管理領域を読み取り専用にし、祖先のディレクトリを rename できない mountpoint にする。
+開始前から登録済みで保護できる checkout・その Git 管理領域を読み取り専用にし、祖先のディレクトリを rename できない mountpoint にする。
 許可した保存先の内側にある登録済み checkout も読み取り専用のまま残る。
 保護できない登録（開始前から監査できない、起動時に無いなど）があっても担当は起動し、`checkout_isolated` を false にする。
 既存 checkout の内容の前後比較も行い、変化は警告として返して止めない。ignored 資源や Git 外の任意のパスは監査範囲外。
