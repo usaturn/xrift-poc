@@ -146,7 +146,7 @@ def test_pi_links_of_an_uninitialized_product_stay_out_of_git_after_git_init(pi_
     """Git 未初期化の制作物に置いた `.pi/` のリンクが、`git init` 後の `git add -A` で黙って制作物に commit される。"""
     project = create_product(pi_env.root, "worlds", "my-world", git=False)
     project_link.link(project, pi_env.root)
-    assert pi_links(project) == pi_expected(pi_env)
+    assert links(project) == pi_expected(pi_env)
     git_init(project)
 
     git(project, "add", "-A")
@@ -155,10 +155,9 @@ def test_pi_links_of_an_uninitialized_product_stay_out_of_git_after_git_init(pi_
     assert "README.md" in staged
     assert not any(path.startswith(".pi/") for path in staged)
     git(project, "commit", "-qm", "first commit of the product")
-    report = project_link.link(project, pi_env.root)
-    assert {f"{parent}/{name}" for parent in (".agents/skills", ".claude/skills") for name in SKILLS} <= set(
-        report.created
-    )
+    project_link.link(project, pi_env.root)
+    skill_links = {f"{parent}/{name}" for parent in (".agents/skills", ".claude/skills") for name in SKILLS}
+    assert skill_links <= set(links(project))
     assert git(project, "status", "--porcelain") == ""
     project_link.unlink(project, pi_env.root)
     assert links(project) == {}
@@ -177,12 +176,25 @@ def test_link_rejects_paths_that_are_not_a_product_git_root(env: EnvRepo) -> Non
     assert not (project / "src" / ".agents").exists()
 
 
+def test_link_works_in_a_product_worktree_inside_the_project(env: EnvRepo) -> None:
+    """制作物の中の worktree（`worlds/<name>/.worktrees/<branch>`）で link したときに、
+    Git が読まない worktree ごとの場所に除外を書くと、リンクが未追跡に出て `git add -A` で黙って commit される。"""
+    project = create_product(env.root, "worlds", "my-world", origin_url=ORIGIN)
+    worktree = create_owned_worktree(project, project / ".worktrees", name="feature")
+
+    project_link.link(worktree, env.root)
+
+    assert git(worktree, "status", "--porcelain") == ""
+
+
 def test_unlink_removes_only_its_own_links(env: EnvRepo, tmp_path: Path) -> None:
     """利用者が差し替えたリンクや、管理ブロックの外の利用者の除外行を、unlink が黙って消す。"""
     project = create_product(env.root, "worlds", "my-world", origin_url=ORIGIN)
     exclude = Path(git(project, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude").strip())
     exclude.write_text(exclude.read_text(encoding="utf-8") + "/notes/\n", encoding="utf-8")
     project_link.link(project, env.root)
+    # xrift-link の後に利用者が足した除外の行は、管理ブロックの後ろに入る。unlink の後も残す。
+    exclude.write_text(exclude.read_text(encoding="utf-8") + "/scratch/\n", encoding="utf-8")
     replaced = project / ".claude" / "skills" / "alpha"
     replaced.unlink()
     replaced.symlink_to(tmp_path)
@@ -193,6 +205,7 @@ def test_unlink_removes_only_its_own_links(env: EnvRepo, tmp_path: Path) -> None
     text = exclude_text(project)
     assert project_link.BLOCK_BEGIN not in text
     assert "/notes/\n" in text
+    assert "/scratch/\n" in text
 
 
 def test_broken_markers_stop_before_any_change(env: EnvRepo) -> None:
@@ -300,6 +313,11 @@ def test_hidden_user_entries_are_reported_from_every_worktree(env: EnvRepo) -> N
     assert directory.read_text(encoding="utf-8") == "own directory\n"
     assert git(sibling, "status", "--porcelain", "--", ".agents", ".claude") == ""
 
+    # sibling のリンクで共有の除外は残るので、main checkout で unlink しても、利用者のファイルは隠れたまま報告される。
+    report = project_link.unlink(project, env.root)
+
+    assert any(str(user) in note and f"{parent}/alpha" in note for note in report.kept)
+
 
 def test_unlink_stops_without_change_when_its_link_resolves_outside(env: EnvRepo, tmp_path: Path) -> None:
     """設定のディレクトリが共有ディレクトリへのリンクのとき、そこにある自分のリンクを消すと、
@@ -326,7 +344,7 @@ def test_unlink_in_a_worktree_keeps_links_of_the_main_checkout(env: EnvRepo) -> 
     """worktree の `.agents` が main checkout の `.agents` を指すとき、
     worktree の unlink が main checkout のリンクと除外を黙って消し、
     main checkout のエージェントがスキルを読まなくなる。"""
-    # worktree の .agents が main checkout の .agents を指しても、main checkout のリンクを残して自分のリンクを外す。
+    # worktree の .agents が main checkout の .agents を指しても、main checkout のリンクを残す。
     project = create_product(env.root, "worlds", "my-world", origin_url=ORIGIN)
     worktree = create_owned_worktree(project, project / ".worktrees", name="feature")
     project_link.link(project, env.root)
