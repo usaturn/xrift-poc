@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -78,6 +79,30 @@ def test_make_session_dir_refuses_symlink_into_unignored_directory(tmp_path: Pat
     with pytest.raises(agent_tmp.AgentTmpError):
         agent_tmp.make_session_dir(main, "issue-333")
     assert [path.name for path in src.iterdir()] == ["keep.py"]
+
+
+def test_cli_mkdir_prints_the_new_session_dir(tmp_path: Path) -> None:
+    """CLI の mkdir が作ったディレクトリのパスを出さないと、
+    呼び出し側は出力をそのまま SESSION にし、片付けの rm -rf で別の場所（main checkout など）を消す。"""
+    main = make_repo(tmp_path / "main")
+    script = main / ".agents" / "scripts" / "agent_tmp.py"
+    script.parent.mkdir(parents=True)
+    shutil.copy2(SCRIPT, script)
+
+    result = subprocess.run(
+        [sys.executable, str(script), "mkdir", "issue-333"],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    created = Path(result.stdout.strip())
+    assert created.is_dir()
+    assert created != main
+    assert created.is_relative_to(main)
+    assert list(created.iterdir()) == []
 
 
 def test_cli_root_is_independent_of_cwd(tmp_path: Path) -> None:
