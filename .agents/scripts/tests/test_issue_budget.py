@@ -51,7 +51,7 @@ def test_user_wait_is_excluded_from_active_time() -> None:
 
 def test_checkpoint_is_due_after_threshold_until_recorded() -> None:
     """閾値を越えた checkpoint を期日として返さなくなると、checkpoint と予算の 100% の停止が黙って来ない。"""
-    ledger = entries(start())
+    ledger = entries(start(checkpoint_percents=[50, 100]))
     assert budget.summarize(ledger, now=at(29)).due_checkpoints == ()
     assert budget.summarize(ledger, now=at(31)).due_checkpoints == (50,)
 
