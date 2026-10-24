@@ -269,7 +269,16 @@ PID/starttime が一致する場合だけ追加の group member を観測する�
 
 監査は開始前から登録されていた checkout の HEAD・index・tracked ファイル・
 非 ignored untracked ファイルの内容を比較する。initialized submodule も含む。
-変更は outside_changes に警告として返し、処理自体は止めない。
+変更は outside_changes と checkout_audit に警告として返し、処理自体は止めない。
+外部の担当は bubblewrap の mount 名前空間で起動し、開始前から登録済みの checkout と
+その Git 管理領域を読み取り専用にする。担当用の detached worktree とその Git 管理領域、
+新しい Git object・worktree の保存先、runner の保存先は書き込み可能にする。
+呼び出し側が明示した ignored の保存先も検査して書き込み可能にできる。
+保護を構成できず起動に失敗した試行は成功にしない。
+BatchResult.checkout_isolated は、全試行をこの保護の下で実行した場合だけ true となる。
+受け取り側はこの値が true で、checkout_audit の全件が content_changed かつ
+outside_changes のパスと一致する場合に限り、内容変更を拒否条件から外せる。
+監査不能な checkout と停止未確認の試行は引き続き拒否する。
 Gitignored 資源、symlink の参照先、Git 外の任意のディレクトリは監査範囲外。
 外部セッションによる変更と委譲先による変更の因果までは断定しない。
 

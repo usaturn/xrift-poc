@@ -17,6 +17,7 @@ import stat
 import subprocess
 import threading
 import time
+from collections.abc import Sequence
 from pathlib import Path
 
 from tools.agent_runner.adapters import LaunchSpec
@@ -274,6 +275,56 @@ def snapshot_checkouts(repository: Path) -> CheckoutSnapshot:
     return result
 
 
+def checkout_isolation_argv(
+    repository: Path,
+    before: CheckoutSnapshot,
+    work_dir: Path,
+    artifact_dir: Path,
+    writable_paths: Sequence[Path] = (),
+) -> tuple[str, ...]:
+    """Protect registered checkouts from the agent while retaining detached Git worktree writes."""
+    try:
+        checkouts = sorted({Path(path).resolve(strict=True) for path in before}, key=lambda path: len(path.parts))
+        common = git_common_dir(repository)
+        own_gitdir = Path(
+            os.fsdecode(_git(work_dir, "rev-parse", "--path-format=absolute", "--git-dir").removesuffix(b"\n"))
+        ).resolve(strict=True)
+        if not own_gitdir.is_relative_to(common / "worktrees"):
+            raise WorkspaceError()
+        gitdirs = {
+            Path(
+                os.fsdecode(_git(checkout, "rev-parse", "--path-format=absolute", "--git-dir").removesuffix(b"\n"))
+            ).resolve(strict=True)
+            for checkout in checkouts
+        }
+        allowed = {artifact_dir.resolve(strict=True), *(path.resolve(strict=True) for path in writable_paths)}
+        for path in allowed:
+            if not path.is_dir() or path.is_symlink() or path.is_relative_to(common):
+                raise WorkspaceError()
+            for checkout in checkouts:
+                if path.is_relative_to(checkout) and not path.is_relative_to(work_dir):
+                    _git(checkout, "check-ignore", "-q", "--", str(path))
+        objects = (common / "objects").resolve(strict=True)
+        registrations = (common / "worktrees").resolve(strict=True)
+    except OSError, ValueError:
+        raise WorkspaceError() from None
+
+    arguments = ["bwrap", "--unshare-pid", "--die-with-parent", "--bind", "/", "/"]
+    arguments += ["--dev-bind", "/dev", "/dev", "--proc", "/proc"]
+    for checkout in checkouts:
+        arguments += ["--ro-bind", str(checkout), str(checkout)]
+    arguments += ["--ro-bind", str(common), str(common)]
+    for path in (objects, registrations):
+        arguments += ["--bind", str(path), str(path)]
+    for gitdir in sorted(gitdirs, key=lambda path: len(path.parts)):
+        if gitdir != common:
+            arguments += ["--ro-bind", str(gitdir), str(gitdir)]
+    for path in sorted(allowed, key=lambda path: len(path.parts)):
+        arguments += ["--bind", str(path), str(path)]
+    arguments += ["--bind", str(own_gitdir), str(own_gitdir)]
+    return tuple(arguments)
+
+
 def require_auditable_checkouts(repository: Path) -> CheckoutSnapshot:
     """Preflight for strict consumers; never repair, prune, reserve or launch."""
     try:
@@ -327,6 +378,19 @@ def audit_checkouts(before: dict[str, str | None]) -> list[CheckoutAudit]:
                     )
                 )
     return findings
+
+
+def blocking_checkout_audit(
+    outside_changes: Sequence[str], diagnostics: Sequence[CheckoutAudit], *, isolated: bool
+) -> bool:
+    """Treat observed content changes as warnings only after a protected agent run."""
+    if not outside_changes and not diagnostics:
+        return False
+    return (
+        not isolated
+        or list(outside_changes) != [finding.path for finding in diagnostics]
+        or any(finding.kind != "content_changed" for finding in diagnostics)
+    )
 
 
 def changed_checkouts(before: dict[str, str | None]) -> list[str]:

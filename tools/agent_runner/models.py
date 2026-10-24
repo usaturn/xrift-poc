@@ -244,6 +244,7 @@ class Attempt(StrictModel):
     exit_code: int | None = None
     elapsed_seconds: ElapsedSeconds
     stop_confirmed: bool
+    checkout_isolated: bool = False
     work_dir: Path | None = None
     stdout_path: Path | None = None
     stderr_path: Path | None = None
@@ -290,5 +291,6 @@ class BatchResult(StrictModel):
     results: list[Result]
     outside_changes: list[str]
     checkout_audit: list[CheckoutAudit] = Field(default_factory=list[CheckoutAudit])
+    checkout_isolated: bool = False
     elapsed_seconds: ElapsedSeconds
     artifact_dir: Path
