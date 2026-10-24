@@ -320,11 +320,6 @@ def checkout_isolation_argv(
                     _git(checkout, "check-ignore", "-q", "--", str(path))
         objects = (common / "objects").resolve(strict=True)
         registrations = (common / "worktrees").resolve(strict=True)
-        review_refs = common / "refs/pr-review"
-        if private_review_refs:
-            review_refs.mkdir(parents=True, exist_ok=True)
-            if review_refs.resolve(strict=True) != review_refs:
-                raise WorkspaceError()
     except OSError, ValueError:
         raise WorkspaceError() from None
 
@@ -332,9 +327,12 @@ def checkout_isolation_argv(
     arguments += ["--dev-bind", "/dev", "/dev", "--proc", "/proc"]
     for checkout in checkouts:
         arguments += ["--ro-bind", str(checkout), str(checkout)]
-    arguments += ["--ro-bind", str(common), str(common)]
     if private_review_refs:
-        arguments += ["--tmpfs", str(review_refs)]
+        # Git may create packed-refs.lock while deleting a temporary review ref.
+        # An invisible overlay lets those operations complete without changing host refs.
+        arguments += ["--overlay-src", str(common), "--tmp-overlay", str(common)]
+    else:
+        arguments += ["--ro-bind", str(common), str(common)]
     for path in (objects, registrations):
         arguments += ["--bind", str(path), str(path)]
     for gitdir in sorted(gitdirs, key=lambda path: len(path.parts)):

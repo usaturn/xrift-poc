@@ -372,7 +372,7 @@ def finalize_result(path: Path, outcome: str, *, merged: bool, stop_reason: str 
 # payload と成果 2 件（または失敗の payload）を書く。依頼文の JSON ブロックから records_comments を読み、写しを残す。
 # 振る舞いは success・failed・crash に「+retained」「+outside」を足せる。retained は pr-review の helper が後片付けに
 # 失敗したときと同じく、tool_root に登録した実際の worktree を残して cleanup=failed と retained_paths を返す。
-# outside は tool_root の README.md を書き換える（runner の監査の outside_changes に出る）
+# outside は別セッションの更新を adapter.collect で再現する（runner の監査の outside_changes に出る）
 REVIEWER_PROGRAM = r"""
 import json, pathlib, re, shutil, subprocess, sys, tempfile, time
 request = json.load(sys.stdin)
@@ -408,8 +408,7 @@ if isinstance(behavior, list):
 behavior, *extras = behavior.split("+")
 tool_root = pathlib.Path(scenario["tool_root"])
 if "outside" in extras:
-    with (tool_root / "README.md").open("a", encoding="utf-8") as stream:
-        stream.write(f"{agent} が書き換えた\n")
+    (copies / f"{agent}.outside").write_text("pending")
 retained_paths, cleanup = None, "not_attempted"
 if "retained" in extras:
     sessions = pathlib.Path(scenario["sessions"])
@@ -479,6 +478,12 @@ class ReviewerAdapter:
         from tools.agent_runner.adapters import AdapterOutcome
         from tools.agent_runner.models import Diagnosis, Identity, Receipt
 
+        scenario = json.loads(self.scenario.read_text(encoding="utf-8"))
+        marker = Path(scenario["copies"]) / f"{context.request.agent_id}.outside"
+        if marker.exists():
+            with (Path(scenario["tool_root"]) / "README.md").open("a", encoding="utf-8") as stream:
+                stream.write(f"{context.request.agent_id} が書き換えた\n")
+            marker.unlink()
         identity = Identity(model=context.agent.model, session_id=f"fake-{context.request.agent_id}")
         if not context.receipt_path.exists():
             # receipt を書かずに止まった（crash）。stdout の error イベントから診断を返す
@@ -641,7 +646,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> LoopEnv:
     parent = tmp_path / "parent"
     init_repo(parent)
     git(parent, "remote", "add", "origin", f"https://github.com/{REPOSITORY}.git")
-    (parent / ".gitignore").write_text("/reviews/\n", encoding="utf-8")
+    (parent / ".gitignore").write_text("/reviews/\n/tmp/\n", encoding="utf-8")
     (parent / "README.md").write_text("tool root\n", encoding="utf-8")
     git(parent, "add", ".gitignore", "README.md")
     git(parent, "commit", "-qm", "tool root")

@@ -275,8 +275,8 @@ PID/starttime が一致する場合だけ追加の group member を観測する�
 新しい Git object・worktree の保存先、runner の保存先は書き込み可能にする。
 呼び出し側が明示した ignored の保存先も検査して書き込み可能にできる。
 PR レビュー helper の保存ロックは単一のファイルだけを許可する。
-``private_review_refs`` を指定した場合、``refs/pr-review/`` は担当内だけの一時領域となり、
-ホスト側の ref は変わらない。
+``private_review_refs`` を指定した場合、Git 管理領域の一時 overlay で
+``refs/pr-review/`` と ``packed-refs.lock`` の操作を受け、ホスト側の ref は変わらない。
 保護を構成できず起動に失敗した試行は成功にしない。
 BatchResult.checkout_isolated は、全試行をこの保護の下で実行した場合だけ true となる。
 受け取り側はこの値が true で、checkout_audit の全件が content_changed かつ

@@ -58,12 +58,14 @@ if options.get('review_lock'):
         lock_written = True
 review_ref_written = None
 if options.get('review_ref'):
-    try:
-        pathlib.Path(options['review_ref']).write_text('temporary review head')
-    except OSError:
-        review_ref_written = False
-    else:
-        review_ref_written = True
+    review_ref = options['review_ref']
+    added = subprocess.run(
+        ['git', '-C', request['work_dir'], 'update-ref', review_ref, 'HEAD'], capture_output=True
+    ).returncode
+    removed = subprocess.run(
+        ['git', '-C', request['work_dir'], 'update-ref', '-d', review_ref], capture_output=True
+    ).returncode if added == 0 else None
+    review_ref_written = added == removed == 0
 other_commit = None
 if options.get('other_commit'):
     other_commit = subprocess.run(
@@ -388,7 +390,7 @@ def test_review_save_lock_is_writable_without_exposing_existing_git_state(reposi
     protected = [common / "HEAD", common / "index", common / "refs/heads" / branch]
     before = [path.read_bytes() for path in protected]
     lock = common / "pr-review-save.lock"
-    review_ref = common / "refs/pr-review/151"
+    review_ref = "refs/pr-review/151"
     batch = run_workflow(
         configuration(),
         "audit",
@@ -400,7 +402,7 @@ def test_review_save_lock_is_writable_without_exposing_existing_git_state(reposi
                 "a": {
                     "probe_paths": [str(path) for path in protected],
                     "review_lock": str(lock),
-                    "review_ref": str(review_ref),
+                    "review_ref": review_ref,
                 }
             }
         ),
@@ -412,8 +414,8 @@ def test_review_save_lock_is_writable_without_exposing_existing_git_state(reposi
     assert isinstance(payload, dict)
     assert payload["lock_written"] is True
     assert payload["review_ref_written"] is True
-    assert not review_ref.exists()
-    assert payload["probes"] == {str(path): True for path in protected}
+    assert not (common / review_ref).exists()
+    assert not (common / "packed-refs.lock").exists()
     assert [path.read_bytes() for path in protected] == before
 
 
