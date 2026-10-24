@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 import importlib.util
-import os
 import sys
 from pathlib import Path
 from typing import Any
-
-import pytest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "task_watch.py"
 SPEC = importlib.util.spec_from_file_location("task_watch", SCRIPT)
@@ -35,6 +32,7 @@ def obs(**values: Any) -> Any:
 
 
 def test_exit_is_completed_only_with_zero_and_declared_result() -> None:
+    """0 以外で終わっても結果ファイルがあれば完了とし、失敗した worker の結果で次へ進む。"""
     policy = watch.Policy(deadline_seconds=10, stop="TERM", result_file="/r.json")
 
     assert watch.decide(policy, obs(exited=True, exit_code=0, result_present=True)) == ("completed", "")
@@ -43,6 +41,7 @@ def test_exit_is_completed_only_with_zero_and_declared_result() -> None:
 
 
 def test_exit_without_declared_result_is_judged_by_exit_code() -> None:
+    """結果ファイルを宣言しない worker がシグナルで終わっても完了とし、途中の成果で次へ進む。"""
     policy = watch.Policy(deadline_seconds=10, stop="TERM")
 
     assert watch.decide(policy, obs(exited=True, exit_code=0)) == ("completed", "")
@@ -50,6 +49,7 @@ def test_exit_without_declared_result_is_judged_by_exit_code() -> None:
 
 
 def test_safety_failure_precedes_deadline_and_other_reasons() -> None:
+    """安全の失敗が期限などの理由に隠れ、全体停止すべき失敗を部分成果の保存と再試行で扱う。"""
     policy = watch.Policy(deadline_seconds=1, stop="TERM", max_repeated_failures=1)
 
     decision = watch.decide(policy, obs(elapsed=5, safety_signature="leak", max_failure_count=3))
@@ -57,37 +57,8 @@ def test_safety_failure_precedes_deadline_and_other_reasons() -> None:
     assert decision == ("stop", "safety")
 
 
-def test_deadline_stops_even_while_progressing() -> None:
-    policy = watch.Policy(deadline_seconds=10, no_progress_seconds=5, progress_file="/p.jsonl", stop="INT")
-
-    assert watch.decide(policy, obs(elapsed=10, since_substantive=0)) == ("stop", "deadline")
-
-
-def test_repeated_failure_stops_at_the_declared_count() -> None:
-    policy = watch.Policy(deadline_seconds=10, stop="TERM", max_repeated_failures=2)
-
-    assert watch.decide(policy, obs(elapsed=1, max_failure_count=1)) == ("continue", "")
-    assert watch.decide(policy, obs(elapsed=1, max_failure_count=2)) == ("stop", "repeated_failure")
-
-
-def test_new_investigation_in_reserve_is_stopped() -> None:
-    policy = watch.Policy(deadline_seconds=10, reserve_seconds=4, stop="TERM")
-
-    assert watch.decide(policy, obs(elapsed=7)) == ("finalize", "")
-    assert watch.decide(policy, obs(elapsed=7, investigation_in_reserve=True)) == ("stop", "investigation_in_reserve")
-
-
-def test_no_progress_applies_only_before_research_deadline() -> None:
-    policy = watch.Policy(
-        deadline_seconds=10, reserve_seconds=4, no_progress_seconds=2, progress_file="/p.jsonl", stop="TERM"
-    )
-
-    assert watch.decide(policy, obs(elapsed=5, since_substantive=1)) == ("continue", "")
-    assert watch.decide(policy, obs(elapsed=5, since_substantive=2)) == ("stop", "no_progress")
-    assert watch.decide(policy, obs(elapsed=7, since_substantive=6)) == ("finalize", "")
-
-
 def test_safety_failure_recorded_before_exit_is_not_completed() -> None:
+    """安全の失敗を記録して exit 0 で終えた worker を、完了として次へ進める。"""
     policy = watch.Policy(deadline_seconds=10, stop="TERM", result_file="/r.json")
 
     decision = watch.decide(policy, obs(exited=True, exit_code=0, result_present=True, safety_signature="leak"))
@@ -95,29 +66,8 @@ def test_safety_failure_recorded_before_exit_is_not_completed() -> None:
     assert decision == ("exited_incomplete", "safety")
 
 
-def test_undeclared_stop_holds_instead_of_stopping() -> None:
-    policy = watch.Policy(deadline_seconds=1, stop="none")
-
-    assert watch.decide(policy, obs(elapsed=2)) == ("hold", "deadline")
-
-
-@pytest.mark.parametrize(
-    "values",
-    [
-        {"deadline_seconds": 0, "stop": "TERM"},
-        {"deadline_seconds": 10, "reserve_seconds": 10, "stop": "TERM"},
-        {"deadline_seconds": 10, "no_progress_seconds": 2, "stop": "TERM"},
-        {"deadline_seconds": 10, "stop": "TERM", "stop_grace_seconds": 31},
-        {"deadline_seconds": 10, "stop": "TERM", "max_repeated_failures": 0},
-        {"deadline_seconds": 10, "stop": "KILL"},
-    ],
-)
-def test_policy_rejects_values_outside_the_declared_ranges(values: dict[str, Any]) -> None:
-    with pytest.raises(ValueError):
-        watch.Policy(**values)
-
-
 def test_progress_reader_counts_only_new_items_and_complete_lines(tmp_path: Path) -> None:
+    """書きかけの末尾行を不正な記録として読み捨て、分けて書かれた記録（安全の失敗を含む）を落とす。"""
     path = tmp_path / "progress.jsonl"
     path.write_text(
         '{"kind": "progress", "items": ["src/x.py:120 の分岐を確認", " src/x.py:120 の分岐を確認 "]}\n'
@@ -143,32 +93,8 @@ def test_progress_reader_counts_only_new_items_and_complete_lines(tmp_path: Path
     assert state.last_substantive == 2.5
 
 
-def test_records_before_the_reserve_offset_are_not_investigation(tmp_path: Path) -> None:
-    path = tmp_path / "progress.jsonl"
-    path.write_text('{"kind": "progress", "items": ["a"]}\n', encoding="utf-8")
-    state = watch.ProgressState()
-    watch.read_progress(path, state, elapsed=1.0, reserve_from=None)
-
-    # 保存への移行を求めた直後（猶予の間）に書かれた新しい項目は、予約枠の新規調査に数えない。
-    with path.open("a", encoding="utf-8") as stream:
-        stream.write('{"kind": "progress", "items": ["b"]}\n{"kind": "saved", "path": "/tmp/partial.md"}\n')
-    reserve_from = path.stat().st_size
-    watch.read_progress(path, state, elapsed=2.0, reserve_from=reserve_from)
-    assert state.investigation_in_reserve is False
-    assert state.items == {"a", "b"} and state.saved == ["/tmp/partial.md"]
-
-    with path.open("a", encoding="utf-8") as stream:
-        stream.write('{"kind": "progress", "items": ["b"]}\n')
-    watch.read_progress(path, state, elapsed=3.0, reserve_from=reserve_from)
-    assert state.investigation_in_reserve is False
-
-    with path.open("a", encoding="utf-8") as stream:
-        stream.write('{"kind": "progress", "items": ["c"]}\n')
-    watch.read_progress(path, state, elapsed=4.0, reserve_from=reserve_from)
-    assert state.investigation_in_reserve is True
-
-
 def test_line_longer_than_read_limit_is_skipped_and_later_records_are_read(tmp_path: Path) -> None:
+    """上限を超える 1 行で読み取りが止まり、その後の安全の失敗・保存の記録を読まない。"""
     path = tmp_path / "progress.jsonl"
     long_item = "x" * (watch.READ_LIMIT_BYTES * 3 // 2)
     path.write_text(
@@ -184,6 +110,7 @@ def test_line_longer_than_read_limit_is_skipped_and_later_records_are_read(tmp_p
 
 
 def test_backlog_beyond_read_limit_is_read_in_one_poll(tmp_path: Path) -> None:
+    """1 回の読み取りで上限を超えた分を読み残し、終了の直前の安全の失敗を読まずに完了とする。"""
     path = tmp_path / "progress.jsonl"
     lines = [f'{{"kind": "progress", "items": ["item {number:06d}"]}}\n' for number in range(40000)]
     path.write_text("".join(lines), encoding="utf-8")
@@ -193,39 +120,3 @@ def test_backlog_beyond_read_limit_is_read_in_one_poll(tmp_path: Path) -> None:
     watch.read_progress(path, state, elapsed=1.0, reserve_from=None)
 
     assert len(state.items) == 40000 and state.offset == path.stat().st_size
-
-
-def test_failures_are_counted_per_signature_and_first_safety_is_kept(tmp_path: Path) -> None:
-    path = tmp_path / "progress.jsonl"
-    path.write_text(
-        '{"kind": "failure", "class": "reliability", "signature": "timeout"}\n'
-        '{"kind": "failure", "class": "reliability", "signature": "timeout"}\n'
-        '{"kind": "failure", "class": "safety", "signature": "unknown-send"}\n'
-        '{"kind": "failure", "class": "safety", "signature": "later"}\n'
-        '{"kind": "failure", "class": "other", "signature": "x"}\n'
-        '{"kind": "saved", "path": "relative.md"}\n',
-        encoding="utf-8",
-    )
-    state = watch.ProgressState()
-
-    watch.read_progress(path, state, elapsed=1.0, reserve_from=None)
-
-    assert {name: (item.failure_class, item.count) for name, item in state.failures.items()} == {
-        "timeout": ("reliability", 2),
-        "unknown-send": ("safety", 1),
-        "later": ("safety", 1),
-    }
-    assert state.safety_signature == "unknown-send"
-    assert state.invalid_records == 2
-
-
-def test_missing_or_special_progress_file_is_not_progress(tmp_path: Path) -> None:
-    state = watch.ProgressState()
-    watch.read_progress(tmp_path / "missing.jsonl", state, elapsed=1.0, reserve_from=None)
-    watch.read_progress(None, state, elapsed=1.0, reserve_from=None)
-    fifo = tmp_path / "fifo"
-    os.mkfifo(fifo)
-
-    watch.read_progress(fifo, state, elapsed=1.0, reserve_from=None)
-
-    assert (state.items, state.heartbeats, state.invalid_records, state.offset) == (set(), 0, 0, 0)

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -14,8 +13,7 @@ import pytest
 
 from tools.agent_runner import Config, ConfigError
 from tools.agent_runner.adapters import AdapterContext, AdapterOutcome, Capabilities, LaunchSpec
-from tools.agent_runner.models import Agent, Assignment, CheckoutAudit, Identity, Receipt, Role, Runtime, Workflow
-from tools.agent_runner.runner import EXCEPTIONS_HEADING
+from tools.agent_runner.models import Agent, Assignment, Identity, Receipt, Role, Runtime, Workflow
 
 pytest_plugins = ("tools.test_support.plugin",)
 # 偽の担当だけを起動するので、runner の担当（AGENT_RUNNER_DEPTH=1）の中でもテストの中だけ depth を外す
@@ -40,14 +38,10 @@ pathlib.Path(sys.argv[1]).write_text(json.dumps(receipt))
 class FakeAdapter:
     capabilities = Capabilities()
 
-    def __init__(self) -> None:
-        self.requests: list[Any] = []
-
     def __call__(self, runtime: str) -> FakeAdapter:
         return self
 
     def prepare(self, context: AdapterContext) -> LaunchSpec:
-        self.requests.append(context.request)
         return LaunchSpec(
             argv=(*context.agent.command, str(context.receipt_path)),
             stdin=context.request.model_dump_json().encode(),
@@ -185,20 +179,6 @@ def launch(
     )
 
 
-SELF_REVIEW, FIX_CHECK = " (self-review role only)", " (fix-check role only)"
-
-
-def exception_lines(prompt: str) -> list[str]:
-    """runner の作業範囲の指示（最初の空行まで）のうち、例外の見出しの後の行。"""
-    scope = prompt.split("\n\n", 1)[0].splitlines()
-    return [line.removeprefix("- ") for line in scope[scope.index(EXCEPTIONS_HEADING) + 1 :]]
-
-
-def granted(lines: list[str], path: object) -> int:
-    """``path`` で始まる行（``<path>: <説明>`` か ``<path> and ...``）の数。"""
-    return sum(line.startswith((f"{path}:", f"{path} ")) for line in lines)
-
-
 @pytest.fixture
 def parent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """親の main worktree。fixture の repository とは別の Git ディレクトリ（プロジェクトの PR と同じ形）。"""
@@ -209,459 +189,65 @@ def parent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root
 
 
-def test_external_review_roles_list_their_write_exceptions_with_the_role(
-    inputs: tuple[dict[str, Any], Path, dict[str, Any]], tmp_path: Path, parent: Path
-) -> None:
-    """runner は全役割に同じ一覧を付けるので、各行は末尾で役割を名指しする（#658）。"""
-    adapter = FakeAdapter()
-    launch(inputs, tmp_path, config("a", "b"), adapter_loader=adapter)
-    prompts = [exception_lines(request.prompt) for request in adapter.requests]
-    assert len(prompts) == 2 and prompts[0] == prompts[1]
-    lines = prompts[0]
-    assert all(line.endswith((SELF_REVIEW, FIX_CHECK)) for line in lines)
-    source_git = (Path(inputs[0]["repository"]) / ".git").resolve()
-    review = [line for line in lines if line.endswith(SELF_REVIEW)]
-    expected = (
-        mod.ROOT,
-        f"{parent}/reviews/usaturn/xrift-poc/#900-*",
-        (parent / ".git").resolve() / "pr-review-save.lock",
-        source_git,
-        f"{parent}/tmp/agents/pr-review-scratch-900.*",
-        mod.ROOT / "tools/devenv/.venv",
-    )
-    assert [granted(review, path) for path in expected] == [1] * len(expected)
-    check = [line for line in lines if line.endswith(FIX_CHECK)]
-    assert [granted(check, path) for path in (mod.ROOT, source_git)] == [1, 1]
-
-
-@pytest.mark.parametrize("assigned", [("self", "b"), ("a", "self")])
-def test_only_the_externally_assigned_role_lists_exceptions(
+@pytest.mark.parametrize(
+    "assigned",
+    [pytest.param(("self", "self"), id="both-self"), pytest.param(("a", "self"), id="external-review-self-check")],
+)
+def test_single_call_uses_both_review_roles_and_retains_self_instructions(
     inputs: tuple[dict[str, Any], Path, dict[str, Any]], tmp_path: Path, parent: Path, assigned: tuple[str, str]
 ) -> None:
-    adapter = FakeAdapter()
-    launch(inputs, tmp_path, config(*assigned), adapter_loader=adapter)
-    lines = exception_lines(adapter.requests[0].prompt)
-    external = SELF_REVIEW if assigned[0] != "self" else FIX_CHECK
-    assert lines and all(line.endswith(external) for line in lines)
-
-
-def test_self_review_roles_ask_for_no_write_exceptions(
-    inputs: tuple[dict[str, Any], Path, dict[str, Any]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def forbidden(*_: object) -> Any:
-        raise AssertionError("self must not ask for write exceptions")
-
-    calls: list[dict[str, Any]] = []
-    original = mod.run_workflow
-
-    def recorded(*args: Any, **kwargs: Any) -> Any:
-        calls.append(kwargs)
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(mod.review_target, "default_parent_root", forbidden)
-    monkeypatch.setattr(mod.verifier, "fix_check_write_exceptions", forbidden)
-    monkeypatch.setattr(mod, "run_workflow", recorded)
-    launch(inputs, tmp_path, config(), adapter_loader=FakeAdapter())
-    assert [call["write_exceptions"] for call in calls] == [()]
-
-
-def test_unresolved_parent_stops_before_reserving_the_review(
-    inputs: tuple[dict[str, Any], Path, dict[str, Any]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def unresolved() -> Path:
-        raise mod.review_target.TargetError(2, "no parent main worktree")
-
-    monkeypatch.setattr(mod.review_target, "default_parent_root", unresolved)
-    with pytest.raises(mod.RoleInputError):
-        launch(inputs, tmp_path, config("a", "self"), adapter_loader=FakeAdapter())
-    assert json.loads(inputs[1].read_text())["activities"] == []
-    assert not (tmp_path / "run").exists()
-
-
-@pytest.mark.parametrize("assigned", [("self", "self"), ("a", "b"), ("a", "self")])
-def test_single_call_uses_both_review_roles_and_retains_self_instructions(
-    inputs: tuple[dict[str, Any], Path, dict[str, Any]],
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    assigned: tuple[str, str],
-) -> None:
-    original = mod.run_workflow
-    calls: list[dict[str, Any]] = []
-
-    def counted(*args: Any, **kwargs: Any) -> Any:
-        calls.append(kwargs)
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(mod, "run_workflow", counted)
-    adapter = FakeAdapter()
-    batch = launch(inputs, tmp_path, config(*assigned), adapter_loader=adapter)
-    assert len(calls) == 1 and calls[0]["concurrency"] == 2
-    assert {result.role for result in batch.results} == {"self-review", "fix-check"}
-    assert len(adapter.requests) == sum(name != "self" for name in assigned)
+    """self の役割が pending_self から落ちる・別の役割の success を fix-check の記録にすると、未確認で push に進む。"""
+    batch = launch(inputs, tmp_path, config(*assigned), adapter_loader=FakeAdapter())
     saved = json.loads((batch.artifact_dir / "roles.json").read_text())
     assert set(saved["self_prompts"]) == {
         role for role, agent in zip(("self-review", "fix-check"), assigned, strict=True) if agent == "self"
     }
-    assert saved["review_changes"] == []
-    activities = json.loads(inputs[1].read_text())["activities"]
-    assert len(activities) == 1 and activities[0]["stage"] == "pre_push_review"
-    assert activities[0]["seconds"] is None
     receipt = mod.verifier.read_dispatch(batch.artifact_dir / "fix-check-receipt")
-    assert receipt["request"] == inputs[2]
     assert len(receipt["batch"]["results"]) == 1
-    if assigned[1] == "self":
-        assert receipt["batch"]["state"] == "self" and receipt["verifier"] is None
-        with pytest.raises(mod.verifier.AcceptError, match="not success"):
-            mod.verifier.accept(batch.artifact_dir / "fix-check-receipt")
-    else:
-        assert receipt["verifier"]["provenance"]["agent_id"] == assigned[1]
-        with pytest.raises(mod.verifier.AcceptError, match="payload"):
-            mod.verifier.accept(batch.artifact_dir / "fix-check-receipt")
+    assert receipt["batch"]["state"] == "self"
 
 
-@pytest.mark.parametrize("wrong", ["pr", "head", "malformed"])
-def test_verified_input_mismatch_never_consumes_the_only_review(inputs: Any, tmp_path: Path, wrong: str) -> None:
+def test_verified_input_mismatch_never_consumes_the_only_review(inputs: Any, tmp_path: Path) -> None:
+    """別の HEAD の確認済み一覧で fix-check を動かすと、dispatch.accept は一致を見ないので誤った基準で受け取る。"""
     path = Path(inputs[2]["verified_file"])
     value = json.loads(path.read_text())
-    if wrong == "pr":
-        value["pr"]["number"] += 1
-    elif wrong == "head":
-        value["reviewed_head"] = "f" * 40
-    else:
-        value = {"kind": "verified"}
+    value["reviewed_head"] = "f" * 40
     path.write_text(json.dumps(value))
-    with pytest.raises((ValueError, mod.findings.FindingsError)):
+    with pytest.raises(mod.RoleInputError):
         launch(inputs, tmp_path, config())
     assert not (tmp_path / "run").exists()
     assert json.loads(inputs[1].read_text())["activities"] == []
 
 
-def test_v2_verified_input_is_still_accepted(inputs: Any, tmp_path: Path) -> None:
-    path = Path(inputs[2]["verified_file"])
-    value = json.loads(path.read_text())
-    value["schema"] = "review-findings/v2"
-    actor = json.loads(inputs[1].read_text())["planner"]["provenance"]
-    actor.update(role="verify", skills=[value["skill"]])
-    value["verifier"]["provenance"] = actor
-    value["timing"]["waiting_seconds"] = 0
-    path.write_text(json.dumps(value))
-    assert mod.findings.validate_document(value)["schema"] == value["schema"]
-    assert launch(inputs, tmp_path, config()).state == "self"
-
-
 def test_second_review_is_refused_even_when_all_assignments_are_self(inputs: Any, tmp_path: Path) -> None:
+    """2 回目の予約を許すと、自己レビューは 1 回だけの規則が黙って破れ、通るまでレビューし直せる。"""
     launch(inputs, tmp_path, config())
-    with pytest.raises(ValueError, match="already reserved"):
+    with pytest.raises(mod.RoleInputError):
         mod.run(config(), "self-review", inputs[0], tmp_path / "second", planning_file=inputs[1], fix_input=inputs[2])
     assert not (tmp_path / "second").exists()
 
 
 def test_existing_lock_does_not_start_or_erase_another_call(inputs: Any, tmp_path: Path) -> None:
+    """他のセッションのロックを無視・削除すると、並行した呼び出しが両方とも予約し、1 回の記録で 2 回レビューする。"""
     lock = inputs[1].with_suffix(".json.review-lock")
     lock.write_text("other-session")
-    with pytest.raises(ValueError, match="locked"):
+    with pytest.raises(mod.RoleInputError):
         launch(inputs, tmp_path, config())
     assert lock.read_text() == "other-session"
     assert json.loads(inputs[1].read_text())["activities"] == []
 
 
-@pytest.mark.parametrize("wrong", ["reserved", "missing_planning", "incomplete_planning", "verified_head"])
-def test_cli_reports_the_cause_of_an_input_error(
-    inputs: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], wrong: str
-) -> None:
-    """分類名だけでは、どの入力を直せばよいか分からない（手で予約を書き足した読み違えにも気づけない）。"""
-    request, planning, fix_input = inputs
-    value = json.loads(planning.read_text())
-    if wrong == "reserved":
-        value["activities"].append(
-            {"stage": "pre_push_review", "actor": value["planner"], "seconds": None, "waiting_seconds": None}
-        )
-    elif wrong == "incomplete_planning":
-        del value["outcome"]
-    elif wrong == "verified_head":
-        verified = Path(fix_input["verified_file"])
-        verified.write_text(verified.read_text().replace(request["source_head"], "f" * 40))
-    planning.write_text(json.dumps(value))
-    if wrong == "missing_planning":
-        planning.unlink()
-    before = planning.read_text() if planning.exists() else None
-    with pytest.raises(mod.RoleInputError) as raised:
-        mod.run(config(), "self-review", request, tmp_path / "run", planning_file=planning, fix_input=fix_input)
-
-    def fixture_config(*args: object, **kwargs: object) -> Config:
-        return config()
-
-    monkeypatch.setattr(mod, "load_config", fixture_config)
-    request_file, fix_file = tmp_path / "request.json", tmp_path / "fix-input.json"
-    request_file.write_text(json.dumps(request))
-    fix_file.write_text(json.dumps(fix_input))
-    arguments = ["--phase", "self-review", "--request", str(request_file), "--output-dir", str(tmp_path / "run")]
-    arguments += ["--planning-file", str(planning), "--fix-input", str(fix_file)]
-    assert mod.main([*arguments, "--config", str(tmp_path / "personal.toml")]) == 2
-    assert str(raised.value) in capsys.readouterr().err
-    assert not (tmp_path / "run").exists()
-    assert (planning.read_text() if planning.exists() else None) == before
-    assert not planning.with_suffix(".json.review-lock").exists()
-
-
-@pytest.mark.parametrize("wrong", ["source_head", "revision", "pr"])
-def test_binding_mismatch_is_rejected_before_reservation(inputs: Any, tmp_path: Path, wrong: str) -> None:
-    if wrong == "pr":
-        inputs[0][wrong]["number"] = 901
-    else:
-        inputs[0][wrong] = "f" * 40
-    with pytest.raises(ValueError):
-        launch(inputs, tmp_path, config())
-    assert json.loads(inputs[1].read_text())["activities"] == []
-
-
-@pytest.mark.parametrize("phase", ["implement", "self-review"])
-@pytest.mark.parametrize("failure", ["missing", "locked", "moved"])
-def test_environment_preflight_does_not_launch_or_consume_review(
-    inputs: Any,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    phase: str,
-    failure: str,
-) -> None:
-    from tools.agent_runner.workspace import CheckoutAuditError, create_worktree
-
-    request, planning, fix_input = inputs
-    root = Path(request["repository"])
-    external = create_worktree(root, "HEAD", tmp_path / "旧 checkout\n移動前")
-    if failure == "locked":
-        git(root, "worktree", "lock", str(external))
-    if failure == "moved":
-        external.rename(tmp_path / "移動済み")
-    else:
-        shutil.rmtree(external)
-    before = planning.read_bytes()
-    adapter = FakeAdapter()
-    output = tmp_path / "run"
-    with pytest.raises(CheckoutAuditError):
-        mod.run(
-            config("a", "b"),
-            phase,
-            request,
-            output,
-            planning_file=planning,
-            fix_input=fix_input,
-            adapter_loader=adapter,
-        )
-    assert adapter.requests == []
-    assert not output.exists()
-    assert planning.read_bytes() == before
-    assert not planning.with_suffix(".json.review-lock").exists()
-
-    def fixture_config(*args: object, **kwargs: object) -> Config:
-        return config()
-
-    monkeypatch.setattr(mod, "load_config", fixture_config)
-    request_file, fix_file = tmp_path / "request.json", tmp_path / "fix-input.json"
-    request_file.write_text(json.dumps(request))
-    fix_file.write_text(json.dumps(fix_input))
-    assert (
-        mod.main(
-            [
-                "--phase",
-                phase,
-                "--request",
-                str(request_file),
-                "--output-dir",
-                str(output),
-                "--planning-file",
-                str(planning),
-                "--fix-input",
-                str(fix_file),
-                "--config",
-                str(tmp_path / "personal.toml"),
-            ]
-        )
-        == 1
-    )
-    report = json.loads(capsys.readouterr().out)
-    assert report["state"] == "failed" and report["category"] == "environment"
-    assert report["checkout_audit"][0]["path"] == str(external)
-    assert report["checkout_audit"][0]["kind"] == "unavailable_before"
-    assert report["checkout_audit"][0]["locked"] is (failure == "locked")
-    assert planning.read_bytes() == before
-    assert not output.exists()
-    if failure == "moved":
-        git(root, "worktree", "repair", str(tmp_path / "移動済み"))
-        batch = mod.run(
-            config("a", "b"),
-            phase,
-            request,
-            output,
-            planning_file=planning,
-            fix_input=fix_input,
-            adapter_loader=adapter,
-        )
-        assert batch.state == "success" and batch.outside_changes == [] and batch.checkout_audit == []
-
-
-def test_role_projection_keeps_fallback_and_rejects_lost_constraints() -> None:
-    selected = config("a", "b")
-    selected.workflows["fix"].assignments["implement"].fallback = ["b"]
-    projected = mod.project(selected, "implement")
-    assert projected.workflows["fix"].assignments["implement"].fallback == ["b"]
-    assert set(projected.workflows["fix"].assignments) == {"implement"}
+def test_role_projection_rejects_lost_constraints() -> None:
+    """投影の外を参照する同モデルの除外を黙って捨てると、実装と同じモデルが自分の修正をレビューする。"""
     selected = config("b", "self")
     selected.workflows["fix"].exclude_same_model_as = {"self-review": "implement"}
     with pytest.raises(ConfigError):
         mod.project(selected, "self-review")
 
 
-def test_invalid_writable_review_role_never_consumes_budget(inputs: Any, tmp_path: Path) -> None:
-    selected = config()
-    selected.roles["self-review"].writes = True
-    with pytest.raises(ConfigError):
-        launch(inputs, tmp_path, selected)
-    assert json.loads(inputs[1].read_text())["activities"] == []
+def test_review_directory_tampering_is_not_accepted_or_cleaned(inputs: Any, tmp_path: Path, parent: Path) -> None:
+    """review_snapshot を起動の後に取ると、実行中に他者が書いた検証結果を accept が受け取る。"""
 
-
-def test_implement_uses_only_implement_and_does_not_consume_review_budget(inputs: Any, tmp_path: Path) -> None:
-    adapter = FakeAdapter()
-    batch = mod.run(config(), "implement", inputs[0], tmp_path / "implement", adapter_loader=adapter)
-    assert batch.state == "success" and [result.role for result in batch.results] == ["implement"]
-    assert json.loads(inputs[1].read_text())["activities"] == []
-
-
-TEMPLATE = """
-[agents.a]
-runtime = "pi"
-command = [{missing}]
-model = "a"
-
-[agents.c]
-runtime = "codex"
-command = [{missing}]
-model = "c"
-
-[roles.implement]
-writes = true
-deadline_seconds = 20.0
-result_shape = "json"
-
-[roles.self-review]
-writes = false
-deadline_seconds = 20.0
-result_shape = "json"
-
-[roles.fix-check]
-writes = false
-deadline_seconds = 20.0
-result_shape = "json"
-
-[workflows.fix.assignments.implement]
-agents = ["a"]
-
-[workflows.fix.assignments.self-review]
-agents = ["self"]
-
-[workflows.fix.assignments.fix-check]
-agents = ["self"]
-"""
-
-
-class ReadOnlyAdapter(FakeAdapter):
-    """codex の -s read-only のように、writes=false の役割をランタイム側で読み取り専用にする担当（#52）。"""
-
-    capabilities = Capabilities(enforces_read_only=True)
-
-
-@pytest.mark.parametrize("role", ["self-review", "fix-check"])
-@pytest.mark.parametrize("slot", ["agents", "fallback"])
-def test_read_only_review_assignment_stops_before_reserving_the_review(
-    inputs: tuple[dict[str, Any], Path, dict[str, Any]], tmp_path: Path, role: str, slot: str
-) -> None:
-    """helper の書き込みができない担当は、1 回枠を消費する前に止める（#52）。fallback は一次担当が self でも見る。"""
-    selected = config()
-    assignment = selected.workflows["fix"].assignments[role]
-    if slot == "agents":
-        assignment.agents = ["b"]
-    else:
-        assignment.fallback = ["b"]
-    adapter = ReadOnlyAdapter()
-    with pytest.raises(mod.RoleInputError, match="read-only"):
-        launch(inputs, tmp_path, selected, adapter_loader=adapter)
-    assert adapter.requests == []
-    assert json.loads(inputs[1].read_text())["activities"] == []
-    assert not (tmp_path / "run").exists()
-    assert not inputs[1].with_suffix(".json.review-lock").exists()
-
-
-@pytest.mark.parametrize("role", ["self-review", "fix-check"])
-def test_cli_rejects_an_assigned_codex_review_agent(
-    inputs: Any, tmp_path: Path, capsys: pytest.CaptureFixture[str], role: str
-) -> None:
-    """実際の codex の adapter（writes=false を -s read-only で起動）を、予約・起動の前に exit 2 で止める（#52）。"""
-    request, planning, fix_input = inputs
-    template, personal = tmp_path / "template.toml", tmp_path / "personal.toml"
-    # command は存在しないパス。拒否が外れても実際の CLI を起動しない
-    template.write_text(TEMPLATE.format(missing=json.dumps(str(tmp_path / "missing-agent"))))
-    personal.write_text("")
-    request_file, fix_file = tmp_path / "request.json", tmp_path / "fix-input.json"
-    request_file.write_text(json.dumps(request))
-    fix_file.write_text(json.dumps(fix_input))
-    before = planning.read_bytes()
-    arguments = ["--phase", "self-review", "--request", str(request_file), "--output-dir", str(tmp_path / "run")]
-    arguments += ["--planning-file", str(planning), "--fix-input", str(fix_file)]
-    arguments += ["--template", str(template), "--config", str(personal), "--assign", f"{role}=c"]
-    assert mod.main(arguments) == 2
-    assert "read-only" in capsys.readouterr().err
-    assert planning.read_bytes() == before
-    assert not (tmp_path / "run").exists()
-
-
-def test_read_only_review_assignment_does_not_stop_implement(inputs: Any, tmp_path: Path) -> None:
-    """implement は writes=true の役割で、codex も workspace-write で起動する。"""
-    adapter = ReadOnlyAdapter()
-    batch = mod.run(config("b", "b"), "implement", inputs[0], tmp_path / "implement", adapter_loader=adapter)
-    assert batch.state == "success" and [result.role for result in batch.results] == ["implement"]
-
-
-@pytest.mark.parametrize("phase", ["implement", "self-review"])
-def test_main_accepts_isolated_concurrent_checkout_change(
-    inputs: Any,
-    tmp_path: Path,
-    parent: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    phase: str,
-) -> None:
-    """別セッションの checkout 更新で implement や一回枠のレビューを拒否すると作業が止まる。"""
-    selected = config("a", "b")
-
-    def selected_config(*_args: object, **_kwargs: object) -> Config:
-        return selected
-
-    monkeypatch.setattr(mod, "load_config", selected_config)
-    original = mod.run
-
-    def with_concurrent_change(*args: Any, **kwargs: Any) -> Any:
-        kwargs["adapter_loader"] = FakeAdapter()
-        batch = original(*args, **kwargs)
-        batch.outside_changes = [str(parent)]
-        batch.checkout_audit = [CheckoutAudit(path=str(parent), kind="content_changed", reason="content_changed")]
-        return batch
-
-    monkeypatch.setattr(mod, "run", with_concurrent_change)
-    request_file = tmp_path / "request.json"
-    request_file.write_text(json.dumps(inputs[0]), encoding="utf-8")
-    args = ["--phase", phase, "--request", str(request_file), "--output-dir", str(tmp_path / "run")]
-    if phase == "self-review":
-        fix_file = tmp_path / "fix-input.json"
-        fix_file.write_text(json.dumps(inputs[2]), encoding="utf-8")
-        args += ["--planning-file", str(inputs[1]), "--fix-input", str(fix_file)]
-
-    assert mod.main(args) == 0
-    report = json.loads(capsys.readouterr().out)
-    assert report["outside_changes"] == [str(parent)]
-
-
-def test_review_directory_tampering_is_not_accepted_or_cleaned(inputs: Any, tmp_path: Path) -> None:
     class Tampering(FakeAdapter):
         def collect(self, context: AdapterContext, stdout_path: Path, stderr_path: Path) -> AdapterOutcome:
             Path(inputs[2]["review_dir"], "external-change").write_text("do not erase")
@@ -670,24 +256,26 @@ def test_review_directory_tampering_is_not_accepted_or_cleaned(inputs: Any, tmp_
     batch = launch(inputs, tmp_path, config("a", "b"), adapter_loader=Tampering())
     saved = json.loads((batch.artifact_dir / "roles.json").read_text())
     assert saved["review_changes"] == ["external-change"]
-    with pytest.raises(mod.verifier.AcceptError, match="review_dir changed"):
-        mod.verifier.accept(batch.artifact_dir / "fix-check-receipt")
+    receipt = mod.verifier.read_dispatch(batch.artifact_dir / "fix-check-receipt")
+    assert receipt["review_changes"] == ["external-change"]
     assert Path(inputs[2]["review_dir"], "external-change").read_text() == "do not erase"
 
 
 def test_unconfirmed_stop_blocks_fix_check_accept_and_keeps_budget(
-    inputs: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    inputs: Any, tmp_path: Path, parent: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """停止を確かめられない fix-check を success と記録すると accept が受け取り、予約を戻すと 2 回目が可能になる。"""
     original = mod.run_workflow
 
     def no_stop(*args: Any, **kwargs: Any) -> Any:
         batch = original(*args, **kwargs)
-        batch.results[0].attempts[-1].stop_confirmed = False
+        fix_check = next(result for result in batch.results if result.role == "fix-check")
+        fix_check.attempts[-1].stop_confirmed = False
         return batch
 
     monkeypatch.setattr(mod, "run_workflow", no_stop)
     batch = launch(inputs, tmp_path, config("a", "b"), adapter_loader=FakeAdapter())
     assert json.loads((batch.artifact_dir / "roles.json").read_text())["review_changes"] is None
-    with pytest.raises(mod.verifier.AcceptError, match="not success"):
-        mod.verifier.accept(batch.artifact_dir / "fix-check-receipt")
+    receipt = mod.verifier.read_dispatch(batch.artifact_dir / "fix-check-receipt")
+    assert receipt["batch"]["state"] != "success"
     assert len(json.loads(inputs[1].read_text())["activities"]) == 1

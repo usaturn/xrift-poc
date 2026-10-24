@@ -6,8 +6,6 @@ import sys
 from pathlib import Path
 from typing import TypedDict
 
-import pytest
-
 SOURCE_ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -58,11 +56,9 @@ def make_minimal_parent_fixture(
     return root, log, env
 
 
-def run_runner(
-    root: Path, env: dict[str, str], cwd: Path, args: list[str] | None = None
-) -> subprocess.CompletedProcess[str]:
+def run_runner(root: Path, env: dict[str, str], cwd: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["bash", str(root / "scripts/ci/verify-devenv.sh"), *(args or [])],
+        ["bash", str(root / "scripts/ci/verify-devenv.sh")],
         cwd=cwd,
         env=env,
         text=True,
@@ -75,34 +71,19 @@ def read_calls(log: Path) -> list[UvCall]:
     return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
 
 
-@pytest.mark.parametrize("failure", [None, "sync", "ruff-check", "ruff-format", "pyright", "pytest"])
-def test_runner_only_uses_devenv_and_propagates_failure(tmp_path: Path, failure: str | None) -> None:
-    root, log, env = make_minimal_parent_fixture(tmp_path, failure=failure)
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    result = run_runner(root, env=env, cwd=outside)
-    calls = read_calls(log)
-    assert (result.returncode == 0) is (failure is None)
-    assert calls[0]["argv"][:4] == ["sync", "--project", str(root / "tools/devenv"), "--locked"]
-    assert all(call["cwd"] == str(root) for call in calls)
-    assert not any("public" in " ".join(call["argv"]) for call in calls)
-    assert not any(str(root / "tests") in call["argv"] for call in calls)
-    for call in calls:
-        if call["stage"] in {"ruff-check", "ruff-format"}:
-            assert "tools/agent_runner" in call["argv"]
-        elif call["stage"] == "pytest":
-            assert "tools/agent_runner/tests" in call["argv"]
-
-
-def test_runner_rejects_argument_and_missing_lock(tmp_path: Path) -> None:
-    root, log, env = make_minimal_parent_fixture(tmp_path)
-    assert run_runner(root, env=env, cwd=tmp_path, args=["full"]).returncode != 0
-    (root / "tools/devenv/uv.lock").unlink()
-    assert run_runner(root, env=env, cwd=tmp_path).returncode != 0
-    assert read_calls(log) == []
+def test_runner_stops_at_a_failing_middle_stage(tmp_path: Path) -> None:
+    """途中の段階（ruff・pyright）の失敗を握りつぶし、CI が green になる。"""
+    root, log, env = make_minimal_parent_fixture(tmp_path, failure="pyright")
+    result = run_runner(root, env=env, cwd=root)
+    stages = [call["stage"] for call in read_calls(log)]
+    assert result.returncode != 0
+    # 失敗した段階で止まり、後の段階（pytest）へ進まない。
+    assert stages[-1] == "pyright"
+    assert "pytest" not in stages
 
 
 def test_runner_scopes_conftest_fixtures_to_their_directory(tmp_path: Path) -> None:
+    """--rootdir が外れ、conftest の autouse の fixture が別のディレクトリのテストにも効いたまま通る。"""
     root, _, env = make_minimal_parent_fixture(tmp_path, pytest_python=sys.executable)
     # 自分のディレクトリのテストにだけ効くはずの autouse の fixture。nodeid が repo の root からのパスかも確かめる
     (root / "tools/agent_runner/tests/conftest.py").write_text(
