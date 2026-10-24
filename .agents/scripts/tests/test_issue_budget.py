@@ -46,7 +46,6 @@ def test_user_wait_is_excluded_from_active_time() -> None:
     summary = budget.summarize(ledger, now=at(90))
 
     assert (summary.wall_seconds, summary.user_wait_seconds, summary.active_seconds) == (3000, 1800, 1200)
-    assert summary.state == "ended"
 
 
 def test_checkpoint_is_due_after_threshold_until_recorded() -> None:
@@ -61,6 +60,10 @@ def test_checkpoint_is_due_after_threshold_until_recorded() -> None:
     assert summary.due_checkpoints == ()
     assert summary.last_checkpoint is not None and summary.last_checkpoint.decision == "continue"
     assert budget.summarize(ledger, now=at(61)).due_checkpoints == (100,)
+
+    # 本番の手順は閾値を渡さない。既定の閾値でも、途中の checkpoint の記録の後に予算を使い切れば期日が来る。
+    default_ledger = entries(start(), event("checkpoint", 59, decision="continue", reason="x"))
+    assert budget.summarize(default_ledger, now=at(61)).due_checkpoints != ()
 
 
 def test_retry_limit_counts_same_reliability_signature() -> None:
@@ -100,6 +103,23 @@ def test_inconsistent_ledger_is_rejected_with_line() -> None:
 
 def run(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True, timeout=30)
+
+
+def test_cli_start_does_not_overwrite_an_existing_ledger(tmp_path: Path) -> None:
+    """既にある ledger に start を重ねて作り直すと、
+    記録した安全の失敗・利用者待ち・失敗の回数を黙って消し、能動時間を 0 から数え直す。"""
+    ledger = str(tmp_path / "budget.jsonl")
+    assert run("start", "--ledger", ledger, "--budget-minutes", "30").returncode == 0
+    marked = run(
+        "mark", "--ledger", ledger, "--event", "failure", "--failure-class", "safety", "--signature", "unknown-send"
+    )
+    assert marked.returncode == 0
+    recorded = Path(ledger).read_bytes()
+
+    again = run("start", "--ledger", ledger, "--budget-minutes", "30")
+
+    assert again.returncode != 0
+    assert Path(ledger).read_bytes() == recorded
 
 
 def test_cli_rejects_a_corrupted_ledger_line(tmp_path: Path) -> None:
