@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import cast
@@ -78,3 +79,10 @@ def test_no_runtime_copies(name: str) -> None:
     """ランタイム専用の置き場所の写しは名前の衝突で先に見つかった方が使われ、古い写しが黙って使われる。"""
     copies = [str(path) for base in RUNTIME_SKILL_DIRS if (path := base / name).exists() or path.is_symlink()]
     assert copies == [], f"{name}: ランタイム専用の置き場所に写しを置かない"
+
+
+@pytest.mark.parametrize("name", tracked_skill_names())
+def test_skill_text_has_no_numbered_positional_references(name: str) -> None:
+    """Claude Code が番号付き参照を Skill 引数へ置換すると、秘密検査が別ファイルを読んで通りうる。"""
+    skill = AGENTS_SKILLS / name / "SKILL.md"
+    assert re.search(r"\$[0-9]", skill.read_text(encoding="utf-8")) is None, str(skill)
