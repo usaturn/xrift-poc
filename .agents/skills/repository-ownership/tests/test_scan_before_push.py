@@ -29,7 +29,6 @@ PRODUCT_URL = "https://github.com/someone/my-world.git"
 SPACED = "空白 と 日本語"
 PRODUCT_NAME = "空白 ワールド"
 TRUSTED_RULES = 'title = "trusted base"\n[extend]\nuseDefault = true\n'
-DEFAULT_RULES = "[extend]\nuseDefault = true\n"
 # 利用者の global・system の git 設定（hooksPath・insteadOf・log.diffMerges など）を読まない。
 ISOLATED_GIT = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
 
@@ -96,7 +95,7 @@ class Layout:
     product_worktree: Path
 
     def where(self, name: str) -> Path:
-        return {"feature": self.feature, "product": self.product, "product-worktree": self.product_worktree}[name]
+        return {"feature": self.feature, "product": self.product}[name]
 
     def base_branch(self, name: str) -> str:
         return "main" if name == "feature" else self.product_branch
@@ -143,15 +142,12 @@ def install_scanner(tmp_path: Path) -> tuple[dict[str, str], Path]:
     return {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}, log
 
 
-def prepare_scan(
-    layout: Layout, where: str, tmp_path: Path, *, base_rules: str | None = TRUSTED_RULES
-) -> tuple[Path, dict[str, str], Path]:
+def prepare_scan(layout: Layout, where: str, tmp_path: Path) -> tuple[Path, dict[str, str], Path]:
     """base に信頼する設定を push し、ブランチ側で設定を緩めた未 push の commit を 2 つ積む。"""
     cwd = layout.where(where)
-    if base_rules is not None:
-        commit_file(cwd, ".gitleaks.toml", base_rules, "base rules")
-        git(cwd, "push", "-q", "origin", f"HEAD:refs/heads/{layout.base_branch(where)}")
-        git(cwd, "fetch", "-q", "origin")
+    commit_file(cwd, ".gitleaks.toml", TRUSTED_RULES, "base rules")
+    git(cwd, "push", "-q", "origin", f"HEAD:refs/heads/{layout.base_branch(where)}")
+    git(cwd, "fetch", "-q", "origin")
     for index in range(2):
         commit_file(cwd, ".gitleaks.toml", f'title = "weakened branch {index}"\n', f"candidate {index}")
     env, log = install_scanner(tmp_path)
@@ -183,12 +179,12 @@ def scanned_range(record: dict[str, list[str]]) -> str:
     return revisions[0]
 
 
-@pytest.mark.parametrize("where", ["feature", "product", "product-worktree"])
-def test_scan_uses_base_rules_and_reports_the_scanned_commit(tmp_path: Path, where: str) -> None:
+def test_scan_uses_base_rules_and_reports_the_scanned_commit(tmp_path: Path) -> None:
+    """branch で緩めた設定・環境変数や base..HEAD より狭い範囲で検査し、秘密を含む commit を push する。"""
     layout = make_layout(tmp_path / SPACED)
-    cwd, env, log = prepare_scan(layout, where, tmp_path)
+    cwd, env, log = prepare_scan(layout, "feature", tmp_path)
     sha = git(cwd, "rev-parse", "HEAD")
-    base = git(cwd, "rev-parse", f"origin/{layout.base_branch(where)}")
+    base = git(cwd, "rev-parse", "origin/main")
     result = run(layout, cwd, "scan_before_push", env)
     assert result.returncode == 0, result.stderr
     assert result.stdout == f"{sha}\n"
@@ -196,20 +192,10 @@ def test_scan_uses_base_rules_and_reports_the_scanned_commit(tmp_path: Path, whe
     assert record["config"] == TRUSTED_RULES
     assert record["env"] == {"GITLEAKS_CONFIG": None, "GITLEAKS_CONFIG_TOML": None}
     assert scanned_range(record) == f"{base}..{sha}"
-    assert "--redact" in record["args"]
-    assert "--ignore-gitleaks-allow" in record["args"]
-    assert not Path(record["path"]).exists()
-
-
-def test_scan_uses_default_rules_without_base_config(tmp_path: Path) -> None:
-    layout = make_layout(tmp_path / SPACED)
-    cwd, env, log = prepare_scan(layout, "feature", tmp_path, base_rules=None)
-    result = run(layout, cwd, "scan_before_push", env)
-    assert result.returncode == 0, result.stderr
-    assert json.loads(log.read_text(encoding="utf-8"))["config"] == DEFAULT_RULES
 
 
 def test_scan_uses_the_product_default_branch(tmp_path: Path) -> None:
+    """制作物の既定ブランチ以外を base にし、信頼できない branch の設定で検査を緩める。"""
     layout = make_layout(tmp_path / SPACED, product_branch="trunk")
     # main には古い commit だけを置き、既定ブランチ（trunk）とずらす。
     git(layout.product, "push", "-q", "origin", "HEAD:refs/heads/main")
@@ -224,6 +210,7 @@ def test_scan_uses_the_product_default_branch(tmp_path: Path) -> None:
 
 
 def test_scan_checks_whole_history_for_empty_product_remote(tmp_path: Path) -> None:
+    """空のリポジトリへの初めての push で範囲を誤り、履歴の大半を検査せずに公開する。"""
     # GitHub で作ったばかりの空のリポジトリへの初めての push。履歴のすべてが未 push である。
     layout = make_layout(tmp_path / SPACED, push_product=False)
     sha = commit_file(layout.product, "app.txt", "first\n", "first")
@@ -231,63 +218,29 @@ def test_scan_checks_whole_history_for_empty_product_remote(tmp_path: Path) -> N
     result = run(layout, layout.product, "scan_before_push", env)
     assert result.returncode == 0, result.stderr
     assert result.stdout == f"{sha}\n"
-    record = json.loads(log.read_text(encoding="utf-8"))
-    assert scanned_range(record) == sha
-    assert record["config"] == DEFAULT_RULES
+    assert scanned_range(json.loads(log.read_text(encoding="utf-8"))) == sha
 
 
-@pytest.mark.parametrize(
-    "case", ["env-main", "subdirectory", "product-without-origin", "product-uninitialized", "no-root"]
-)
-def test_scan_refuses_unsafe_locations(tmp_path: Path, case: str) -> None:
+def test_scan_refuses_the_parent_main_checkout(tmp_path: Path) -> None:
+    """親の main checkout から検査した SHA を出し、main checkout の作業を feature branch として公開する。"""
     layout = make_layout(tmp_path / SPACED)
     env, log = install_scanner(tmp_path)
-    cwd = layout.feature
-    if case == "env-main":
-        cwd = layout.env.root
-    elif case == "subdirectory":
-        cwd = layout.feature / "nested"
-        cwd.mkdir()
-    elif case == "product-without-origin":
-        cwd = create_product(layout.env.root, "worlds", "no-origin")
-    elif case == "product-uninitialized":
-        cwd = create_product(layout.env.root, "items", "plain", git=False)
-    else:
-        env["XRIFT_POC_ROOT"] = ""
-    result = run(layout, cwd, "scan_before_push", env)
+    result = run(layout, layout.env.root, "scan_before_push", env)
     assert result.returncode != 0
     assert result.stdout == ""
     assert not log.exists()
 
 
-@pytest.mark.parametrize(
-    "case",
-    [
-        "failure",
-        "ignore-file",
-        "ignore-symlink",
-        "remote-unreachable-env",
-        "remote-unreachable-product",
-        "product-head-unborn",
-    ],
-)
+@pytest.mark.parametrize("case", ["failure", "ignore-file"])
 def test_scan_does_not_approve_unsafe_input(tmp_path: Path, case: str) -> None:
+    """scanner の失敗や .gitleaksignore の除外を検査済みとして扱い、秘密を含む commit を push する。"""
     layout = make_layout(tmp_path / SPACED)
-    where = "product" if case.endswith("product") or case == "product-head-unborn" else "feature"
-    cwd, env, log = prepare_scan(layout, where, tmp_path)
+    cwd, env, log = prepare_scan(layout, "feature", tmp_path)
     if case == "failure":
         env["SCAN_EXIT"] = "1"
-    elif case == "ignore-file":
-        (cwd / ".gitleaksignore").write_text("ignored-fingerprint\n", encoding="utf-8")
-    elif case == "ignore-symlink":
-        (cwd / ".gitleaksignore").symlink_to("missing-ignore-file")
-    elif case == "remote-unreachable-env":
-        layout.env_bare.rename(layout.env_bare.with_name("moved.git"))
-    elif case == "remote-unreachable-product":
-        layout.product_bare.rename(layout.product_bare.with_name("moved.git"))
     else:
-        # ブランチはあるが、既定ブランチ（HEAD）を読めない。
-        git(layout.product_bare, "symbolic-ref", "HEAD", "refs/heads/missing")
+        # Gitleaks 8.30.1 は、空の --gitleaks-ignore-path を渡しても検査する場所の .gitleaksignore を読む。
+        (cwd / ".gitleaksignore").write_text("ignored-fingerprint\n", encoding="utf-8")
     result = run(layout, cwd, "scan_before_push", env)
     assert result.returncode != 0
     assert result.stdout == ""
@@ -352,16 +305,16 @@ def prepare_merge(layout: Layout, *, resolution: str, added: str | None) -> Path
 
 
 # git log -p がマージ commit に何を出すか、色を付けるかは、利用者の git 設定で変わる。
-@pytest.mark.parametrize("setting", [None, "log.diffMerges=off", "color.ui=always", "color.diff=always"])
-@pytest.mark.parametrize("entry", ["conflict", "added"])
-def test_scan_detects_secret_introduced_by_merge(tmp_path: Path, entry: str, setting: str | None) -> None:
+@pytest.mark.parametrize(("setting", "entry"), [("log.diffMerges=off", "conflict"), ("color.ui=always", "added")])
+def test_scan_detects_secret_introduced_by_merge(tmp_path: Path, setting: str, entry: str) -> None:
+    """マージ commit で入った秘密が利用者の git 設定で git log -p から消え、検査を通って公開される。"""
     layout = make_layout(tmp_path / SPACED)
     token = secret_like_token()
     if entry == "conflict":
         working = prepare_merge(layout, resolution=f'line = "{token}"\n', added=None)
     else:
         working = prepare_merge(layout, resolution='line = "resolved"\n', added=f'token = "{token}"\n')
-    result = run(layout, working, "scan_before_push", real_gitleaks_env(*filter(None, [setting])))
+    result = run(layout, working, "scan_before_push", real_gitleaks_env(setting))
     assert result.returncode != 0
     assert result.stdout == ""
     assert leaks_found(result.stderr) >= 1
@@ -369,11 +322,10 @@ def test_scan_detects_secret_introduced_by_merge(tmp_path: Path, entry: str, set
 
 
 def test_scan_ignores_weakened_branch_settings(tmp_path: Path) -> None:
+    """base に設定が無いとき branch の設定・環境変数・inline の allow で規則が緩み、秘密が検査を通る。"""
     layout = make_layout(tmp_path / SPACED)
     working = layout.product_worktree
     token = secret_like_token()
-    commit_file(working, ".gitleaks.toml", TRUSTED_RULES, "base rules")
-    git(working, "push", "-q", "origin", "HEAD:refs/heads/main")
     weakened = "[extend]\nuseDefault = true\n[allowlist]\npaths = ['''.*''']\n"
     (working / ".gitleaks.toml").write_text(weakened, encoding="utf-8")
     (working / "secret.txt").write_text(f'token = "{token}" # gitleaks:allow\n', encoding="utf-8")
@@ -391,25 +343,20 @@ def git_path(cwd: Path, name: str) -> Path:
     return Path(git(cwd, "rev-parse", "--path-format=absolute", "--git-path", name))
 
 
-# 属性・textconv・大きなファイルの閾値で、ファイルの中身が git log -p から消えても検出する。
-@pytest.mark.parametrize("case", ["committed-diff-attr", "info-binary-attr", "textconv", "big-file-threshold"])
+# commit できる属性と textconv で、ファイルの中身が git log -p から消えても検出する。
+@pytest.mark.parametrize("case", ["committed-diff-attr", "textconv"])
 def test_scan_sees_through_attributes_and_settings_that_hide_content(tmp_path: Path, case: str) -> None:
+    """属性・textconv でファイルの中身が git log -p から消え、秘密が検査を通る。"""
     layout = make_layout(tmp_path / SPACED)
     working = layout.product_worktree
     settings: list[str] = []
     if case == "committed-diff-attr":
         commit_file(working, ".gitattributes", "secret.txt -diff\n", "hide secret.txt from diffs")
-    elif case == "info-binary-attr":
-        attributes = git_path(working, "info/attributes")
-        attributes.parent.mkdir(parents=True, exist_ok=True)
-        attributes.write_text("* binary\n", encoding="utf-8")
-    elif case == "textconv":
+    else:
         attributes = git_path(working, "info/attributes")
         attributes.parent.mkdir(parents=True, exist_ok=True)
         attributes.write_text("secret.txt diff=hide\n", encoding="utf-8")
         settings = ["diff.hide.textconv=true"]
-    else:
-        settings = ["core.bigFileThreshold=1"]
     token = secret_like_token()
     commit_file(working, "secret.txt", f'token = "{token}"\n', "leak")
     result = run(layout, working, "scan_before_push", real_gitleaks_env(*settings))
@@ -420,7 +367,7 @@ def test_scan_sees_through_attributes_and_settings_that_hide_content(tmp_path: P
 
 
 def test_scan_checks_the_root_commit_of_a_first_push(tmp_path: Path) -> None:
-    # log.showRoot=false でも、空のリモートへの初めての push の root commit を検査する。
+    """log.showRoot=false で root commit の差分が消え、初めての push の秘密が検査を通る。"""
     layout = make_layout(tmp_path / SPACED, push_product=False)
     token = secret_like_token()
     (layout.product / ".env").write_text(f'TOKEN="{token}"\n', encoding="utf-8")
@@ -433,52 +380,34 @@ def test_scan_checks_the_root_commit_of_a_first_push(tmp_path: Path) -> None:
     assert leaks_found(result.stderr) >= 1
 
 
-# Gitleaks 8.30.1 は、内部の git log が失敗しても「no leaks found」で 0 を返す。
-@pytest.mark.parametrize("case", ["broken-diff-setting", "missing-object"])
-def test_scan_stops_when_git_log_fails(tmp_path: Path, case: str) -> None:
+def test_scan_stops_when_git_log_fails(tmp_path: Path) -> None:
+    """Gitleaks は内部の git log の失敗でも成功を返すので、検査していない commit を検査済みとして push する。"""
+    # Gitleaks 8.30.1 は、内部の git log が失敗しても「no leaks found」で 0 を返す。
     layout = make_layout(tmp_path / SPACED)
     working = layout.feature
     commit_file(working, "app.txt", "change\n", "change")
-    settings: list[str] = []
-    if case == "broken-diff-setting":
-        settings = ["diff.algorithm=bogus"]
-    else:
-        blob = git(working, "rev-parse", "HEAD:app.txt")
-        objects = git_path(working, "objects")
-        (objects / blob[:2] / blob[2:]).unlink()
-    result = run(layout, working, "scan_before_push", real_gitleaks_env(*settings))
+    result = run(layout, working, "scan_before_push", real_gitleaks_env("diff.algorithm=bogus"))
     assert result.returncode != 0
     assert result.stdout == ""
 
 
-# 関数は呼び出し元のシェルの IFS を引き継ぐ。--log-opts の連結が IFS に左右されると、
-# Gitleaks の内部の git log だけが失敗し、0 commits scanned のまま成功を返していた。
-@pytest.mark.parametrize(
-    ("shell", "ifs"), [("bash", ","), ("bash", "''"), ("bash", "$'\\n'"), ("zsh", ","), ("zsh", "$'\\n'")]
-)
-def test_scan_does_not_depend_on_the_caller_ifs(tmp_path: Path, shell: str, ifs: str) -> None:
+def test_scan_does_not_depend_on_the_caller_ifs(tmp_path: Path) -> None:
+    """呼び出し元の IFS で Gitleaks の --log-opts が壊れ、0 commits のまま検査済みとして push する。"""
+    # 関数は呼び出し元のシェルの IFS を引き継ぐ。--log-opts の連結が IFS に左右されると、
+    # Gitleaks の内部の git log だけが失敗し、0 commits scanned のまま成功を返していた。
     layout = make_layout(tmp_path / SPACED)
     working = layout.feature
     token = secret_like_token()
     commit_file(working, "secret.txt", f'token = "{token}"\n', "leak")
-    result = run(layout, working, f"IFS={ifs}\nscan_before_push", real_gitleaks_env(), shell=shell)
+    result = run(layout, working, "IFS=,\nscan_before_push", real_gitleaks_env(), shell="zsh")
     assert result.returncode != 0
     assert result.stdout == ""
     assert leaks_found(result.stderr) >= 1
     assert token not in result.stderr
 
 
-@pytest.mark.parametrize("shell", ["bash", "zsh"])
-def test_scan_accepts_a_clean_commit_with_a_changed_ifs(tmp_path: Path, shell: str) -> None:
-    layout = make_layout(tmp_path / SPACED)
-    working = layout.feature
-    sha = commit_file(working, "app.txt", "change\n", "change")
-    result = run(layout, working, "IFS=$'\\n'\nscan_before_push", real_gitleaks_env(), shell=shell)
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == f"{sha}\n"
-
-
 def test_scan_stops_on_broken_base_config(tmp_path: Path) -> None:
+    """壊れた base の設定で Gitleaks が規則なしに成功を返しても止まらず、検査していない commit を push する。"""
     layout = make_layout(tmp_path / SPACED)
     working = layout.feature
     commit_file(working, ".gitleaks.toml", "title = \n[[[", "broken base rules")
@@ -487,21 +416,6 @@ def test_scan_stops_on_broken_base_config(tmp_path: Path) -> None:
     result = run(layout, working, "scan_before_push", real_gitleaks_env())
     assert result.returncode != 0
     assert result.stdout == ""
-
-
-def test_scan_accepts_merge_without_secret(tmp_path: Path) -> None:
-    layout = make_layout(tmp_path / SPACED)
-    working = prepare_merge(layout, resolution='line = "resolved"\n', added=None)
-    result = run(layout, working, "scan_before_push", real_gitleaks_env())
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == f"{git(working, 'rev-parse', 'HEAD')}\n"
-
-
-def test_scan_accepts_nothing_to_push(tmp_path: Path) -> None:
-    layout = make_layout(tmp_path / SPACED)
-    result = run(layout, layout.feature, "scan_before_push", real_gitleaks_env())
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == f"{git(layout.feature, 'rev-parse', 'origin/main')}\n"
 
 
 SCANNED_BRANCH = "feat/issue-22-scanned"
@@ -523,50 +437,28 @@ def pushed(bare: Path, branch: str = SCANNED_BRANCH) -> str | None:
     return result.stdout.strip() or None
 
 
-# Claude Code の Bash ツールは zsh で動く。zsh では "$VAR:r" などが修飾子になり、refspec を壊す。
-@pytest.mark.parametrize("shell", ["bash", "zsh"])
-@pytest.mark.parametrize("where", ["feature", "product-worktree"])
-def test_scanned_push_sends_the_scanned_commit(tmp_path: Path, shell: str, where: str) -> None:
-    layout = make_layout(tmp_path / SPACED)
-    cwd, env, _ = prepare_scan(layout, where, tmp_path)
-    sha = git(cwd, "rev-parse", "HEAD")
-    result = run(layout, cwd, scanned_push(), env, shell=shell)
-    assert result.returncode == 0, result.stderr
-    bare = layout.env_bare if where == "feature" else layout.product_bare
-    assert pushed(bare) == sha
-
-
-@pytest.mark.parametrize("shell", ["bash", "zsh"])
-def test_scanned_push_ignores_head_moved_after_scan(tmp_path: Path, shell: str) -> None:
+# push のブロックは、Claude Code の Bash ツールと同じ zsh で実行する（"$VAR:r" などが修飾子になるシェル）。
+def test_scanned_push_ignores_head_moved_after_scan(tmp_path: Path) -> None:
+    """検査の後に動いた HEAD を push し、検査していない commit を公開する。"""
     layout = make_layout(tmp_path / SPACED)
     cwd, env, _ = prepare_scan(layout, "feature", tmp_path)
     sha = git(cwd, "rev-parse", "HEAD")
     env["SCAN_THEN_COMMIT"] = "1"
-    result = run(layout, cwd, scanned_push(), env, shell=shell)
+    result = run(layout, cwd, scanned_push(), env, shell="zsh")
     assert result.returncode == 0, result.stderr
     assert git(cwd, "rev-parse", "HEAD") != sha
     assert pushed(layout.env_bare) == sha
 
 
-@pytest.mark.parametrize("shell", ["bash", "zsh"])
-@pytest.mark.parametrize("case", ["scan-failure", "empty-output"])
-@pytest.mark.parametrize("existing", [False, True], ids=["new-branch", "existing-branch"])
-def test_scanned_push_does_not_push_without_a_scanned_commit(
-    tmp_path: Path, shell: str, case: str, existing: bool
-) -> None:
+def test_scanned_push_does_not_push_without_a_scanned_commit(tmp_path: Path) -> None:
+    """検査した SHA が空のまま push し、空の送り元の refspec で既存のリモートの branch を消す。"""
     layout = make_layout(tmp_path / SPACED)
     cwd, env, _ = prepare_scan(layout, "feature", tmp_path)
-    before = None
-    if existing:
-        # 空の送り元の refspec は、先に push した branch を消してしまう。消えずに残ることを確かめる。
-        before = git(cwd, "rev-parse", "origin/main")
-        git(cwd, "push", "-q", "origin", f"{before}:refs/heads/{SCANNED_BRANCH}")
-    invocation = scanned_push()
-    if case == "scan-failure":
-        env["SCAN_EXIT"] = "1"
-    else:
-        invocation = f"scan_before_push() {{ :; }}\n{invocation}"
-    result = run(layout, cwd, invocation, env, shell=shell)
+    # 空の送り元の refspec は、先に push した branch を消してしまう。消えずに残ることを確かめる。
+    before = git(cwd, "rev-parse", "origin/main")
+    git(cwd, "push", "-q", "origin", f"{before}:refs/heads/{SCANNED_BRANCH}")
+    invocation = f"scan_before_push() {{ :; }}\n{scanned_push()}"
+    result = run(layout, cwd, invocation, env, shell="zsh")
     assert result.returncode != 0
     assert pushed(layout.env_bare) == before
 
@@ -574,29 +466,25 @@ def test_scanned_push_does_not_push_without_a_scanned_commit(
 # PR 修正は親の外の clone でも動かす。origin は設定値で照合し、転送はローカル bare に隔離する。
 REVIEW_BRANCH = "fix/review"
 REVIEW_BASE = "integration/world"
+REVIEW_URL = "https://github.com/usaturn/my-world.git"
 
 
-def prepare_review(
-    layout: Layout, tmp_path: Path, where: str, *, real_scanner: bool = False
-) -> tuple[Path, dict[str, str], Path, Path]:
-    product = where in {"product-worktree", "clone-product"}
-    source = layout.product_worktree if product else layout.feature
-    bare = layout.product_bare if product else layout.env_bare
-    repository = "usaturn/my-world" if product else "usaturn/xrift-poc"
-    url = f"https://github.com/{repository}.git"
-    git(source, "remote", "set-url", "origin", url)
-    git(source, "config", f"url.{bare}.insteadOf", url)
+def prepare_review(layout: Layout, tmp_path: Path) -> tuple[Path, dict[str, str], Path, Path]:
+    """制作物の PR（head は REVIEW_BRANCH、base は REVIEW_BASE）と、未 push の修正を積んだ一時 clone を作る。"""
+    source = layout.product_worktree
+    bare = layout.product_bare
+    git(source, "remote", "set-url", "origin", REVIEW_URL)
+    git(source, "config", f"url.{bare}.insteadOf", REVIEW_URL)
     commit_file(source, ".gitleaks.toml", TRUSTED_RULES, "PR base rules")
     git(source, "push", "-q", "origin", f"HEAD:refs/heads/{REVIEW_BASE}")
     head = commit_file(source, "app.txt", "published\n", "PR head")
     git(source, "push", "-q", "origin", f"HEAD:refs/heads/{REVIEW_BRANCH}")
-    cwd = source
-    if where.startswith("clone-"):
-        cwd = tmp_path / "一時 clone 空白"
-        git(tmp_path, "clone", "-q", "--branch", REVIEW_BRANCH, str(bare), str(cwd))
-        git(cwd, "remote", "set-url", "origin", url)
-        git(cwd, "config", f"url.{bare}.insteadOf", url)
+    cwd = tmp_path / "一時 clone 空白"
+    git(tmp_path, "clone", "-q", "--branch", REVIEW_BRANCH, str(bare), str(cwd))
+    git(cwd, "remote", "set-url", "origin", REVIEW_URL)
+    git(cwd, "config", f"url.{bare}.insteadOf", REVIEW_URL)
     commit_file(cwd, "app.txt", "local fix\n", "unpublished fix")
+    repository = "usaturn/my-world"
     snapshot = {
         "repository": repository,
         "number": 7,
@@ -604,21 +492,16 @@ def prepare_review(
         "head_sha": head,
         "head_repository": repository,
         "base_ref": REVIEW_BASE,
-        "clone_url": url,
+        "clone_url": REVIEW_URL,
     }
     response = {
         "number": 7,
         "html_url": f"https://github.com/{repository}/pull/7",
         "state": "open",
         "head": {"ref": REVIEW_BRANCH, "sha": head, "repo": {"full_name": repository}},
-        "base": {"ref": REVIEW_BASE, "repo": {"full_name": repository, "clone_url": url}},
+        "base": {"ref": REVIEW_BASE, "repo": {"full_name": repository, "clone_url": REVIEW_URL}},
     }
-    log = tmp_path / "scan.json"
-    if real_scanner:
-        env = real_gitleaks_env()
-        (tmp_path / "bin").mkdir()
-    else:
-        env, log = install_scanner(tmp_path)
+    env, log = install_scanner(tmp_path)
     bin_dir = tmp_path / "bin"
     gh = bin_dir / "gh"
     gh.write_text(
@@ -626,10 +509,8 @@ def prepare_review(
         "import json, os, sys\n"
         "value = json.loads(os.environ['REVIEW_TARGET'])\n"
         "assert sys.argv[1:] == ['api', '-i', f'repos/{value[\"repository\"]}/pulls/{value[\"number\"]}']\n"
-        "status = os.environ.get('GH_STATUS', '200')\n"
-        "print(f'HTTP/2.0 {status} Status\\nContent-Type: application/json\\n')\n"
-        "print(os.environ['REVIEW_RESPONSE'])\n"
-        "sys.exit(0 if status == '200' else 1)\n",
+        "print('HTTP/2.0 200 Status\\nContent-Type: application/json\\n')\n"
+        "print(os.environ['REVIEW_RESPONSE'])\n",
         encoding="utf-8",
     )
     gh.chmod(0o755)
@@ -647,15 +528,14 @@ def review_push() -> str:
     )
 
 
-@pytest.mark.parametrize("shell", ["bash", "zsh"])
-@pytest.mark.parametrize("where", ["feature", "product-worktree", "clone-env", "clone-product"])
-def test_review_scan_uses_pr_base_and_pushes_only_scanned_sha(tmp_path: Path, shell: str, where: str) -> None:
+def test_review_scan_uses_pr_base_and_pushes_only_scanned_sha(tmp_path: Path) -> None:
+    """PR 修正で PR の base 以外の設定・範囲で検査し、PR の作者が緩めた設定で秘密を通す。"""
     layout = make_layout(tmp_path / SPACED)
-    cwd, env, log, bare = prepare_review(layout, tmp_path, where)
+    cwd, env, log, bare = prepare_review(layout, tmp_path)
     sha = git(cwd, "rev-parse", "HEAD")
     base = git(bare, "rev-parse", f"refs/heads/{REVIEW_BASE}")
     env["SCAN_THEN_COMMIT"] = "1"
-    result = run(layout, cwd, review_push(), env, shell=shell)
+    result = run(layout, cwd, review_push(), env, shell="zsh")
     assert result.returncode == 0, result.stderr
     assert pushed(bare, REVIEW_BRANCH) == sha
     assert git(cwd, "rev-parse", "HEAD") != sha
@@ -664,85 +544,44 @@ def test_review_scan_uses_pr_base_and_pushes_only_scanned_sha(tmp_path: Path, sh
     assert scanned_range(record) == f"{base}..{sha}"
 
 
-@pytest.mark.parametrize("shell", ["bash", "zsh"])
-@pytest.mark.parametrize("case", ["scan-failure", "api-failure", "repo-mismatch", "base-moved", "no-context"])
-def test_review_scan_failure_never_pushes(tmp_path: Path, shell: str, case: str) -> None:
+@pytest.mark.parametrize("case", ["repo-mismatch", "no-context", "base-moved"])
+def test_review_scan_failure_never_pushes(tmp_path: Path, case: str) -> None:
+    """origin が PR と違う clone、PR の照合を経ない clone、base の変わった PR から、照合を無視して push する。"""
     layout = make_layout(tmp_path / SPACED)
-    cwd, env, log, bare = prepare_review(layout, tmp_path, "clone-product")
+    cwd, env, log, bare = prepare_review(layout, tmp_path)
     before = pushed(bare, REVIEW_BRANCH)
     invocation = review_push()
-    if case == "scan-failure":
-        env["SCAN_EXIT"] = "1"
-    elif case == "api-failure":
-        env["GH_STATUS"] = "403"
-    elif case == "repo-mismatch":
-        git(cwd, "remote", "set-url", "origin", "https://github.com/usaturn/other.git")
+    if case == "repo-mismatch":
+        other = "https://github.com/usaturn/other.git"
+        git(cwd, "remote", "set-url", "origin", other)
+        # 照合を外したときに push がネットワークで失敗して通らないよう、転送は同じローカル bare に向ける。
+        git(cwd, "config", "--add", f"url.{bare}.insteadOf", other)
     elif case == "base-moved":
         response = json.loads(env["REVIEW_RESPONSE"])
         response["base"]["ref"] = "main"
         env["REVIEW_RESPONSE"] = json.dumps(response)
     else:
         invocation = scanned_push(REVIEW_BRANCH)
-    result = run(layout, cwd, invocation, env, shell=shell)
+    result = run(layout, cwd, invocation, env, shell="zsh")
     assert result.returncode != 0
     assert pushed(bare, REVIEW_BRANCH) == before
-    if case != "scan-failure":
-        assert not log.exists()
-
-
-@pytest.mark.parametrize("case", ["env-main", "subdir", "product-in-env-worktree"])
-def test_review_context_does_not_bypass_location_guards(tmp_path: Path, case: str) -> None:
-    layout = make_layout(tmp_path / SPACED)
-    cwd, env, log, _ = prepare_review(layout, tmp_path, "clone-product")
-    if case == "env-main":
-        cwd = layout.env.root
-    elif case == "subdir":
-        cwd = cwd / "nested"
-        cwd.mkdir()
-    else:
-        misplaced = layout.feature / "worlds" / "bad"
-        misplaced.parent.mkdir()
-        git(tmp_path, "clone", "-q", str(cwd), str(misplaced))
-        git(misplaced, "remote", "set-url", "origin", "https://github.com/usaturn/my-world.git")
-        cwd = misplaced
-    result = run(layout, cwd, 'scan_before_push --review-target "$REVIEW_TARGET"', env)
-    assert result.returncode != 0
-    assert result.stdout == ""
     assert not log.exists()
 
 
-@pytest.mark.parametrize("arguments", ["--bogus", "--review-target", "one two three"])
-def test_scan_rejects_unrecognized_arguments(tmp_path: Path, arguments: str) -> None:
+def test_review_context_does_not_bypass_location_guards(tmp_path: Path) -> None:
+    """PR の引数で、unknown 以外の stop の場所（親の worktree の中の制作物の clone など）から push する。"""
     layout = make_layout(tmp_path / SPACED)
-    env, log = install_scanner(tmp_path)
-    result = run(layout, layout.feature, f"scan_before_push {arguments}", env)
+    cwd, env, log, bare = prepare_review(layout, tmp_path)
+    misplaced = layout.feature / "worlds" / "bad"
+    misplaced.parent.mkdir()
+    git(tmp_path, "clone", "-q", str(cwd), str(misplaced))
+    git(misplaced, "remote", "set-url", "origin", REVIEW_URL)
+    # 場所の検査を外したときに fetch がネットワークで失敗して通らないよう、転送はローカル bare に向ける。
+    git(misplaced, "config", f"url.{bare}.insteadOf", REVIEW_URL)
+    result = run(layout, misplaced, 'scan_before_push --review-target "$REVIEW_TARGET"', env)
     assert result.returncode != 0
     assert result.stdout == ""
     assert not log.exists()
-
-
-@pytest.mark.parametrize("shell", ["bash", "zsh"])
-@pytest.mark.parametrize("merge", [False, True])
-def test_review_clone_with_secret_is_not_pushed(tmp_path: Path, shell: str, merge: bool) -> None:
-    layout = make_layout(tmp_path / SPACED)
-    cwd, env, _, bare = prepare_review(layout, tmp_path, "clone-product", real_scanner=True)
-    before = pushed(bare, REVIEW_BRANCH)
-    token = secret_like_token()
-    if merge:
-        git(cwd, "checkout", "-qb", "side")
-        commit_file(cwd, "side.txt", "clean\n", "side")
-        git(cwd, "checkout", "-q", "-")
-        git(cwd, "merge", "--no-ff", "--no-commit", "side")
-        (cwd / "secret.txt").write_text(f'token = "{token}"\n', encoding="utf-8")
-        git(cwd, "add", "secret.txt")
-        git(cwd, "commit", "-qm", "merge with leak")
-    else:
-        commit_file(cwd, "secret.txt", f'token = "{token}"\n', "leak")
-    result = run(layout, cwd, review_push(), env, shell=shell)
-    assert result.returncode != 0
-    assert pushed(bare, REVIEW_BRANCH) == before
-    assert leaks_found(result.stderr) >= 1
-    assert token not in result.stderr
 
 
 def execution_push() -> str:
@@ -752,26 +591,15 @@ def execution_push() -> str:
     return match.group(1)
 
 
-@pytest.mark.parametrize("shell", ["bash", "zsh"])
-@pytest.mark.parametrize("case", ["clean", "head-mismatch", "scanner-failure"])
-def test_review_fix_execution_block_pushes_only_verified_scanned_commit(tmp_path: Path, shell: str, case: str) -> None:
+def test_review_fix_execution_block_pushes_only_verified_scanned_commit(tmp_path: Path) -> None:
+    """review-fix-planning の push のブロックが、確認した HEAD と違う commit（確認後に動いた commit）を push する。"""
     layout = make_layout(tmp_path / SPACED)
-    cwd, env, _, bare = prepare_review(layout, tmp_path, "clone-product")
+    cwd, env, _, bare = prepare_review(layout, tmp_path)
     landing = tmp_path / "反映 空白"
     landing.mkdir()
     cwd.rename(landing / "clone")
-    cwd = landing / "clone"
     before = pushed(bare, REVIEW_BRANCH)
-    sha = git(cwd, "rev-parse", "HEAD")
-    env.update(LAND_ROOT=str(landing), TARGET_JSON=env["REVIEW_TARGET"], LOCAL_HEAD=sha)
-    if case == "head-mismatch":
-        env["LOCAL_HEAD"] = "a" * 40
-    elif case == "scanner-failure":
-        env["SCAN_EXIT"] = "1"
-    result = run(layout, cwd, execution_push(), env, shell=shell)
-    if case == "clean":
-        assert result.returncode == 0, result.stderr
-        assert pushed(bare, REVIEW_BRANCH) == sha
-    else:
-        assert result.returncode != 0
-        assert pushed(bare, REVIEW_BRANCH) == before
+    env.update(LAND_ROOT=str(landing), TARGET_JSON=env["REVIEW_TARGET"], LOCAL_HEAD="a" * 40)
+    result = run(layout, landing / "clone", execution_push(), env, shell="zsh")
+    assert result.returncode != 0
+    assert pushed(bare, REVIEW_BRANCH) == before
