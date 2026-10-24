@@ -14,6 +14,8 @@ description: "複数の独立した Issue を実装・マージ、持ち越し�
 
 利用者の既存の指示から、対象と順序、remote branch の保持、持ち越しで増えた Issue を提案だけにするか追加するか、子の kind と起動引数、1件で試運転を止めるかを確認する。不足する選択だけを尋ねる。起動引数へ権限を緩めるオプションを補わない。初期版は remote branch を保持し、削除の判断は終了時に利用者へ返す。
 
+ボードの子は、子本文の先頭行の `<!-- planning-parallel-issues board:<board-key> child:<child-key> -->`、または同じ repository の native parent の本文の先頭行の `<!-- planning-board:<board-key>:begin -->` で識別する。#101 の既存子は後者で扱う。説明文中の引用は目印にしない。helper は init と各 Issue の起動直前に判定し、親 API が明示する `404 No parent issue found` 以外の失敗では止まる。
+
 ```bash
 PARENT="${XRIFT_POC_ROOT:?}"
 SCRIPT="$PARENT/.agents/skills/issue-queue/scripts/queue.py"
