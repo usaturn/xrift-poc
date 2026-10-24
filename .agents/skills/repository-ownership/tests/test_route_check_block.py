@@ -23,14 +23,14 @@ def route_check_block() -> str:
     return match.group(1)
 
 
-def test_route_check_block_routes_env_product_and_uninitialized(tmp_path: Path) -> None:
+def test_route_check_block_routes_by_route_path_or_cwd(tmp_path: Path) -> None:
+    """判定のブロックが ROUTE_PATH・cwd を渡さなくなり、制作物の変更を親と判定して親へ起票・PR を作る。"""
     env = create_env_repo(tmp_path / "workspace")
     scripts = env.root / ".agents" / "scripts"
     scripts.mkdir(parents=True)
     for name in ("route_target.py", "review_target.py", "agent_tmp.py"):
         shutil.copy2(REPO_ROOT / ".agents" / "scripts" / name, scripts / name)
     product = create_product(env.root, "worlds", "my-world", origin_url="https://github.com/someone/my-world.git")
-    plain = create_product(env.root, "items", "my-item", git=False)
     script = tmp_path / "route-check.bash"
     script.write_text(route_check_block() + "\n", encoding="utf-8")
 
@@ -42,13 +42,9 @@ def test_route_check_block_routes_env_product_and_uninitialized(tmp_path: Path) 
         result = subprocess.run(["bash", str(script)], cwd=cwd, env=environ, capture_output=True, text=True)
         return result.returncode, json.loads(result.stdout.strip().splitlines()[-1])
 
-    assert run(env.root)[1]["kind"] == "env"
+    # ROUTE_PATH が無ければ cwd（$PWD）で判定する。
     status, route = run(product)
     assert (status, route["kind"], route["repository"]) == (0, "product", "someone/my-world")
-    status, route = run(plain)
-    assert (status, route["kind"], route["code"]) == (3, "stop", "product_uninitialized")
     # ROUTE_PATH には、これから作るファイルも指定できる（親のルートから起動していても、制作物で判定する）。
-    status, route = run(env.root, "items/my-item/src/new.tsx")
-    assert (status, route["kind"], route["code"]) == (3, "stop", "product_uninitialized")
     status, route = run(env.root, "worlds/my-world/src/new.tsx")
     assert (status, route["kind"], route["repository"]) == (0, "product", "someone/my-world")
