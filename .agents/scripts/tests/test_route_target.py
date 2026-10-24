@@ -97,6 +97,18 @@ def test_product_whose_origin_is_the_env_repository_stops(env: EnvRepo, origin: 
     assert summary(project, env) == ("stop", "product_origin_is_env", None)
 
 
+def test_unrelated_repositories_and_plain_directories_stop(env: EnvRepo, tmp_path: Path) -> None:
+    """`items/`・`worlds/` の外の独立した Git リポジトリを `unknown` で止めないと、
+    無関係のリポジトリを制作物として扱い、scan_before_push が push を通し、
+    その origin の GitHub に Issue・PR を作る。"""
+    outside = tmp_path / "other"
+    subprocess.run(["git", "init", "-q", str(outside)], check=True)
+    subprocess.run(
+        ["git", "-C", str(outside), "remote", "add", "origin", "https://github.com/someone/other.git"], check=True
+    )
+    assert summary(outside, env) == ("stop", "unknown", None)
+
+
 def test_missing_paths_under_missing_work_directories_are_not_env(env: EnvRepo, tmp_path: Path) -> None:
     """`items/`・`worlds/` の無い checkout（feature worktree など）で無いパスを祖先で判定すると、
     env と黙って判定し、制作物を worktree の中に作る（片付けで消える）。"""
