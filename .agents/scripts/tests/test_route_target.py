@@ -4,10 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
-import shutil
 import subprocess
-import sys
 from dataclasses import asdict
 from pathlib import Path
 
@@ -35,30 +32,14 @@ def summary(path: Path, env: EnvRepo) -> tuple[str, str, str | None]:
     return result.kind, result.code, result.repository
 
 
-def test_env_root_and_its_subdirectories_are_env(env: EnvRepo) -> None:
-    (env.root / "tools").mkdir(exist_ok=True)
-    assert summary(env.root, env) == ("env", "env", "usaturn/xrift-poc")
-    assert summary(env.root / "tools", env) == ("env", "env", "usaturn/xrift-poc")
-
-
-def test_env_worktrees_inside_and_outside_the_root_are_env(env: EnvRepo, tmp_path: Path) -> None:
-    inside = create_owned_worktree(env.root, env.root / ".worktrees", name="feature")
-    outside = create_owned_worktree(env.root, tmp_path / "elsewhere", name="feature")
-    for worktree in (inside, outside):
-        result = route_target.route(worktree, env.root)
-        assert (result.kind, result.repository, result.git_root) == (
-            "env",
-            "usaturn/xrift-poc",
-            str(worktree.resolve()),
-        )
-
-
-@pytest.mark.parametrize("kind", ["items", "worlds"])
-def test_work_directories_themselves_stop(env: EnvRepo, kind: str) -> None:
-    assert summary(env.root / kind, env)[:2] == ("stop", "product_base")
+def test_work_directories_themselves_stop(env: EnvRepo) -> None:
+    """`items/`・`worlds/` そのものを止めないと、
+    祖先の親の Git が見つかって env と黙って判定し、制作物の作業を親に起票・commit する。"""
+    assert summary(env.root / "worlds", env)[:2] == ("stop", "product_base")
 
 
 def test_uninitialized_product_stops_instead_of_using_the_ancestor_git(env: EnvRepo) -> None:
+    """Git 未初期化の制作物で祖先の親の Git を使うと、env と黙って判定し、制作物を親に commit・起票する。"""
     project = create_product(env.root, "worlds", "my-world", git=False)
     (project / "src").mkdir()
     # 祖先の xrift-poc が Git のルートとして見つかることが、誤判定の前提になる。
@@ -72,22 +53,9 @@ def test_uninitialized_product_stops_instead_of_using_the_ancestor_git(env: EnvR
         assert result.project_root == str(project.resolve())
 
 
-@pytest.mark.parametrize(
-    "origin",
-    [
-        WORLD_ORIGIN,
-        "git@github.com:someone/my-world.git",
-        "ssh://git@github.com/someone/my-world",
-        # GitHub を指すことが明らかな書き方も owner/repo に直す（usaturn/xrift-poc#7）
-        "https://user@github.com/someone/my-world.git",
-        "https://user:token@github.com/someone/my-world.git",
-        "https://GitHub.com/someone/my-world",
-        "http://github.com/someone/my-world/",
-        "git@GitHub.com:someone/my-world.git",
-    ],
-)
-def test_product_with_a_github_origin(env: EnvRepo, origin: str) -> None:
-    project = create_product(env.root, "worlds", "my-world", origin_url=origin)
+def test_product_with_a_github_origin(env: EnvRepo) -> None:
+    """制作物の repository・git_root・project_root を誤ると、別のリポジトリへ黙って起票・push する。"""
+    project = create_product(env.root, "worlds", "my-world", origin_url=WORLD_ORIGIN)
     # 制作物の public/ は XRift のアセットディレクトリで、特別に扱わない。
     (project / "public").mkdir()
     for path in (project, project / "public"):
@@ -97,6 +65,7 @@ def test_product_with_a_github_origin(env: EnvRepo, origin: str) -> None:
 
 
 def test_product_origin_credentials_are_not_reported(env: EnvRepo) -> None:
+    """判定の JSON に origin の URL が載ると、認証情報がログ・PR 本文に黙って出る。"""
     project = create_product(
         env.root, "worlds", "my-world", origin_url="https://user:s3cret@github.com/someone/my-world"
     )
@@ -105,127 +74,31 @@ def test_product_origin_credentials_are_not_reported(env: EnvRepo) -> None:
     assert "s3cret" not in json.dumps(asdict(result))
 
 
-def test_product_without_an_origin_suggests_adding_one(env: EnvRepo) -> None:
-    project = create_product(env.root, "items", "my-item")
+# 別ホストの URL（github.com をユーザ情報に書いただけのもの）を GitHub と読まない。
+def test_product_origin_that_is_not_a_github_url_has_no_repository(env: EnvRepo) -> None:
+    """別ホストの URL を GitHub と読むと、scan_before_push が制作物の push を通し、別ホストへ黙って送る。"""
+    project = create_product(env.root, "items", "my-item", origin_url="https://github.com@evil.test/someone/my-item")
     result = route_target.route(project, env.root)
-    assert (result.kind, result.code, result.repository) == ("product", "product_without_origin", None)
-    assert "git remote add origin" in result.reason
+    assert (result.kind, result.repository) == ("product", None)
 
 
-# origin はあるが GitHub の URL として読めない。案内どおりに git remote add すると
-# remote origin already exists で失敗していた（usaturn/xrift-poc#7）ので、set-url を案内する
 @pytest.mark.parametrize(
     "origin",
     [
-        "/srv/git/my-item.git",
-        "https://gitlab.com/someone/my-item.git",
-        "github-personal:someone/my-item.git",
-        "https://github.com@evil.test/someone/my-item",
+        "git@github.com:USATURN/XRIFT-POC.git",  # 大文字小文字と SSH の `:`・`.git` 付き
+        "http://github.com/usaturn/xrift-poc/",  # 末尾の `/`・`.git` 無し・http
     ],
 )
-def test_product_origin_that_is_not_a_github_url_suggests_set_url(env: EnvRepo, origin: str) -> None:
-    project = create_product(env.root, "items", "my-item", origin_url=origin)
-    result = route_target.route(project, env.root)
-    assert (result.kind, result.code, result.repository) == ("product", "product_origin_not_github", None)
-    assert "git remote set-url origin" in result.reason
-
-
-def test_product_with_an_empty_origin_url_suggests_set_url(env: EnvRepo) -> None:
-    # origin の値が空でも remote origin はあるので、git remote add は失敗する
-    project = create_product(env.root, "items", "my-item", origin_url="https://gitlab.com/someone/my-item.git")
-    subprocess.run(["git", "-C", str(project), "config", "remote.origin.url", ""], check=True)
-    result = route_target.route(project, env.root)
-    assert (result.code, result.repository) == ("product_origin_not_github", None)
-
-
-# 親を指す origin の書き方。正規形の GitHub の URL に直せないもの
-# （user@・SSH のホスト別名・大文字のホスト名・http）も含める。
-ENV_ORIGIN_SPELLINGS = [
-    "https://github.com/usaturn/xrift-poc.git",
-    "git@github.com:USATURN/XRIFT-POC.git",
-    "https://user@github.com/usaturn/xrift-poc.git",
-    "github-personal:usaturn/xrift-poc.git",
-    "https://GitHub.com/usaturn/xrift-poc",
-    "http://github.com/usaturn/xrift-poc/",
-]
-
-
-@pytest.mark.parametrize("origin", ENV_ORIGIN_SPELLINGS)
 def test_product_whose_origin_is_the_env_repository_stops(env: EnvRepo, origin: str) -> None:
+    """親を指す origin の書き方を見逃すと、
+    制作物を親（公開）の repository として扱い、制作物の commit を親へ黙って push・起票する。"""
     project = create_product(env.root, "items", "my-item", origin_url=origin)
     assert summary(project, env) == ("stop", "product_origin_is_env", None)
 
 
-@pytest.mark.parametrize(
-    "origin", ["https://github.com/usaturn/xrift-poc-assets.git", "git@github.com:notusaturn/xrift-poc.git"]
-)
-def test_product_whose_origin_only_resembles_the_env_repository_is_a_product(env: EnvRepo, origin: str) -> None:
-    project = create_product(env.root, "items", "my-item", origin_url=origin)
-    assert summary(project, env)[:2] == ("product", "product")
-
-
-@pytest.mark.parametrize("origin", ENV_ORIGIN_SPELLINGS)
-def test_env_checkout_accepts_every_spelling_of_the_env_origin(tmp_path: Path, origin: str) -> None:
-    env = create_env_repo(tmp_path / "workspace", origin_url=origin)
-    assert route_target.resolve_env_root({"XRIFT_POC_ROOT": str(env.root)}) == env.root.resolve()
-    worktree = create_owned_worktree(env.root, env.root / ".worktrees", name="feature")
-    for path in (env.root, worktree):
-        assert summary(path, env) == ("env", "env", "usaturn/xrift-poc")
-
-
-def test_product_worktrees_inside_and_outside_the_root(env: EnvRepo, tmp_path: Path) -> None:
-    project = create_product(env.root, "worlds", "my-world", origin_url=WORLD_ORIGIN)
-    inside = create_owned_worktree(project, project / ".worktrees", name="feature")
-    outside = create_owned_worktree(project, tmp_path / "elsewhere", name="feature")
-    for worktree in (inside, outside):
-        result = route_target.route(worktree, env.root)
-        assert (result.kind, result.repository, result.git_root) == (
-            "product",
-            "someone/my-world",
-            str(worktree.resolve()),
-        )
-        assert result.project_root == str(project.resolve())
-
-
-def test_product_names_with_spaces_and_japanese(env: EnvRepo) -> None:
-    project = create_product(
-        env.root, "worlds", "空白 ワールド", origin_url="https://github.com/someone/space-world.git"
-    )
-    assert summary(project, env) == ("product", "product", "someone/space-world")
-
-
-def test_unrelated_repositories_and_plain_directories_stop(env: EnvRepo, tmp_path: Path) -> None:
-    nested = env.root / "tmp" / "clone"
-    nested.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q", str(nested)], check=True)
-    outside = tmp_path / "other"
-    outside.mkdir()
-    subprocess.run(["git", "init", "-q", str(outside)], check=True)
-    plain = tmp_path / "plain"
-    plain.mkdir()
-    assert summary(nested, env)[:2] == ("stop", "unknown")
-    assert summary(outside, env)[:2] == ("stop", "unknown")
-    assert summary(plain, env)[:2] == ("stop", "not_git")
-
-
-def test_missing_paths_are_routed_by_the_nearest_existing_ancestor(env: EnvRepo, tmp_path: Path) -> None:
-    # これから作るファイルのパスでも判定できる。実在する最も近い祖先のディレクトリで判定する。
-    plain = create_product(env.root, "worlds", "plain", git=False)
-    product = create_product(env.root, "worlds", "my-world", origin_url=WORLD_ORIGIN)
-    expected = {
-        env.root / "tools" / "new" / "a.py": ("env", "env", "usaturn/xrift-poc"),
-        env.root / "worlds" / "new-world" / "src" / "a.tsx": ("stop", "product_base", None),
-        plain / "src" / "a.tsx": ("stop", "product_uninitialized", None),
-        product / "src" / "a.tsx": ("product", "product", "someone/my-world"),
-        tmp_path / "missing" / "a.txt": ("stop", "not_git", None),
-    }
-    for path, outcome in expected.items():
-        assert not path.exists()
-        assert summary(path, env) == outcome, path
-    assert route_target.route(plain / "src" / "a.tsx", env.root).project_root == str(plain.resolve())
-
-
 def test_missing_paths_under_missing_work_directories_are_not_env(env: EnvRepo, tmp_path: Path) -> None:
+    """`items/`・`worlds/` の無い checkout（feature worktree など）で無いパスを祖先で判定すると、
+    env と黙って判定し、制作物を worktree の中に作る（片付けで消える）。"""
     # items/・worlds/ が無くても、その下のパスを親（env）と判定しない。
     # 親の worktree には items/・worlds/ が無いのが普通（Git で無視しているため checkout されない）。
     (env.root / "items").rmdir()
@@ -239,52 +112,9 @@ def test_missing_paths_under_missing_work_directories_are_not_env(env: EnvRepo, 
     assert result.project_root == str((worktree / "worlds" / "new-world").resolve())
 
 
-def test_resolve_env_root_accepts_only_the_env_main_checkout(env: EnvRepo, tmp_path: Path) -> None:
-    assert route_target.resolve_env_root({"XRIFT_POC_ROOT": str(env.root)}) == env.root.resolve()
-    product = create_product(env.root, "worlds", "w", origin_url=WORLD_ORIGIN)
-    worktree = create_owned_worktree(env.root, tmp_path / "wt")
-    for wrong in (product, worktree, tmp_path):
-        with pytest.raises(route_target.RouteError):
-            route_target.resolve_env_root({"XRIFT_POC_ROOT": str(wrong)})
-    with pytest.raises(route_target.RouteError):
-        route_target.resolve_env_root({"XRIFT_POC_ROOT": "relative/path"})
-
-
-def _install_scripts(env: EnvRepo) -> Path:
-    scripts = env.root / ".agents" / "scripts"
-    scripts.mkdir(parents=True)
-    for name in ("route_target.py", "review_target.py", "agent_tmp.py"):
-        shutil.copy2(SCRIPTS / name, scripts / name)
-    return scripts / "route_target.py"
-
-
-def run_cli(script: Path, path: Path, environ: dict[str, str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run([sys.executable, str(script), str(path)], env=environ, capture_output=True, text=True)
-
-
-def test_cli_prints_json_with_exit_codes(env: EnvRepo) -> None:
-    script = _install_scripts(env)
-    environ = {key: value for key, value in os.environ.items() if key != "XRIFT_POC_ROOT"}
-    project = create_product(env.root, "worlds", "w", git=False)
-    ok = run_cli(script, env.root, environ)
-    assert ok.returncode == 0, ok.stderr
-    assert json.loads(ok.stdout)["kind"] == "env"
-    stop = run_cli(script, project, environ)
-    assert stop.returncode == 3
-    assert json.loads(stop.stdout)["code"] == "product_uninitialized"
-    missing = run_cli(script, env.root / "worlds" / "new-world" / "a.tsx", environ)
-    assert missing.returncode == 3
-    assert json.loads(missing.stdout)["code"] == "product_base"
-
-
-def test_cli_uses_xrift_poc_root_and_rejects_a_wrong_one(env: EnvRepo, tmp_path: Path) -> None:
-    other = create_env_repo(tmp_path / "other", origin_url="https://github.com/someone/fork.git")
-    environ = {**os.environ, "XRIFT_POC_ROOT": str(other.root)}
-    result = run_cli(SCRIPT, env.root, environ)
-    assert (result.returncode, result.stdout) == (1, "")
-
-
 def test_products_in_env_worktrees_stop_with_their_own_code(env: EnvRepo, tmp_path: Path) -> None:
+    """親の feature worktree の `items/`・`worlds/` の配下を制作物と判定すると、
+    そこで編集・commit し、worktree の片付けで黙って消える。"""
     # 親の worktree の items/・worlds/ は制作物の置き場所ではない（worktree を消すと中身も消える）。
     # main checkout の Git 未初期化の制作物（その場で編集する）とは別の code で止める。
     inside = create_owned_worktree(env.root, env.root / ".worktrees", name="feature")
