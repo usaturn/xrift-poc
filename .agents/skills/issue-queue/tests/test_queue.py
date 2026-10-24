@@ -564,6 +564,18 @@ def test_end_accepts_only_run_whose_child_is_stopped(queue_env: QueueEnv, case: 
     assert queue_env.call("status", "--run", run)["run"]["ended_reason"] == (reason if accepted else None)
 
 
+def test_ended_run_refuses_progress(queue_env: QueueEnv) -> None:
+    """終えた run の進める操作を受け付け、利用者が終えたはずの run で同じ Issue の子を起動する。"""
+    # ack済み・結果なしで子のpaneが閉じられた run を、残りを新しい run で処理するために終える。
+    run = queue_env.init()
+    attempt = queue_env.launch(run)
+    queue_env.ack(run, attempt)
+    lose_child(queue_env, attempt)
+    end_run(queue_env, run, "子が結果を残さずに終わり、paneも無い。\n残りは新しいrunで処理する")
+    queue_env.call("launch", "--run", run, code=3)
+    assert sum(c[:3] == ["herdr", "pane", "split"] for c in queue_env.data()["calls"]) == 1
+
+
 def test_retry_without_result_refuses_an_idle_child(queue_env: QueueEnv) -> None:
     """結果を残さずに入力待ちの子（再開しうる）が居る attempt を閉じ、同じ工程の子を重ねる。"""
     run = queue_env.init()
