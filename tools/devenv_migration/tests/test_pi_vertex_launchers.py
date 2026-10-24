@@ -223,6 +223,8 @@ def _real_namespace_probe(sandbox: tuple[Path, Path, Path]) -> None:
         "auth_path = Path(directory).expanduser().resolve() / 'auth.json'\n"
         "auth = json.loads(auth_path.read_text()) if auth_path.exists() else {}\n"
         "marker = {'type':'api_key', 'key':'gcp-vertex-credentials'}\n"
+        "other_key = auth.get('other-provider', {}).get('key')\n"
+        "env_contains_other_key = bool(other_key) and any(other_key in value for value in os.environ.values())\n"
         "if os.environ.get('TEST_WRITE_STATE') == '1':\n"
         "    (auth_path.parent / 'sessions').mkdir(exist_ok=True)\n"
         "    (auth_path.parent / 'sessions/first.jsonl').write_text('first conversation\\n')\n"
@@ -236,6 +238,7 @@ def _real_namespace_probe(sandbox: tuple[Path, Path, Path]) -> None:
         "tiers = json.loads(config.read_text())['superagents']['modelTiers'] if config.exists() else {}\n"
         "payload = {'vertex_is_adc_marker':auth.get('google-vertex')==marker,\n"
         "'other_auth_preserved':auth.get('other-provider')=={'type':'api_key','key':'synthetic-other-secret'},\n"
+        "'env_contains_other_key':env_contains_other_key,\n"
         "'cloud_key_present':'GOOGLE_CLOUD_API_KEY' in os.environ, 'readonly':readonly, 'tiers':tiers}\n"
         f"native = subprocess.run(['node', {str(probe)!r}, {str(native_package)!r}, str(auth_path)],\n"
         "    check=True, capture_output=True, text=True)\n"
@@ -257,6 +260,7 @@ def _real_namespace_probe(sandbox: tuple[Path, Path, Path]) -> None:
 def test_real_namespace_masks_auth_for_parent_and_child_preserving_saved_files(
     sandbox: tuple[Path, Path, Path], launcher: str, agent_dir: str | None, stored_auth: bool
 ) -> None:
+    """Overlay を export しても起動は成功し、他 provider の key が子の環境へ黙って漏れる。"""
     home, _, cwd = sandbox
     directory = home / ".pi/agent"
     if agent_dir is not None:
@@ -307,6 +311,7 @@ def test_real_namespace_masks_auth_for_parent_and_child_preserving_saved_files(
         assert observed["vertex_is_adc_marker"] is True
         assert observed["native_key_is_adc_marker"] is True
         assert observed["other_auth_preserved"] == stored_auth
+        assert observed["env_contains_other_key"] is False
         assert observed["readonly"] is True
         assert observed["cloud_key_present"] is False
         assert observed["tiers"] == {"cheap": {"model": "distinct/tier", "thinking": "high"}}
