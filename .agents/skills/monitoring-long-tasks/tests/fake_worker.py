@@ -39,24 +39,6 @@ def main(argv: list[str]) -> int:
     # テストが失敗しても、無限に書き続ける fake を残さない。
     signal.alarm(60)
     match mode:
-        case "progress":
-            for number in range(1, 6):
-                append(progress, {"kind": "progress", "items": [f"確認した挙動 {number}"]})
-                time.sleep(INTERVAL)
-            result.write_text("{}\n", encoding="utf-8")
-            return 0
-        case "heartbeat":
-            while True:
-                append(progress, {"kind": "heartbeat"})
-                append(progress, {"kind": "progress", "items": ["同じ項目"]})
-                time.sleep(INTERVAL)
-        case "failure":
-            while True:
-                append(progress, {"kind": "failure", "class": "reliability", "signature": "same-timeout"})
-                time.sleep(INTERVAL)
-        case "safety":
-            append(progress, {"kind": "failure", "class": "safety", "signature": "unknown-send"})
-            wait_forever()
         case "endless":
             new_items(progress)
         case "ignore-term":
@@ -75,25 +57,6 @@ def main(argv: list[str]) -> int:
             partial.write_text("途中までの結論\n", encoding="utf-8")
             append(progress, {"kind": "saved", "path": str(partial)})
             new_items(progress)
-        case "finalize-aware":
-            for number in itertools.count(1):
-                if (state / "finalize.requested").exists():
-                    result.write_text("{}\n", encoding="utf-8")
-                    append(progress, {"kind": "saved", "path": str(result)})
-                    return 0
-                append(progress, {"kind": "progress", "items": [f"確認した挙動 {number}"]})
-                time.sleep(INTERVAL)
-        case "finalize-late":
-            # 保存への移行を見た直後に、もう 1 件だけ新しい項目を書き、保存に少し時間をかける worker。
-            for number in itertools.count(1):
-                if (state / "finalize.requested").exists():
-                    append(progress, {"kind": "progress", "items": ["書きかけだった最後の確認"]})
-                    time.sleep(0.5)
-                    result.write_text("{}\n", encoding="utf-8")
-                    append(progress, {"kind": "saved", "path": str(result)})
-                    return 0
-                append(progress, {"kind": "progress", "items": [f"確認した挙動 {number}"]})
-                time.sleep(INTERVAL)
         case "safety-exit":
             append(progress, {"kind": "failure", "class": "safety", "signature": "unknown-send"})
             result.write_text("{}\n", encoding="utf-8")
