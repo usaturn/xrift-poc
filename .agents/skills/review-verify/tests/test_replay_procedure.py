@@ -118,7 +118,9 @@ def test_isolate_builds_a_tool_root_without_evals_and_a_repository_ending_at_to(
     assert completed.returncode == 0, completed.stderr
     toolroot = history.evaluation / "toolroot"
     assert (toolroot / ".agents/skills/review-verify/SKILL.md").is_file()
+    assert "LATER" in (toolroot / "tools/tool.py").read_text(encoding="utf-8")
     assert not [path for path in toolroot.rglob("evals") if path.is_dir()]
+    assert not (history.evaluation / "toolroot.tar").exists()
     repo = history.evaluation / "repo"
     assert _git(repo, "rev-parse", "HEAD") == history.to
     assert _fails("-C", str(repo), "cat-file", "-e", f"{history.later}^{{commit}}")
@@ -158,13 +160,28 @@ def test_context_check_reports_a_conclusion_in_the_tool_root(tmp_path: Path) -> 
     completed = _run(_block("# review-verify replay: context check"), env)
 
     assert completed.returncode == 0, completed.stderr
-    assert ".agents/review-records.md" in completed.stdout
+    assert str(Path(env["EVAL"]) / "toolroot/.agents/review-records.md") in completed.stdout
 
 
-def test_context_check_with_an_empty_home_stops_before_searching(tmp_path: Path) -> None:
-    """HOME が空のまま検索に進むと、記憶を検索せずにエラーを出さないまま当たりなしを返し、答えを知る環境で再生する。"""
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        # 一覧から外れると、set -u の終了コード 1 が当たりなしと区別できない。
+        pytest.param("ANSWERS", None, id="ANSWERS-unset"),
+        pytest.param("EVAL", None, id="EVAL-unset"),
+        # 空のままだと、記憶を検索しないまま、エラーを出さずに当たりなしを返す。
+        pytest.param("HOME", "", id="HOME-empty"),
+    ],
+)
+def test_context_check_without_a_required_variable_stops_before_searching(
+    tmp_path: Path, name: str, value: str | None
+) -> None:
+    """必要な変数が無いまま検索に進むと、当たりなしと区別できない結果を返し、答えを知る環境で再生する（ケースごとの損害はコメント）。"""
     env = _context(tmp_path, "記入例\n")
-    env["HOME"] = ""
+    if value is None:
+        del env[name]
+    else:
+        env[name] = value
 
     completed = _run(_block("# review-verify replay: context check"), env, cwd=tmp_path)
 
@@ -187,14 +204,23 @@ def test_leak_scan_reports_traces_of_answer_material(tmp_path: Path) -> None:
     assert "ground-truth/9001.md" in found.stdout
 
 
-def test_leak_scan_without_run_dir_stops_before_searching(tmp_path: Path) -> None:
-    """RUN_DIR が無いまま検索に進むと、set -u の終了コード 1 が当たりなしと区別できず、汚れた実行を採点に使う。"""
+@pytest.mark.parametrize(
+    "name",
+    [
+        # 一覧から外れると、set -u の終了コード 1 が当たりなしと区別できない。
+        pytest.param("ANSWERS", id="ANSWERS-unset"),
+        pytest.param("RUN_DIR", id="RUN_DIR-unset"),
+    ],
+)
+def test_leak_scan_without_a_required_variable_stops_before_searching(tmp_path: Path, name: str) -> None:
+    """必要な変数が無いまま検索に進むと、当たりなしと区別できない結果を返し、汚れた実行を採点に使う（ケースごとの損害はコメント）。"""
     answers = tmp_path / "answers"
     answers.mkdir()
     (answers / "leak-patterns.txt").write_text("ground-truth\n", encoding="utf-8")
     run_dir = tmp_path / "run"
     _write(run_dir, {"attempt-1/stdout.log": "読んだ: /work/answers/ground-truth/9001.md\n"})
-    env = {"ANSWERS": str(answers)}
+    env = {"ANSWERS": str(answers), "RUN_DIR": str(run_dir)}
+    del env[name]
 
     completed = _run(_block("# review-verify replay: leak scan"), env, cwd=tmp_path)
 

@@ -14,9 +14,8 @@ def read(path: Path) -> str:
 
 
 def test_links_resolve() -> None:
-    """
-    参照先が消えると、runner が起動する非対話の fix-check 担当は、
-    読めなかった参照（判定の規則など）を飛ばして黙って確認を続ける。
+    """参照先が消えると、
+    runner が起動する非対話の fix-check 担当は読めなかった参照（判定の規則など）を飛ばして黙って確認を続ける。
     """
     for target in re.findall(r"\]\(([^)#\s]+)(?:#[^)]*)?\)", read(AGENTS_SKILL)):
         if target.startswith(("http://", "https://")):
