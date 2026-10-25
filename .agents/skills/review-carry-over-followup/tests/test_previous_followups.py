@@ -1,6 +1,8 @@
 """前回の事後調査を見つけ、判断の記録の候補を分ける jq のフィルタ（scripts/previous_followups.jq）。
 
 GitHub の issue comment の形と、本物の ``fold`` の出力をフィルタに通す。値はすべて架空の PR #900 のもの。
+候補を誤って ``investigated`` にする方向と、候補を落とす方向だけを確かめる。前回の事後調査を見つけられない・
+``needs_check`` になる方向は、調べ直して同じ内容を投稿し直すだけなので確かめない。
 """
 
 from __future__ import annotations
@@ -9,11 +11,6 @@ from typing import Any
 
 MARKER = "<!-- review-carry-over-followup:v1 -->"
 HEADING = "## 持ち越し候補の再調査（マージ後）"
-OLD_HEADING = "## 持ち越しの候補の再調査（2026-10-17、`main` = `0123abc`）"
-
-
-def comment_ids(result: dict[str, Any]) -> list[int]:
-    return [entry["comment_id"] for entry in result["followups"]]
 
 
 def by_id(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -24,22 +21,8 @@ def followup(heading: str, *lines: str) -> str:
     return "\n".join((heading, "", *lines, ""))
 
 
-def test_marker_and_both_headings_are_previous_followups(carry_over_kit: Any) -> None:
-    kit = carry_over_kit
-    pages = [
-        [
-            kit.comment(11, f"{MARKER}\n{HEADING}\n\n本文"),
-            kit.comment(12, followup(HEADING, "本文"), association="MEMBER"),
-            kit.comment(13, followup(OLD_HEADING, "本文"), association="COLLABORATOR"),
-        ]
-    ]
-    result = kit.classify(pages)
-    assert comment_ids(result) == [11, 12, 13]
-    assert [entry["kind"] for entry in result["followups"]] == ["marker", "heading", "heading"]
-    assert result["followups"][0]["url"].endswith("#issuecomment-11")
-
-
 def test_other_comments_are_not_previous_followups(carry_over_kit: Any) -> None:
+    """信頼しない投稿者の目印や状況コメントを前回の事後調査と誤読すると、候補を調べ直さずに黙って見送る。"""
     kit = carry_over_kit
     pages = [
         [
@@ -55,6 +38,7 @@ def test_other_comments_are_not_previous_followups(carry_over_kit: Any) -> None:
 
 
 def test_candidates_are_classified_by_full_and_short_ids(carry_over_kit: Any) -> None:
+    """短い形だけの一致を調査済みと誤ると、別の HEAD の判断を調べずに黙って飛ばす。"""
     kit = carry_over_kit
     full = f"claude-opus-5-5#L-1@{kit.short_head}"
     short_only = f"claude-opus-5-5#L-2@{kit.short_head}"
@@ -73,6 +57,7 @@ def test_candidates_are_classified_by_full_and_short_ids(carry_over_kit: Any) ->
 
 
 def test_ids_match_only_at_boundaries(carry_over_kit: Any) -> None:
+    """ID の前後の境界や特殊文字の扱いを誤ると、調べていない候補が調査済みになる。"""
     kit = carry_over_kit
     opus = f"claude-opus-5-5#L-1@{kit.short_head}"
     suffix = f"opus-5-5#L-3@{kit.short_head}"
@@ -96,6 +81,7 @@ def test_ids_match_only_at_boundaries(carry_over_kit: Any) -> None:
 
 
 def test_only_undecided_and_skipped_decisions_are_candidates(carry_over_kit: Any) -> None:
+    """Skip・Hold・未確認の判断や carry_over が落ちると、候補を黙って調べず、既存の Issue と重複して起票する。"""
     kit = carry_over_kit
     head = kit.short_head
     decisions = [
@@ -113,20 +99,8 @@ def test_only_undecided_and_skipped_decisions_are_candidates(carry_over_kit: Any
     ]
 
 
-def test_crlf_null_body_and_pages(carry_over_kit: Any) -> None:
-    kit = carry_over_kit
-    ref = f"claude-opus-5-5#L-1@{kit.short_head}"
-    status = kit.status_comment(61, [kit.decision(ref, "skip")])
-    crlf = kit.comment(62, f"{MARKER}\r\n{HEADING}\r\n\r\n- `{ref}`\r\n")
-    pages = [[status, kit.comment(63, None)], [crlf]]
-    state = kit.fold(pages)
-    for comments in (pages, [entry for page in pages for entry in page]):
-        result = kit.run_filter(comments, state)
-        assert comment_ids(result) == [62]
-        assert by_id(result)[ref]["status"] == "investigated"
-
-
 def test_two_previous_followups_are_both_reported(carry_over_kit: Any) -> None:
+    """候補に一致した事後調査を最初の 1 件に絞ると、後の事後調査の訂正を読まずに古い結論で投稿しうる。"""
     kit = carry_over_kit
     ref = f"claude-opus-5-5#L-1@{kit.short_head}"
     pages = [
@@ -137,18 +111,3 @@ def test_two_previous_followups_are_both_reported(carry_over_kit: Any) -> None:
         ]
     ]
     assert by_id(kit.classify(pages))[ref]["comments"] == [72, 73]
-
-
-def test_split_and_unknown_head_ids(carry_over_kit: Any) -> None:
-    kit = carry_over_kit
-    split = f"Grok-4.7#L-1@{kit.short_head}/a"
-    legacy = "legacy#M-1@unknown"
-    pages = [
-        [
-            kit.status_comment(81, [kit.decision(split, "skip"), kit.decision(legacy, "skip")]),
-            kit.comment(82, followup(HEADING, f"- {split}", "- legacy#M-1 は旧形式のレビュー")),
-        ]
-    ]
-    candidates = by_id(kit.classify(pages))
-    assert candidates[split]["status"] == "investigated"
-    assert candidates[legacy]["status"] == "needs_check"
