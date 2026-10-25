@@ -304,14 +304,13 @@ def test_keeps_review_fix_planning_worktree_when_git_status_fails(isolated_root:
     assert str(worktree) in _registered_worktrees(main_repo)
 
 
-def test_keeps_review_fix_planning_worktree_with_uncommitted_world_repository(
+def test_keeps_review_fix_planning_worktree_with_uninitialized_world_files(
     isolated_root: Path, tmp_path: Path
 ) -> None:
-    """制作物の検査から worlds が外れると、worlds/ の独立したリポジトリ（find の深さの外）の未コミットの作業を消す。"""
+    """制作物の検査から worlds が外れると、一時 worktree の worlds/ の Git 未初期化の制作物の作業を --force で消す。"""
     main_repo, review_dir, worktree = _rfp_worktree(isolated_root, tmp_path, "World1")
     world = worktree / "worlds" / "my-world"
     world.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q", str(world)], check=True)
     draft = world / "下書き.txt"
     draft.write_text("未コミットの作業\n", encoding="utf-8")
     _make_tree_old(review_dir)
@@ -320,6 +319,42 @@ def test_keeps_review_fix_planning_worktree_with_uncommitted_world_repository(
 
     assert result.returncode == 0, result.stderr
     assert draft.read_text(encoding="utf-8") == "未コミットの作業\n"
+    assert str(worktree) in _registered_worktrees(main_repo)
+
+
+def test_keeps_uncommitted_file_in_a_deep_submodule_hidden_from_the_superproject_status(
+    isolated_root: Path, tmp_path: Path
+) -> None:
+    """.git を浅く探すか撤去しながら検査すると、親の status に出ない深い submodule の未コミットを --force で消す。"""
+    lib = tmp_path / "submodule-lib"
+    _init_repo(lib)
+    main_repo = tmp_path / "main-repo-Submod"
+    _init_parent_like_repo(main_repo)
+    sub_path = "vendor/深い パス/sub"
+    subprocess.run(
+        ["git", "-c", "protocol.file.allow=always", "submodule", "--quiet", "add", "--name", "vendored", str(lib), sub_path],
+        cwd=main_repo,
+        check=True,
+    )
+    # 親の status に submodule の中の変更を出さない設定（vendor した submodule で使われる）
+    subprocess.run(["git", "config", "-f", ".gitmodules", "submodule.vendored.ignore", "dirty"], cwd=main_repo, check=True)
+    subprocess.run(["git", "add", ".gitmodules"], cwd=main_repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add submodule"], cwd=main_repo, check=True)
+    review_dir = isolated_root / "review-fix-planning.Submod"
+    review_dir.mkdir()
+    worktree = review_dir / "worktree"
+    _add_worktree(main_repo, worktree)
+    subprocess.run(
+        ["git", "-c", "protocol.file.allow=always", "submodule", "--quiet", "update", "--init"], cwd=worktree, check=True
+    )
+    draft = worktree / sub_path / "作業中.txt"
+    draft.write_text("submodule の未コミットの作業\n", encoding="utf-8")
+    _make_tree_old(review_dir)
+
+    result = _run_cleanup(_env_for(isolated_root, tmp_path / "no-yarn-cache"))
+
+    assert result.returncode == 0, result.stderr
+    assert draft.read_text(encoding="utf-8") == "submodule の未コミットの作業\n"
     assert str(worktree) in _registered_worktrees(main_repo)
 
 

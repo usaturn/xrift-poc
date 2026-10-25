@@ -13,13 +13,15 @@
 #   - yarn キャッシュ（#147 で npm に一本化したため不要）
 #
 # 汎用 cleanup の安全条件（Issue #152 共有仕様 §4。すべて AND で判断する）:
-#   - 未コミット変更のある git 作業ツリーを含むものは削除しない
-#   - git 作業ツリーの items/・worlds/ にデータ（親で無視したファイルを含む）があるものは削除しない
-#     （AGENTS.md「items/・worlds/ は片付けの対象にしない」。空のディレクトリだけなら対象にする）
 #   - 使用中（プロセスの cwd）と判定できるものは削除しない
 #   - 中のどれか（最上位のディレクトリ自身を含む）が MIN_AGE_DAYS 日以内に更新されたものは削除しない
 #     （最上位の mtime は、サブディレクトリの中への書き込みや既存のファイルの書き直しでは変わらない）
 #   - 経過日数のみを削除条件にしない
+#   - 中の git 作業ツリー（.git）は深さに関係なく探し、すべて検査してから撤去する。
+#     1 つでも次に当たれば、何も撤去せずに残す
+#     - 未コミット変更がある、または git 状態（.git の一覧を含む）を判定できない
+#     - items/・worlds/ にデータ（親で無視したファイルを含む）がある
+#       （AGENTS.md「items/・worlds/ は片付けの対象にしない」。空のディレクトリだけなら対象にする）
 #   - 冪等に何度でも実行できる。削除した対象と件数を必ず出力する
 #   - git worktree として登録済みのものは、安全条件を満たす場合に限り
 #     `git worktree remove --force`（1 回。locked worktree は外さない）で撤去し、管理状態と整合させる。
@@ -143,26 +145,29 @@ release_registered_worktree() {
     return 1
 }
 
-# $1 配下に見つかった git 作業ツリーをすべて検査する。
-#   - git 状態が判定不能、または未コミット変更がある -> 1 を返す（呼び出し元は
-#     ディレクトリ全体を削除しない）
-#   - items/・worlds/ にデータ（無視されたファイルを含む）がある -> 1 を返す
-#   - 登録済みでクリーン -> git worktree remove で撤去する（失敗したら 1 を返す）
-#   - 未登録でクリーン（既に手動 remove 済みの抜け殻）-> 何もしない
+# $1 配下に見つかった git 作業ツリーを、深さに関係なくすべて検査してから撤去する。
+# 次のどれかが 1 つでもあれば、何も撤去せずに 1 を返す（呼び出し元はディレクトリ全体を削除しない）。
+#   - .git の一覧を確かめられない、git 状態が判定不能、または未コミット変更がある
+#   - items/・worlds/ にデータ（無視されたファイルを含む）がある
+# すべての検査を通ったら、登録済みでクリーンなものを内側から git worktree remove で撤去する
+# （失敗したら 1 を返す）。未登録でクリーン（既に手動 remove 済みの抜け殻）なものは何もしない。
 # すべて安全に処理できたら 0 を返す（この後ディレクトリ全体を rm -rf してよい）。
 resolve_git_worktrees_inside() {
-    local dir="$1" git_entry gitdir real_gitdir status_out product_out
-    local -a git_entries=()
+    local dir="$1" git_entry gitdir real_gitdir status_out product_out i
+    local -a git_entries=() releasable=()
 
     # 削除・remove で配下を変更しながら同時に find で辿ると事故りやすいため、
-    # 対象一覧を先に確定させてから処理する。
-    while IFS= read -r -d '' git_entry; do
-        git_entries+=("$git_entry")
-    done < <(find "$dir" -mindepth 1 -maxdepth 3 -name .git -print0 2>/dev/null)
+    # 対象一覧を先に確定させてから処理する。深さを限ると、深い submodule や入れ子のリポジトリを
+    # 検査せずに消す。名前の順に並べ、readdir の順序（ファイルシステムで変わる）に左右されないようにする。
+    mapfile -d '' -t git_entries < <(set -o pipefail; find "$dir" -mindepth 1 -name .git -prune -print0 2>/dev/null | LC_ALL=C sort -z)
+    if ! wait "$!"; then
+        echo "block (cannot list git work trees): ${dir}" >&2
+        return 1
+    fi
 
+    # 撤去しながら検査すると、先に撤去した親の worktree と一緒に、まだ検査していない
+    # submodule の変更を --force で消す。すべて検査し終えてから撤去する。
     for git_entry in "${git_entries[@]}"; do
-        # 先に親 worktree を remove すると配下の submodule .git が消える。
-        [ -e "$git_entry" ] || continue
         gitdir="$(dirname "$git_entry")"
 
         if ! git -C "$gitdir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -195,9 +200,15 @@ resolve_git_worktrees_inside() {
         fi
 
         if worktree_is_registered "$real_gitdir"; then
-            if ! release_registered_worktree "$real_gitdir"; then
-                return 1
-            fi
+            releasable+=("$real_gitdir")
+        fi
+    done
+
+    # 外側を先に撤去すると内側の作業ツリーも消え、内側の登録だけが残る。名前の逆順（内側が先）に撤去する。
+    for ((i = ${#releasable[@]} - 1; i >= 0; i--)); do
+        [ -e "${releasable[i]}" ] || continue
+        if ! release_registered_worktree "${releasable[i]}"; then
+            return 1
         fi
     done
     return 0
