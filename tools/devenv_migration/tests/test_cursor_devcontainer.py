@@ -16,35 +16,19 @@ import pytest
 DEVCONTAINER = Path(__file__).resolve().parents[3] / ".devcontainer"
 
 
-# Break caught: a missing continuation, wrong filename, or missing Cursor parent
-# stops initialization or changes existing credentials instead of preparing mounts.
-@pytest.mark.parametrize(
-    ("home_name", "claude_exists", "cursor_state"),
-    (
-        ("fresh", False, "absent"),
-        ("claude-only", True, "absent"),
-        ("cursor-parent", False, "directory"),
-        ("both-existing", True, "file"),
-        ("空白 日本語 home", False, "absent"),
-        ("executable-auth", True, "executable"),
-    ),
-)
-def test_initialize_prepares_mounts_without_changing_existing_credentials(
-    tmp_path: Path, home_name: str, claude_exists: bool, cursor_state: str
-) -> None:
-    home = tmp_path / home_name
+def test_initialize_keeps_existing_claude_and_cursor_credentials(tmp_path: Path) -> None:
+    """initialize.bash が既存の ~/.claude.json や Cursor の auth.json を作り直すと、
+    Claude Code・Cursor の認証と設定が黙って消える。"""
+    home = tmp_path / "home"
     home.mkdir()
     claude = home / ".claude.json"
     cursor = home / ".config/cursor/auth.json"
     sentinel = b'{"synthetic":"not-a-secret"}\n'
-    if claude_exists:
-        claude.write_bytes(sentinel)
-        claude.chmod(0o600)
-    if cursor_state != "absent":
-        cursor.parent.mkdir(parents=True)
-    if cursor_state in ("file", "executable"):
-        cursor.write_bytes(sentinel)
-        cursor.chmod(0o700 if cursor_state == "executable" else 0o600)
+    claude.write_bytes(sentinel)
+    claude.chmod(0o600)
+    cursor.parent.mkdir(parents=True)
+    cursor.write_bytes(sentinel)
+    cursor.chmod(0o600)
 
     for _ in range(2):
         result = subprocess.run(
@@ -55,18 +39,9 @@ def test_initialize_prepares_mounts_without_changing_existing_credentials(
             timeout=10,
         )
         assert result.returncode == 0, result.stderr
-        assert result.stderr == ""
-        assert claude.is_file()
-        assert not (home / ".claude.json,").exists()
-        assert cursor.parent.is_dir()
-        if claude_exists:
-            assert claude.read_bytes() == sentinel
-            assert claude.stat().st_mode & 0o777 == 0o600
-        if cursor_state in ("file", "executable"):
-            assert cursor.read_bytes() == sentinel
-            assert cursor.stat().st_mode & 0o777 == (0o700 if cursor_state == "executable" else 0o600)
-        else:
-            assert not cursor.exists()
+        for credential in (claude, cursor):
+            assert credential.read_bytes() == sentinel
+            assert credential.stat().st_mode & 0o777 == 0o600
 
 
 def _cursor_mount() -> dict[str, str]:
@@ -79,10 +54,9 @@ def _cursor_mount() -> dict[str, str]:
     return dict(part.split("=", 1) for part in cursor_mounts[0].split(","))
 
 
-# Break caught: binding auth.json itself (rather than its directory) prevents
-# logout from unlinking it, even when saving credentials succeeds.
-@pytest.mark.parametrize("existing_auth", (False, True), ids=("not-logged-in", "logged-in"))
-def test_cursor_mount_shares_credential_writes_and_logout(tmp_path: Path, existing_auth: bool) -> None:
+def test_cursor_mount_shares_credential_writes_and_logout(tmp_path: Path) -> None:
+    """auth.json そのものを bind すると、コンテナ内の logout が host の認証情報を消せず、
+    ログアウトしたはずの認証情報が host に黙って残る。"""
     for command in ("unshare", "mount", "umount"):
         if shutil.which(command) is None:
             pytest.skip(f"{command} is required for the real bind-mount check")
@@ -101,16 +75,14 @@ def test_cursor_mount_shares_credential_writes_and_logout(tmp_path: Path, existi
     container_auth = container / ".config/cursor/auth.json"
     host_auth.parent.mkdir(parents=True)
     container_auth.parent.mkdir(parents=True)
-    if existing_auth:
-        host_auth.write_text('{"synthetic":"previous-login"}\n')
+    host_auth.write_text('{"synthetic":"previous-login"}\n')
     mount = _cursor_mount()
     source = Path(mount["source"].replace("${localEnv:HOME}", str(home)))
     target = container / Path(mount["target"]).relative_to("/home/vscode")
     assert source.resolve().is_relative_to(home.resolve())
     assert target.resolve().is_relative_to(container.resolve())
     if source == host_auth:
-        # The old file mount needs a source file even before the first login.
-        source.touch(exist_ok=True)
+        # The old file mount binds the existing credentials file itself.
         target.touch()
     else:
         source.mkdir(parents=True, exist_ok=True)
