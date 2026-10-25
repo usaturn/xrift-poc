@@ -228,17 +228,18 @@ def test_pin_selects_the_default_branch_or_the_pr_head(
     assert case.tmpdir.is_dir()
 
 
-@pytest.mark.parametrize("failure", ["remote-unreachable", "pr-ref-missing"])
-def test_pin_stops_when_the_latest_commits_cannot_be_fetched(skill_shell: Any, tmp_path: Path, failure: str) -> None:
-    """fetch の失敗を見逃すと、手元に残る古い origin/main・PR の head を黙って調べ、正しく見える値を表示する。"""
+def test_pin_stops_when_the_latest_commits_cannot_be_fetched(skill_shell: Any, tmp_path: Path) -> None:
+    """fetch の失敗を見逃すと、手元に残る古い origin/main・PR の head を黙って調べ、正しく見える値を表示する。
+
+    remote には届き、PR の ref だけが無い（1 つの refspec の失敗で fetch 全体が失敗する）。remote に届かない場合は、
+    fetch より前の ``ls-remote`` が失敗して ``: "${DEFAULT_BRANCH:?…}"`` で止まる。
+    """
     case = make_case(tmp_path, product=False, merged_into="release/1.x", state="MERGED")
-    pr_number = PR_NUMBER if failure == "remote-unreachable" else PR_NUMBER + 1
+    missing = PR_NUMBER + 1
     # 親には、以前に取得した古い origin/main と、後片付けの前に止まった実行の PR の ref が残っている
     stale = git(case.parent, "rev-parse", "refs/remotes/origin/main")
     assert stale != case.remote.main
-    git(case.parent, "update-ref", f"refs/carry-over/{pr_number}", stale)
-    if failure == "remote-unreachable":
-        case.remote.bare.rename(case.remote.bare.with_name("moved.git"))
-    result = run_script(skill_shell, case, skill_shell.block("pin the investigated commit"), pr_number=pr_number)
+    git(case.parent, "update-ref", f"refs/carry-over/{missing}", stale)
+    result = run_script(skill_shell, case, skill_shell.block("pin the investigated commit"), pr_number=missing)
     assert result.returncode != 0
     assert "INVESTIGATED_SHA=" not in result.stdout
