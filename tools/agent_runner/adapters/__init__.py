@@ -21,7 +21,6 @@ class AdapterContext:
 class LaunchSpec:
     argv: tuple[str, ...]
     stdin: bytes
-    env: dict[str, str] = field(default_factory=dict[str, str])
 
 
 @dataclass(frozen=True, slots=True)

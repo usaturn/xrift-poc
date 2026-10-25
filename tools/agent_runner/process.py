@@ -365,7 +365,7 @@ async def execute(
                         str(inherited.fileno()),
                         *spec.argv,
                         cwd=cwd,
-                        env={**env, **spec.env},
+                        env=env,
                         start_new_session=True,
                         pass_fds=(inherited.fileno(),),
                         stdin=asyncio.subprocess.PIPE,

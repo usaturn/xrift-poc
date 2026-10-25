@@ -367,10 +367,7 @@ def run_workflow(
                 return finished("invalid_result")
             if not spec.argv or any(argument == prompt or request.prompt in argument for argument in spec.argv):
                 return finished("launch_failed")
-            env.update({name: value for name, value in spec.env.items() if not name.startswith("GIT_")})
-            secrets.update(secret_values(spec.env))
             env["AGENT_RUNNER_DEPTH"] = "1"
-            # execute merges spec.env last; consume additions here to forbid a depth override.
             isolation = checkout_isolation(
                 repository, before, work_dir, directory, writable_paths, private_review_refs
             )
