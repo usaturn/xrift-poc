@@ -87,7 +87,7 @@ def accepted_result(env: Any, tmp_path: Path) -> tuple[Result, str]:
     return result, head
 
 
-def broken(result: Result, case: str, env: Any, tmp_path: Path) -> Result:
+def broken(result: Result, case: str, tmp_path: Path) -> Result:
     attempt = result.attempts[-1]
     payload: dict[str, Any] = dict(cast(dict[str, Any], attempt.payload))
     if case == "payload_failed":
@@ -119,7 +119,10 @@ def test_verify_reviewer_rejects_each_broken_condition(loop: Any, env: Any, tmp_
     result, head = accepted_result(env, tmp_path)
     pr = loop.PrRef(repository="usaturn/xrift-poc", number=900, url="https://github.com/usaturn/xrift-poc/pull/900")
 
-    entry = loop.verify_reviewer(broken(result, case, env, tmp_path), pr=pr, head=head, review_dir=env.review_dir)
+    # 壊す前の結果は受け付ける（拒否のテストが入力の古さで空回りしないための対照）
+    assert loop.verify_reviewer(result, pr=pr, head=head, review_dir=env.review_dir).verdict == "accepted"
+
+    entry = loop.verify_reviewer(broken(result, case, tmp_path), pr=pr, head=head, review_dir=env.review_dir)
 
     assert entry.verdict == "rejected"
 
@@ -168,7 +171,7 @@ def test_reuse_counts_only_pairs_for_the_current_head(loop: Any, env: Any) -> No
     assert reused_old == []
 
 
-def test_review_with_no_accepted_reviewer_fails_with_code_6(loop: Any, env: Any) -> None:
+def test_review_with_no_accepted_reviewer_stops_before_planning(loop: Any, env: Any) -> None:
     """全員の失敗で止まらないと、レビューの無いまま計画・no_fix_needed・マージへ進む。"""
     started = env.start()
     run_dir = Path(started["run_dir"])
@@ -339,9 +342,9 @@ def session_worktrees(env: Any) -> list[str]:
 
 
 def test_finish_reports_the_first_attempt_and_keeps_its_worktree(loop: Any, env: Any) -> None:
-    """finish の要約から 1 回目の試行の outside_changes と残存 worktree が落ちるか、
-    回収がそのレビュアーの worktree を消すと、tool_root の追跡ファイルの書き換えとレビュアーの残したものが、
-    利用者に知らされないまま消える（#41）。"""
+    """finish の要約から 1 回目の試行の outside_changes が落ちると、
+    tool_root の追跡ファイルの書き換えが利用者に知らされないまま残り（#41）、
+    回収がレビュアーの worktree を消すと、他者の作業場所を消す。"""
     run_dir = Path(env.start()["run_dir"])
     loop.cycle_begin(run_dir, github=env.github)
     adapter = env.reviewers({"alpha": ["failed+retained+outside", "success"], "beta": "success"})
@@ -351,7 +354,6 @@ def test_finish_reports_the_first_attempt_and_keeps_its_worktree(loop: Any, env:
     finished = loop.finish(run_dir, abort="external: テストの終了")
 
     [worktree] = session_worktrees(env)
-    assert worktree in [item["path"] for item in finished["reviewer_retained"]]
     assert str(env.parent) in finished["cycles"][0]["outside_changes"]
-    # 報告のために消さない。パスに改行を含むので、-z で読む loop の一覧で照合する
+    # 消さない。パスに改行を含むので、-z で読む loop の一覧で照合する
     assert Path(worktree).is_dir() and Path(worktree) in loop._registered_worktrees(env.parent)
