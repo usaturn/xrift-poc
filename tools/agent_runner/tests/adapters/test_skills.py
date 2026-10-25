@@ -8,6 +8,7 @@ from pathlib import Path
 
 
 def test_replaced_skill_fifo_is_unknown_without_blocking(tmp_path: Path) -> None:
+    """読んだ後に FIFO へ置き換えられた SKILL.md を開き、収集が期限なく止まる（runner の期限は収集に効かない）。"""
     skill = tmp_path / "skills" / "alpha" / "SKILL.md"
     skill.parent.mkdir(parents=True)
     skill.write_text("observed skill", encoding="utf-8")
