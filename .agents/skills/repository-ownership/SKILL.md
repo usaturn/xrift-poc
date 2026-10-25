@@ -71,7 +71,8 @@ uv run --no-project python "$XRIFT_POC_ROOT/.agents/scripts/route_target.py" "${
 
 - **実行する場所:** Git の root で実行する。引数なしでは、`route_target.py` が `env` と判定する親の feature worktree と、`product` と判定し `repository` が null でない制作物（main checkout か、制作物の中の worktree）を受け付ける
 - **PR 修正の入口:** 最新の `review_target.py review-dir --for-planning` で得た JSON を、`scan_before_push --review-target "$TARGET_JSON"` の1引数として渡す。この形では、上の場所に加え、route が exit 3・`stop/unknown` と判定した一時 clone の Git root を受け付ける。`route_target.py` の判定自体は変えない。この例外は PR 修正の検査だけであり、制作物の通常の作業場所を広げない
-- **PR の照合:** `review_target.py scan-context` が、JSON の repository と origin（pushurl があればそれも）が同じ単一の送信先であること、PR が open・fork でないこと、解決時の head/base が不変であること、local HEAD が PR head の修正履歴であることを確かめる。base は PR の base branch。成功時は repository/base_ref/head_ref の JSON、入力不正は exit 2、照合不一致は exit 12、API/owner の失敗は既存の終了コードで止まる。Git の URL 設定値を照合し、`insteadOf` の転送は従来どおり許す
+- **PR の照合:** `review_target.py scan-context` が、JSON の repository と origin（pushurl があればそれも）が同じ単一の送信先であること、展開した push 先が fetch 先と同じリポジトリであること（下の「push 先」）、PR が open・fork でないこと、解決時の head/base が不変であること、local HEAD が PR head の修正履歴であることを確かめる。base は PR の base branch。成功時は repository/base_ref/head_ref の JSON、入力不正は exit 2、照合不一致は exit 12、API/owner の失敗は既存の終了コードで止まる。送信先は、Git の URL の設定値と、展開した push 先の両方で照合する。`insteadOf` の転送は従来どおり許す
+- **push 先:** 検査の範囲は fetch 先から取得した base から決める。push 先が別のリポジトリだと、push 先に無い base の履歴を検査せずに送る。どちらの入口も `review_target.py scan-context` が、`git remote get-url --push --all origin`（pushurl・pushInsteadOf・insteadOf を展開した push 先のすべて）が `git remote get-url origin`（fetch 先）と同じ URL か、同じ GitHub のリポジトリ（https と ssh、大文字小文字の違いは問わない）であることを確かめ、違えば止まる（引数なしは `--destination-only`、PR 修正は `--target` の照合の一部）。`insteadOf` で fetch 先と push 先が同じ先に書き換わる転送は許す。GitHub のリポジトリとして読めない push 先（SSH のホスト別名など）は、fetch 先と同じ URL でなければ止まる。止まったら `remote.origin.pushurl`・`url.<base>.pushInsteadOf`・`remote.origin.url` の複数の値を見直す
 - **止まる場所:** 親の main checkout、subdirectory、`repository` が null の制作物、上の明示入口以外の `stop`。`product_in_env_worktree`・未初期化の制作物・親 root の前提の破損を PR 引数で迂回しない
 - **base:** 引数なしでは親は `origin/main`、制作物は origin の既定ブランチ。PR 修正の入口では PR の base branch。fetch して SHA を固定する。引数なしで origin にブランチが1つも無い制作物（空のリポジトリへの初めての push）は履歴全体を検査する。ブランチがあるのに既定ブランチを読めないときは止まる
 - **設定:** base の commit の `.gitleaks.toml`、無ければ Gitleaks の既定の規則（`[extend]` の `useDefault = true`）を使う。作業ツリーの `.gitleaks.toml`、環境変数 `GITLEAKS_CONFIG`・`GITLEAKS_CONFIG_TOML`、inline の `gitleaks:allow` で検査を緩めない。`.gitleaksignore` があれば（壊れたシンボリックリンクを含む）止まる
@@ -151,10 +152,15 @@ scan_before_push() (
             return 1
             ;;
     esac
+    # push 先が fetch 先と別のリポジトリなら、fetch 先の base で決める範囲は push する commit を覆わない。
+    # PR 修正は scan-context の PR の照合の中で、引数なしは --destination-only で確かめる
     if [[ $# -eq 2 ]]; then
         context="$(uv run --no-project python "$XRIFT_POC_ROOT/.agents/scripts/review_target.py" \
             scan-context --target "$review_target_json" --checkout "$here")" || return 1
         base_branch="$(jq -er .base_ref <<<"$context")" || return 1
+    else
+        uv run --no-project python "$XRIFT_POC_ROOT/.agents/scripts/review_target.py" \
+            scan-context --destination-only --checkout "$here" >/dev/null || return 1
     fi
     if [[ -e .gitleaksignore || -L .gitleaksignore ]]; then
         printf 'scan_before_push: .gitleaksignore があると検査を緩められる。push の前に止める\n' >&2
@@ -195,6 +201,7 @@ SCANNED_SHA="$(scan_before_push)" && [[ -n "$SCANNED_SHA" ]] \
 ```
 
 - 検査の後に HEAD が動いても、検査した SHA を push する。動いた HEAD を検査せずに push しない
+- 検査の後・push の前に remote の設定（pushurl・pushInsteadOf など）を変えない。push 先の照合は検査の時点の設定で行う
 - `[[ -n ]]` は、空の SHA で `:refs/heads/<branch>`（リモートの branch の削除）を送らないための確認である
 - 送り元が SHA なので、上流ブランチは設定されない（`-u` を付けても設定されない）。PR は `gh pr create --repo <repository> --head <branch>` で作る
 

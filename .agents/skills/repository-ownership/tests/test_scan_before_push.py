@@ -463,6 +463,17 @@ def test_scanned_push_does_not_push_without_a_scanned_commit(tmp_path: Path) -> 
     assert pushed(layout.env_bare) == before
 
 
+def test_scanned_push_stops_when_push_goes_to_another_repository(tmp_path: Path) -> None:
+    """push 先だけが別のリポジトリに書き換わる設定で、fetch 先の base の履歴を検査せずに push 先へ送る。"""
+    layout = make_layout(tmp_path / SPACED)
+    cwd, env, _ = prepare_scan(layout, "feature", tmp_path)
+    fork = create_bare(tmp_path / "remotes" / "fork.git", "main")
+    git(cwd, "config", f"url.{fork}.pushInsteadOf", ENV_URL)
+    result = run(layout, cwd, scanned_push(), env, shell="zsh")
+    assert result.returncode != 0
+    assert pushed(fork) is None
+
+
 # PR 修正は親の外の clone でも動かす。origin は設定値で照合し、転送はローカル bare に隔離する。
 REVIEW_BRANCH = "fix/review"
 REVIEW_BASE = "integration/world"
