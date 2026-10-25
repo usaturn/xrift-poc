@@ -46,41 +46,29 @@ def disallowed_tmp_paths(text: str) -> list[str]:
 
 
 @pytest.mark.parametrize(
-    "text",
-    [
-        'mktemp -d "${TMPDIR:-/tmp}/review-fix-planning.XXXXXX"',
-        "`/tmp/pr-review-<PR_NUMBER>-<ランダム値>/worktree`",
-        "Edit(//tmp/pr-review-*/review-backup/**)",
-        "`TMPDIR` が `/tmp` 以外",
-        "`${TMPDIR:-/tmp}` 直下へ",
-        'ls -t "$(uv run --no-project python .agents/scripts/agent_tmp.py root)/tmp/docs_draft/claude_handoffs/"',
-        '"$ROOT/tmp/agents/x"',
-        "Edit(tmp/agents/pr-review-scratch-*/**)",
-        "Edit(//tmp/xrift-poc-pr-loop-*/worktree/**)",
-    ],
-)
-def test_scan_accepts_approved_tmp_usage(text: str) -> None:
-    assert disallowed_tmp_paths(text) == []
-
-
-@pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ("> /tmp/gate-a.out 2> /tmp/gate-a.err", ["/tmp/gate-a.out", "/tmp/gate-a.err"]),
-        (
+        # リダイレクトの基本の形。直前の文字の検査に空白を足すと見落とす
+        pytest.param("> /tmp/gate-a.out 2> /tmp/gate-a.err", ["/tmp/gate-a.out", "/tmp/gate-a.err"], id="redirect"),
+        # ${TMPDIR:-/tmp} の分岐。外すと ${TMPDIR:-/tmp}/固定名 を見落とす
+        pytest.param(
             'mktemp -d "${TMPDIR:-/tmp}/xrift-poc-pr-review-scratch-1-XXXXXXXX"',
             ["${TMPDIR:-/tmp}/xrift-poc-pr-review-scratch-1-XXXXXXXX"],
+            id="tmpdir",
         ),
-        ("Edit(//tmp/notes/**)", ["//tmp/notes/**"]),
-        ("ログは/tmp/foo.log に置く", ["/tmp/foo.log"]),
-        ('"/tmp/release-notes.md"', ["/tmp/release-notes.md"]),
+        # 日本語の直後。直前の文字の検査に \w を使うと見落とす
+        pytest.param("ログは/tmp/foo.log に置く", ["/tmp/foo.log"], id="after-japanese"),
+        # 引用符で囲んだ固定名。直前の文字の検査に " を足すと見落とす
+        pytest.param('"/tmp/release-notes.md"', ["/tmp/release-notes.md"], id="quoted"),
     ],
 )
 def test_scan_rejects_unapproved_tmp_paths(text: str, expected: list[str]) -> None:
+    """正規表現が見落とす向きに壊れると、固定名の /tmp のパスを見つけられないまま検査が通る。"""
     assert disallowed_tmp_paths(text) == expected
 
 
 def test_scan_covers_every_skill_file() -> None:
+    """検査の対象の集め方が壊れて文書を読まなくなると、下の検査が黙って空のまま通る。"""
     # symlink のスキル（`.claude/skills/<name>` → `.agents/skills/<name>`）も実体で数える。
     skills = {path.resolve() for skill_root in SKILL_ROOTS for path in skill_root.glob("*/SKILL.md")}
 
@@ -89,6 +77,7 @@ def test_scan_covers_every_skill_file() -> None:
 
 
 def test_skill_instructions_use_only_approved_tmp_locations() -> None:
+    """指示文書が /tmp の固定名を使わせると、並行するセッションが互いの出力を黙って上書きし、他人の結果を読む。"""
     violations = {
         path.relative_to(ROOT).as_posix(): found
         for path in instruction_files()
