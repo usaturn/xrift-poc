@@ -239,12 +239,10 @@ class LoopEnv:
         *,
         findings: int = 0,
         errors: dict[str, str] | None = None,
-        probes: dict[str, str] | None = None,
     ) -> ReviewerAdapter:
         """現在の HEAD を対象にした偽のレビュアー（agent_id → success・failed・crash、または起動ごとの列）。
 
         errors は crash のときに stdout へ出す error イベントの message（provider のエラー文の代わり）。
-        probes は短い確認（role が probe の依頼）への答え方で、ok（既定）・wrong・crash・hang。
         """
         head = self.gh.head()
         agents: dict[str, Any] = {}
@@ -254,7 +252,6 @@ class LoopEnv:
             agents[agent] = {
                 "behavior": behavior,
                 "error": (errors or {}).get(agent),
-                "probe": (probes or {}).get(agent, "ok"),
                 "review_file": str(review),
                 "findings_file": str(self.review_dir / "findings" / f"{model}-{head[:12]}.json"),
                 "document": candidates_document(head, self.base(), model, review.name, findings=findings),
@@ -373,7 +370,7 @@ def finalize_result(path: Path, outcome: str, *, merged: bool, stop_reason: str 
 # 失敗したときと同じく、tool_root に登録した実際の worktree を残して cleanup=failed と retained_paths を返す。
 # outside は別セッションの更新を adapter.collect で再現する（runner の監査の outside_changes に出る）
 REVIEWER_PROGRAM = r"""
-import json, pathlib, re, shutil, subprocess, sys, tempfile, time
+import json, pathlib, re, shutil, subprocess, sys, tempfile
 request = json.load(sys.stdin)
 receipt_path, scenario_path = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
 scenario = json.loads(scenario_path.read_text(encoding="utf-8"))
@@ -381,13 +378,8 @@ agent = request["agent_id"]
 receipt = {key: request[key] for key in ("schema_version", "run_id", "request_id", "agent_id", "role")}
 if request["role"] == "probe":
     # 短い確認: 起動した cwd（runner の worktree）の README.md の 1 行目を、決まった形で返す
-    probe = scenario["agents"][agent]["probe"]
-    if probe == "crash":
-        sys.exit(3)
-    if probe == "hang":
-        time.sleep(60)
     first_line = pathlib.Path("README.md").read_text(encoding="utf-8").splitlines()[0]
-    answer = {"probe": "ok", "first_line": first_line} if probe == "ok" else {"probe": "no"}
+    answer = {"probe": "ok", "first_line": first_line}
     receipt.update(status="success", payload=answer)
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
     sys.exit(0)
