@@ -39,6 +39,15 @@ def _make_old(path: Path, days: float = 2) -> None:
     os.utime(path, (old, old))
 
 
+def _make_tree_old(path: Path, days: float = 2) -> None:
+    """path と配下のすべてを古くする。中のどれかが新しいと、更新中の作業領域として残す。"""
+    old = time.time() - days * 24 * 60 * 60
+    for current, dirnames, filenames in os.walk(path):
+        for name in [*dirnames, *filenames]:
+            os.utime(Path(current) / name, (old, old), follow_symlinks=False)
+    os.utime(path, (old, old))
+
+
 def _run_cleanup(env_overrides: dict[str, str]) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env.update(env_overrides)
@@ -207,7 +216,7 @@ def _init_parent_like_repo(path: Path) -> None:
 def _rfp_worktree(isolated_root: Path, tmp_path: Path, name: str) -> tuple[Path, Path, Path]:
     """review-fix-planning.<name>/worktree に親のような登録済み worktree を作る。
 
-    中身を置いたあとで、呼び出し側が _make_old(review_dir) で日数条件を満たす。
+    中身を置いたあとで、呼び出し側が _make_tree_old(review_dir) で日数条件を満たす。
     """
     main_repo = tmp_path / f"main-repo-{name}"
     _init_parent_like_repo(main_repo)
@@ -229,13 +238,32 @@ def test_keeps_fresh_review_fix_planning_directory(isolated_root: Path, tmp_path
     assert fresh.exists()
 
 
+def test_keeps_review_fix_planning_directory_with_a_file_just_written_under_an_old_top_level(
+    isolated_root: Path, tmp_path: Path
+) -> None:
+    """日数を最上位のディレクトリだけで判定すると、サブディレクトリで書き直したばかりの検証ログと worktree を消す。"""
+    main_repo, review_dir, worktree = _rfp_worktree(isolated_root, tmp_path, "Recent")
+    log = review_dir / "検証 ログ" / "verify.log"
+    log.parent.mkdir()
+    log.write_text("前の結果\n", encoding="utf-8")
+    _make_tree_old(review_dir)
+    # 既存のファイルを書き直しても、最上位と「検証 ログ」の mtime は古いまま
+    log.write_text("書き直したばかりの結果\n", encoding="utf-8")
+
+    result = _run_cleanup(_env_for(isolated_root, tmp_path / "no-yarn-cache"))
+
+    assert result.returncode == 0, result.stderr
+    assert log.read_text(encoding="utf-8") == "書き直したばかりの結果\n"
+    assert str(worktree) in _registered_worktrees(main_repo)
+
+
 def test_keeps_review_fix_planning_directory_in_use_by_a_process(isolated_root: Path, tmp_path: Path) -> None:
     """使用中の判定が外れると、日数を過ぎた作業中の一時ディレクトリ（検証ログなど）を黙って消す。"""
     busy = isolated_root / "review-fix-planning.InUse1"
     busy.mkdir()
     log = busy / "verify.log"
     log.write_text("検証のログ\n", encoding="utf-8")
-    _make_old(busy)
+    _make_tree_old(busy)
 
     proc = subprocess.Popen(["sleep", "20"], cwd=busy)
     try:
@@ -253,7 +281,7 @@ def test_keeps_review_fix_planning_worktree_when_git_status_fails(isolated_root:
     main_repo, review_dir, worktree = _rfp_worktree(isolated_root, tmp_path, "Stat01")
     secret = worktree / "secret.txt"
     secret.write_text("uncommitted-secret\n", encoding="utf-8")
-    _make_old(review_dir)
+    _make_tree_old(review_dir)
     git_dir = subprocess.run(
         ["git", "rev-parse", "--absolute-git-dir"],
         cwd=worktree,
@@ -276,22 +304,117 @@ def test_keeps_review_fix_planning_worktree_when_git_status_fails(isolated_root:
     assert str(worktree) in _registered_worktrees(main_repo)
 
 
-def test_keeps_review_fix_planning_worktree_with_uncommitted_world_repository(
+def test_keeps_review_fix_planning_worktree_with_uninitialized_world_files(
     isolated_root: Path, tmp_path: Path
 ) -> None:
-    """制作物の検査から worlds が外れると、worlds/ の独立したリポジトリ（find の深さの外）の未コミットの作業を消す。"""
+    """制作物の検査から worlds が外れると、一時 worktree の worlds/ の Git 未初期化の制作物の作業を --force で消す。"""
     main_repo, review_dir, worktree = _rfp_worktree(isolated_root, tmp_path, "World1")
     world = worktree / "worlds" / "my-world"
     world.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q", str(world)], check=True)
     draft = world / "下書き.txt"
     draft.write_text("未コミットの作業\n", encoding="utf-8")
-    _make_old(review_dir)
+    _make_tree_old(review_dir)
 
     result = _run_cleanup(_env_for(isolated_root, tmp_path / "no-yarn-cache"))
 
     assert result.returncode == 0, result.stderr
     assert draft.read_text(encoding="utf-8") == "未コミットの作業\n"
+    assert str(worktree) in _registered_worktrees(main_repo)
+
+
+def test_keeps_uncommitted_file_in_a_deep_submodule_hidden_from_the_superproject_status(
+    isolated_root: Path, tmp_path: Path
+) -> None:
+    """.git を浅く探すか撤去しながら検査すると、親の status に出ない深い submodule の未コミットを --force で消す。"""
+    lib = tmp_path / "submodule-lib"
+    _init_repo(lib)
+    main_repo = tmp_path / "main-repo-Submod"
+    _init_parent_like_repo(main_repo)
+    sub_path = "vendor/深い パス/sub"
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "--quiet",
+            "add",
+            "--name",
+            "vendored",
+            str(lib),
+            sub_path,
+        ],
+        cwd=main_repo,
+        check=True,
+    )
+    # 親の status に submodule の中の変更を出さない設定（vendor した submodule で使われる）
+    subprocess.run(
+        ["git", "config", "-f", ".gitmodules", "submodule.vendored.ignore", "dirty"], cwd=main_repo, check=True
+    )
+    subprocess.run(["git", "add", ".gitmodules"], cwd=main_repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add submodule"], cwd=main_repo, check=True)
+    review_dir = isolated_root / "review-fix-planning.Submod"
+    review_dir.mkdir()
+    worktree = review_dir / "worktree"
+    _add_worktree(main_repo, worktree)
+    subprocess.run(
+        ["git", "-c", "protocol.file.allow=always", "submodule", "--quiet", "update", "--init"],
+        cwd=worktree,
+        check=True,
+    )
+    draft = worktree / sub_path / "作業中.txt"
+    draft.write_text("submodule の未コミットの作業\n", encoding="utf-8")
+    _make_tree_old(review_dir)
+
+    result = _run_cleanup(_env_for(isolated_root, tmp_path / "no-yarn-cache"))
+
+    assert result.returncode == 0, result.stderr
+    assert draft.read_text(encoding="utf-8") == "submodule の未コミットの作業\n"
+    assert str(worktree) in _registered_worktrees(main_repo)
+
+
+def test_keeps_review_fix_planning_clone_with_an_unpushed_commit(isolated_root: Path, tmp_path: Path) -> None:
+    """clone を消せるものとして扱うと、status が clean な push していない commit を rm -rf で黙って失う。"""
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+    seed = tmp_path / "seed"
+    _init_repo(seed)
+    subprocess.run(["git", "push", "-q", str(remote), "HEAD:refs/heads/main"], cwd=seed, check=True)
+    review_dir = isolated_root / "review-fix-planning.Clone1"
+    review_dir.mkdir()
+    clone = review_dir / "clone"
+    subprocess.run(["git", "clone", "-q", "--branch", "main", str(remote), str(clone)], check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=clone, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=clone, check=True)
+    (clone / "README.md").write_text("push していない修正\n", encoding="utf-8")
+    subprocess.run(["git", "commit", "-q", "-am", "unpushed fix"], cwd=clone, check=True)
+    unpushed = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=clone, check=True, text=True, capture_output=True
+    ).stdout.strip()
+    _make_tree_old(review_dir)
+
+    result = _run_cleanup(_env_for(isolated_root, tmp_path / "no-yarn-cache"))
+
+    assert result.returncode == 0, result.stderr
+    head = subprocess.run(["git", "-C", str(clone), "rev-parse", "HEAD"], check=False, text=True, capture_output=True)
+    assert head.stdout.strip() == unpushed
+
+
+def test_keeps_review_fix_planning_worktree_with_a_commit_only_on_its_detached_head(
+    isolated_root: Path, tmp_path: Path
+) -> None:
+    """detached HEAD を確かめずに撤去すると、どの ref にも無い commit を worktree remove --force で辿れなくする。"""
+    main_repo, review_dir, worktree = _rfp_worktree(isolated_root, tmp_path, "Detach")
+    fix = worktree / "fix.txt"
+    fix.write_text("detached HEAD だけにある修正\n", encoding="utf-8")
+    subprocess.run(["git", "add", "fix.txt"], cwd=worktree, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "fix on detached HEAD"], cwd=worktree, check=True)
+    _make_tree_old(review_dir)
+
+    result = _run_cleanup(_env_for(isolated_root, tmp_path / "no-yarn-cache"))
+
+    assert result.returncode == 0, result.stderr
+    assert fix.read_text(encoding="utf-8") == "detached HEAD だけにある修正\n"
     assert str(worktree) in _registered_worktrees(main_repo)
 
 
@@ -303,7 +426,7 @@ def test_releases_review_fix_planning_worktree_with_only_other_ignored_files(
     venv_cfg = worktree / ".venv" / "pyvenv.cfg"
     venv_cfg.parent.mkdir()
     venv_cfg.write_text("home = /usr/bin\n", encoding="utf-8")
-    _make_old(review_dir)
+    _make_tree_old(review_dir)
 
     result = _run_cleanup(_env_for(isolated_root, tmp_path / "no-yarn-cache"))
 
@@ -319,7 +442,7 @@ def test_keeps_item_files_when_untracked_files_are_hidden_by_config(isolated_roo
     model = worktree / "items" / "my-item" / "model.glb"
     model.parent.mkdir(parents=True)
     model.write_bytes(b"glTF")
-    _make_old(review_dir)
+    _make_tree_old(review_dir)
 
     result = _run_cleanup(_env_for(isolated_root, tmp_path / "no-yarn-cache"))
 
@@ -334,7 +457,7 @@ def test_keeps_untracked_file_when_untracked_files_are_hidden_by_config(isolated
     subprocess.run(["git", "config", "status.showUntrackedFiles", "no"], cwd=main_repo, check=True)
     secret = worktree / "untracked.txt"
     secret.write_text("dirty\n", encoding="utf-8")
-    _make_old(review_dir)
+    _make_tree_old(review_dir)
 
     result = _run_cleanup(_env_for(isolated_root, tmp_path / "no-yarn-cache"))
 

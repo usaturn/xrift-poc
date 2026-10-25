@@ -13,11 +13,18 @@
 #   - yarn キャッシュ（#147 で npm に一本化したため不要）
 #
 # 汎用 cleanup の安全条件（Issue #152 共有仕様 §4。すべて AND で判断する）:
-#   - 未コミット変更のある git 作業ツリーを含むものは削除しない
-#   - git 作業ツリーの items/・worlds/ にデータ（親で無視したファイルを含む）があるものは削除しない
-#     （AGENTS.md「items/・worlds/ は片付けの対象にしない」。空のディレクトリだけなら対象にする）
 #   - 使用中（プロセスの cwd）と判定できるものは削除しない
+#   - 中のどれか（最上位のディレクトリ自身を含む）が MIN_AGE_DAYS 日以内に更新されたものは削除しない
+#     （最上位の mtime は、サブディレクトリの中への書き込みや既存のファイルの書き直しでは変わらない）
 #   - 経過日数のみを削除条件にしない
+#   - 中の git 作業ツリー（.git）は深さに関係なく探し、すべて検査してから撤去する。
+#     1 つでも次に当たれば、何も撤去せずに残す
+#     - 未コミット変更がある、または git 状態（.git の一覧を含む）を判定できない
+#     - 自分の履歴を持つリポジトリ（clone・submodule など。git-dir と common-dir が同じ）である
+#       （rm -rf すると push していない commit や stash ごと消える）
+#     - items/・worlds/ にデータ（親で無視したファイルを含む）がある
+#       （AGENTS.md「items/・worlds/ は片付けの対象にしない」。空のディレクトリだけなら対象にする）
+#     - detached HEAD の commit が、どの ref にも含まれない（worktree を撤去すると辿れなくなる）
 #   - 冪等に何度でも実行できる。削除した対象と件数を必ず出力する
 #   - git worktree として登録済みのものは、安全条件を満たす場合に限り
 #     `git worktree remove --force`（1 回。locked worktree は外さない）で撤去し、管理状態と整合させる。
@@ -30,7 +37,8 @@
 #
 # 環境変数（既定値はコンテナの実運用、テストでは差し替える）:
 #   XRIFT_POC_CLEANUP_TMP_ROOT       pr-review-* / review-fix-planning.* を探すルート（既定 /tmp）
-#   XRIFT_POC_CLEANUP_MIN_AGE_DAYS   最終更新からの最小経過日数。0 以下で無効化（既定 1）
+#   XRIFT_POC_CLEANUP_MIN_AGE_DAYS   最終更新からの最小経過日数（review-fix-planning.* は中のどれかの
+#                                  最終更新から）。0 以下で無効化（既定 1）
 #   XRIFT_POC_CLEANUP_YARN_CACHE_DIR yarn キャッシュのパス（既定 $HOME/.cache/yarn）
 #   XRIFT_POC_CLEANUP_DRY_RUN        1 で実際には削除・git worktree remove をせず
 #                                  対象だけ表示する（既定 0）
@@ -81,6 +89,19 @@ dir_is_old_enough() {
     [ -n "$(find "$dir" -maxdepth 0 -mtime "+${threshold}" 2>/dev/null)" ]
 }
 
+# $1 の配下（$1 自身を含む）のどれも MIN_AGE_DAYS 日以内に更新されていなければ真を返す。
+# MIN_AGE_DAYS <= 0 なら常に真。最上位の mtime は、サブディレクトリの中への書き込みや既存の
+# ファイルの書き直しでは変わらないので、使っている最中の作業領域を古いと見誤らないよう配下も見る。
+# find が配下を辿りきれないとき（権限など）は判定できないので、偽を返して残す。
+tree_is_old_enough() {
+    local dir="$1" recent
+    if [ "$MIN_AGE_DAYS" -le 0 ] 2>/dev/null; then
+        return 0
+    fi
+    recent="$(find "$dir" -mtime "-${MIN_AGE_DAYS}" -print -quit 2>/dev/null)" || return 1
+    [ -z "$recent" ]
+}
+
 # $1（basename）から PR 番号を取り出して stdout に出す。
 # `pr-review-<数字>` の直後が 行末・`-`・`.` のいずれかであるものだけを受け付ける。
 # 取り出せなければ 1 を返す（安全側: 対象外にする）。
@@ -127,26 +148,31 @@ release_registered_worktree() {
     return 1
 }
 
-# $1 配下に見つかった git 作業ツリーをすべて検査する。
-#   - git 状態が判定不能、または未コミット変更がある -> 1 を返す（呼び出し元は
-#     ディレクトリ全体を削除しない）
-#   - items/・worlds/ にデータ（無視されたファイルを含む）がある -> 1 を返す
-#   - 登録済みでクリーン -> git worktree remove で撤去する（失敗したら 1 を返す）
-#   - 未登録でクリーン（既に手動 remove 済みの抜け殻）-> 何もしない
+# $1 配下に見つかった git 作業ツリーを、深さに関係なくすべて検査してから撤去する。
+# 次のどれかが 1 つでもあれば、何も撤去せずに 1 を返す（呼び出し元はディレクトリ全体を削除しない）。
+#   - .git の一覧を確かめられない、git 状態が判定不能、または未コミット変更がある
+#   - 自分の履歴を持つリポジトリ（clone・submodule など）である
+#   - items/・worlds/ にデータ（無視されたファイルを含む）がある
+#   - detached HEAD の commit がどの ref にも含まれない
+# すべての検査を通ったら、登録済みでクリーンな linked worktree を内側から git worktree remove で撤去する
+# （失敗したら 1 を返す）。未登録でクリーン（既に手動 remove 済みの抜け殻）なものは何もしない。
 # すべて安全に処理できたら 0 を返す（この後ディレクトリ全体を rm -rf してよい）。
 resolve_git_worktrees_inside() {
-    local dir="$1" git_entry gitdir real_gitdir status_out product_out
-    local -a git_entries=()
+    local dir="$1" git_entry gitdir real_gitdir git_dir common_dir status_out product_out head_rc contained i
+    local -a git_entries=() releasable=()
 
     # 削除・remove で配下を変更しながら同時に find で辿ると事故りやすいため、
-    # 対象一覧を先に確定させてから処理する。
-    while IFS= read -r -d '' git_entry; do
-        git_entries+=("$git_entry")
-    done < <(find "$dir" -mindepth 1 -maxdepth 3 -name .git -print0 2>/dev/null)
+    # 対象一覧を先に確定させてから処理する。深さを限ると、深い submodule や入れ子のリポジトリを
+    # 検査せずに消す。名前の順に並べ、readdir の順序（ファイルシステムで変わる）に左右されないようにする。
+    mapfile -d '' -t git_entries < <(set -o pipefail; find "$dir" -mindepth 1 -name .git -prune -print0 2>/dev/null | LC_ALL=C sort -z)
+    if ! wait "$!"; then
+        echo "block (cannot list git work trees): ${dir}" >&2
+        return 1
+    fi
 
+    # 撤去しながら検査すると、先に撤去した親の worktree と一緒に、まだ検査していない
+    # submodule の変更を --force で消す。すべて検査し終えてから撤去する。
     for git_entry in "${git_entries[@]}"; do
-        # 先に親 worktree を remove すると配下の submodule .git が消える。
-        [ -e "$git_entry" ] || continue
         gitdir="$(dirname "$git_entry")"
 
         if ! git -C "$gitdir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -155,6 +181,18 @@ resolve_git_worktrees_inside() {
         fi
 
         real_gitdir="$(cd "$gitdir" && pwd -P)"
+
+        # clone・submodule などは、自分の履歴（git-dir）を作業ツリーと一緒に持つ。rm -rf や --force の撤去で、
+        # push していない commit や stash ごと消えるので残す。linked worktree は git-dir と common-dir が違う。
+        if ! git_dir="$(git -C "$real_gitdir" rev-parse --path-format=absolute --git-dir 2>/dev/null)" ||
+            ! common_dir="$(git -C "$real_gitdir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
+            echo "block (unverifiable git state): ${real_gitdir}" >&2
+            return 1
+        fi
+        if [ "$git_dir" = "$common_dir" ]; then
+            echo "block (repository with its own history, such as a clone or a submodule): ${real_gitdir}" >&2
+            return 1
+        fi
 
         status_out="$(git -C "$real_gitdir" status --porcelain --untracked-files=normal 2>/dev/null)" || {
             echo "block (unverifiable git state): ${real_gitdir}" >&2
@@ -178,10 +216,38 @@ resolve_git_worktrees_inside() {
             return 1
         fi
 
-        if worktree_is_registered "$real_gitdir"; then
-            if ! release_registered_worktree "$real_gitdir"; then
+        # detached HEAD で作った commit は、linked worktree を撤去すると ref からも reflog からも辿れなくなる。
+        # HEAD がどの ref にも含まれなければ残す（branch の上なら、撤去しても commit は branch に残る）。
+        head_rc=0
+        git -C "$real_gitdir" symbolic-ref -q HEAD >/dev/null 2>&1 || head_rc=$?
+        case "$head_rc" in
+            0) ;;
+            1)
+                contained="$(git -C "$real_gitdir" for-each-ref --contains HEAD --count=1 --format='%(refname)' 2>/dev/null)" || {
+                    echo "block (unverifiable git state): ${real_gitdir}" >&2
+                    return 1
+                }
+                if [ -z "$contained" ]; then
+                    echo "block (commits on a detached HEAD that no ref contains): ${real_gitdir}" >&2
+                    return 1
+                fi
+                ;;
+            *)
+                echo "block (unverifiable git state): ${real_gitdir}" >&2
                 return 1
-            fi
+                ;;
+        esac
+
+        if worktree_is_registered "$real_gitdir"; then
+            releasable+=("$real_gitdir")
+        fi
+    done
+
+    # 外側を先に撤去すると内側の作業ツリーも消え、内側の登録だけが残る。名前の逆順（内側が先）に撤去する。
+    for ((i = ${#releasable[@]} - 1; i >= 0; i--)); do
+        [ -e "${releasable[i]}" ] || continue
+        if ! release_registered_worktree "${releasable[i]}"; then
+            return 1
         fi
     done
     return 0
@@ -219,14 +285,14 @@ cleanup_tmp_dirs() {
             continue
         fi
 
-        if ! dir_is_old_enough "$dir"; then
-            echo "skip (younger than ${MIN_AGE_DAYS}d): ${dir}"
+        if ! tree_is_old_enough "$dir"; then
+            echo "skip (modified within ${MIN_AGE_DAYS}d somewhere inside): ${dir}"
             skipped=$((skipped + 1))
             continue
         fi
 
         if ! resolve_git_worktrees_inside "$dir"; then
-            echo "skip (dirty, unverifiable, or product-data git worktree inside): ${dir}"
+            echo "skip (a git work tree inside must be kept): ${dir}"
             skipped=$((skipped + 1))
             continue
         fi
