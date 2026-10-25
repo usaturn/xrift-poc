@@ -281,12 +281,16 @@ class PayloadAdapter(ReceiptAdapter):
         )
 
 
-def run_external(dispatch: Any, scenario: Scenario, tmp_path: Path, payload: Any, **adapter_args: Any) -> Path:
-    """偽の adapter で実際に dispatch し、dispatch.json のある保存先を返す。"""
+def set_skill_digest(dispatch: Any, payload: dict[str, Any]) -> None:
+    """担当は渡された skill をそのまま一覧に書く。"""
     if isinstance(payload.get("verified"), dict):
-        # 担当は渡された skill をそのまま一覧に書く。
         digest = hashlib.sha256(dispatch.SKILL.read_bytes()).hexdigest()
         payload["verified"]["skill"] = {"path": ".agents/skills/review-verify/SKILL.md", "sha256": digest}
+
+
+def run_external(dispatch: Any, scenario: Scenario, tmp_path: Path, payload: Any, **adapter_args: Any) -> Path:
+    """偽の adapter で実際に dispatch し、dispatch.json のある保存先を返す。"""
+    set_skill_digest(dispatch, payload)
     result = dispatch.dispatch(
         config("probe"),
         scenario.request,
@@ -377,12 +381,20 @@ def test_accept_saves_the_tool_output_unchanged_with_the_observed_verifier(
 
 def drop_changed_file(payload: dict[str, Any], request: dict[str, Any]) -> None:
     # 検査する変更ファイルを担当が一覧から消すと、確かめていない変更ファイルを確かめたことにする。
+    # inventory と fix_evidence.files の両方から消す（片方だけなら validate が止めるため）。
     payload["inventory"]["changed_files"].pop()
+    payload["verified"]["fix_evidence"]["files"].pop()
 
 
 def rewrite_tool_candidate(payload: dict[str, Any], request: dict[str, Any]) -> None:
     # 道具の候補の本文を書き換えると、書き換えた本文で判定した結果を受け取り、文書の記述が確かめられないまま残る。
     payload["inventory"]["candidates"][0]["text"] = "別の本文"
+
+
+def drop_tool_candidate(payload: dict[str, Any], request: dict[str, Any]) -> None:
+    # 道具の候補を消すと、その候補が判定されないまま保存される。
+    payload["inventory"]["candidates"].clear()
+    payload["verified"]["statement_candidates"]["judgments"].clear()
 
 
 def missing_requested_fix(payload: dict[str, Any], request: dict[str, Any]) -> None:
@@ -396,7 +408,8 @@ def unjudged_candidate(payload: dict[str, Any], request: dict[str, Any]) -> None
 
 
 @pytest.mark.parametrize(
-    "mutation", [drop_changed_file, rewrite_tool_candidate, missing_requested_fix, unjudged_candidate]
+    "mutation",
+    [drop_changed_file, rewrite_tool_candidate, drop_tool_candidate, missing_requested_fix, unjudged_candidate],
 )
 def test_accept_rejects_a_payload_that_differs_from_the_tool_output(
     dispatch: Any,
@@ -427,11 +440,13 @@ def test_accept_does_not_attribute_an_unauditable_checkout_to_content_changes(
             (external / ".git").write_text(f"gitdir: {tmp_path / 'missing-gitdir'}\n")
             return super().collect(context, stdout_path, stderr_path)
 
+    payload = scenario.payload()
+    set_skill_digest(dispatch, payload)
     result = dispatch.dispatch(
         config("probe"),
         scenario.request,
         tmp_path / "run",
-        adapter_loader=loader_for(Unauditable(scenario.payload())),
+        adapter_loader=loader_for(Unauditable(payload)),
     )
     assert result["batch"]["checkout_audit"][0]["kind"] == "unavailable_after"
     assert accept(dispatch, tmp_path / "run") == 1
@@ -498,10 +513,7 @@ def test_review_directory_changes_are_rejected_before_publishing(
     if mutation != "create":
         target.write_text("previous accepted contents")
     payload = scenario.payload()
-    payload["verified"]["skill"] = {
-        "path": ".agents/skills/review-verify/SKILL.md",
-        "sha256": hashlib.sha256(dispatch.SKILL.read_bytes()).hexdigest(),
-    }
+    set_skill_digest(dispatch, payload)
 
     class MutatingAdapter(PayloadAdapter):
         def collect(self, context: AdapterContext, stdout_path: Path, stderr_path: Path) -> AdapterOutcome:
