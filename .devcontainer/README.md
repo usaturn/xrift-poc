@@ -623,12 +623,7 @@ pi --list-models gpt-6-luna
 表示されない。3 ランチャーは `--thinking xhigh` で起動する。子 Pi の
 `cheap` / `balanced` / `max` tier はランチャーごとに GPT-6 Luna / GPT-6.1
 Sol / GPT-6 Astra を割り当てる（`pigs` の `cheap` だけは OpenCode Go の
-`deepseek-v4.1-flash`。下表を参照）。ログイン済みの環境では、次のテストでも、ランチャーと
-tier が使う `openai-codex` のモデルが Pi の一覧にあることを確認できる。
-
-```bash
-PI_CODEX_LIVE_CHECK=1 bash .devcontainer/test-pi-openai-codex.bash
-```
+`deepseek-v4.1-flash`。下表を参照）。
 
 ### SuperGrok / X Premium の Grok 4.7 ランチャー
 
@@ -1018,13 +1013,12 @@ pi-superagents 1.14.3 / Pi loader 0.85.1 / Superpowers 6.4.1 について、
 `subagent-driven-development`、`executing-plans` の解決と探索パスの重複排除を確認した。
 これは探索 API の検証であり、実 trust 設定の変更や対話 Pi の `/sp-*` 実行確認ではない。
 
-セットアップの設定非変更・ランチャー配置などの回帰テスト（`.devcontainer/test-*.bash`）は、
+ランチャーの tier 設定の重ね方・資格情報の扱い・利用者の設定の保持などの回帰テスト（`.devcontainer/test-*.bash`）は、
 `./scripts/ci/verify-devenv.sh` が `tools/devenv_migration/tests/test_devcontainer_bash_suites.py` から実行する。
 単独で実行する場合は、リポジトリのルートで次を実行する。
 
 ```bash
 bash .devcontainer/test-pi-superagents.bash
-bash .devcontainer/test-pi-openai-codex.bash
 ```
 
 ## DSH 撤去後の移行（#123）
