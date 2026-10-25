@@ -332,12 +332,25 @@ def test_keeps_uncommitted_file_in_a_deep_submodule_hidden_from_the_superproject
     _init_parent_like_repo(main_repo)
     sub_path = "vendor/深い パス/sub"
     subprocess.run(
-        ["git", "-c", "protocol.file.allow=always", "submodule", "--quiet", "add", "--name", "vendored", str(lib), sub_path],
+        [
+            "git",
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "--quiet",
+            "add",
+            "--name",
+            "vendored",
+            str(lib),
+            sub_path,
+        ],
         cwd=main_repo,
         check=True,
     )
     # 親の status に submodule の中の変更を出さない設定（vendor した submodule で使われる）
-    subprocess.run(["git", "config", "-f", ".gitmodules", "submodule.vendored.ignore", "dirty"], cwd=main_repo, check=True)
+    subprocess.run(
+        ["git", "config", "-f", ".gitmodules", "submodule.vendored.ignore", "dirty"], cwd=main_repo, check=True
+    )
     subprocess.run(["git", "add", ".gitmodules"], cwd=main_repo, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "add submodule"], cwd=main_repo, check=True)
     review_dir = isolated_root / "review-fix-planning.Submod"
@@ -345,7 +358,9 @@ def test_keeps_uncommitted_file_in_a_deep_submodule_hidden_from_the_superproject
     worktree = review_dir / "worktree"
     _add_worktree(main_repo, worktree)
     subprocess.run(
-        ["git", "-c", "protocol.file.allow=always", "submodule", "--quiet", "update", "--init"], cwd=worktree, check=True
+        ["git", "-c", "protocol.file.allow=always", "submodule", "--quiet", "update", "--init"],
+        cwd=worktree,
+        check=True,
     )
     draft = worktree / sub_path / "作業中.txt"
     draft.write_text("submodule の未コミットの作業\n", encoding="utf-8")
@@ -388,7 +403,7 @@ def test_keeps_review_fix_planning_clone_with_an_unpushed_commit(isolated_root: 
 def test_keeps_review_fix_planning_worktree_with_a_commit_only_on_its_detached_head(
     isolated_root: Path, tmp_path: Path
 ) -> None:
-    """detached HEAD の commit を確かめずに撤去すると、どの ref にも無い commit を worktree remove --force で辿れなくする。"""
+    """detached HEAD を確かめずに撤去すると、どの ref にも無い commit を worktree remove --force で辿れなくする。"""
     main_repo, review_dir, worktree = _rfp_worktree(isolated_root, tmp_path, "Detach")
     fix = worktree / "fix.txt"
     fix.write_text("detached HEAD だけにある修正\n", encoding="utf-8")
