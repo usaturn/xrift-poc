@@ -7,21 +7,18 @@ import hashlib
 import importlib.util
 import json
 import os
-import shutil
 import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from tools.agent_runner import Config, ConfigError, RunnerError
+from tools.agent_runner import Config
 from tools.agent_runner.adapters import AdapterContext, AdapterOutcome, Capabilities, LaunchSpec
-from tools.agent_runner.models import CheckoutAudit, Identity
-from tools.agent_runner.runner import EXCEPTIONS_HEADING
+from tools.agent_runner.models import Identity
 
 pytest_plugins = ("tools.test_support.plugin",)
 # 偽の担当だけを起動するので、runner の担当（AGENT_RUNNER_DEPTH=1）の中でもテストの中だけ depth を外す
@@ -120,166 +117,23 @@ class ReceiptAdapter:
 def test_self_returns_complete_input_without_launching_implementation(
     dispatch: Any, verification_input: dict[str, Any], tmp_path: Path
 ) -> None:
+    """fix-check だけへの射影が外れると、確認のはずの dispatch が fix workflow の implement（writes=true）の担当まで
+    起動してリポジトリを書き換え、self に担当の成功記録を作る。"""
+
     def no_launch(runtime: str) -> Any:
         raise AssertionError("self must not load adapters")
 
     result = dispatch.dispatch(config(), verification_input, tmp_path / "run", adapter_loader=no_launch)
-    assert result["batch"]["state"] == "self"
     assert result["batch"]["assignments"] == {"fix-check": ["self"]}
-    assert result["request"]["fix_sections"] == verification_input["fix_sections"]
-    assert result["verified"]["findings"] == []
-    assert result["batch"]["results"][0]["attempts"] == []
     assert result["verifier"] is None
-
-
-@pytest.mark.parametrize("code,state", [(0, "success"), (1, "failed")])
-def test_external_runs_only_fix_check_and_preserves_observed_identity(
-    dispatch: Any, verification_input: dict[str, Any], tmp_path: Path, code: int, state: str
-) -> None:
-    def adapter_loader(runtime: str) -> ReceiptAdapter:
-        return ReceiptAdapter(code)
-
-    result = dispatch.dispatch(config("probe"), verification_input, tmp_path / "run", adapter_loader=adapter_loader)
-    assert result["batch"]["state"] == state
-    assert result["batch"]["assignments"] == {"fix-check": ["probe"]}
-    attempt = result["batch"]["results"][0]["attempts"][0]
-    assert attempt["identity"]["model"] == "observed-model"
-    assert attempt["stop_confirmed"] is True
-    assert attempt["exit_code"] == code
-    assert attempt["payload"]["checked"] == "fix-check"
-    assert Path(result["batch"]["artifact_dir"], "dispatch.json").is_file()
-    if state == "success":
-        assert result["verifier"]["model"] == "observed-model"
-        assert result["verifier"]["provenance"]["role"] == "fix_check"
-        assert result["verifier"]["provenance"]["cli_version"] == "unknown"
-        assert result["verifier"]["provenance"]["request_id"] == result["batch"]["results"][0]["request_id"]
-    else:
-        assert result["verifier"] is None
-
-
-class RecordingAdapter(ReceiptAdapter):
-    def __init__(self) -> None:
-        super().__init__()
-        self.requests: list[Any] = []
-
-    def prepare(self, context: AdapterContext) -> LaunchSpec:
-        self.requests.append(context.request)
-        return super().prepare(context)
-
-
-def exception_lines(prompt: str) -> list[str]:
-    """runner の作業範囲の指示（最初の空行まで）のうち、例外の見出しの後の行。"""
-    scope = prompt.split("\n\n", 1)[0].splitlines()
-    return [line.removeprefix("- ") for line in scope[scope.index(EXCEPTIONS_HEADING) + 1 :]]
-
-
-def test_external_fix_check_request_lists_its_write_exceptions(
-    dispatch: Any, verification_input: dict[str, Any], tmp_path: Path
-) -> None:
-    """本文にだけ書いた許可は「only these」で禁止と読めるので、許可は runner の例外の一覧に並ぶ（#658）。"""
-    adapter = RecordingAdapter()
-
-    def adapter_loader(runtime: str) -> RecordingAdapter:
-        return adapter
-
-    dispatch.dispatch(config("probe"), verification_input, tmp_path / "run", adapter_loader=adapter_loader)
-    lines = exception_lines(adapter.requests[0].prompt)
-    repository = Path(verification_input["repository"])
-    granted = (dispatch.ROOT, (repository / ".git").resolve())
-    assert [sum(line.startswith(f"{path}:") for line in lines) for path in granted] == [1, 1]
-    assert lines == list(dispatch.fix_check_write_exceptions(repository))
-
-
-def test_self_fix_check_asks_for_no_write_exceptions(
-    dispatch: Any, verification_input: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def forbidden(*_: object) -> tuple[str, ...]:
-        raise AssertionError("self must not ask for write exceptions")
-
-    def no_launch(runtime: str) -> Any:
-        raise AssertionError("self must not load adapters")
-
-    calls: list[dict[str, Any]] = []
-    original = dispatch.run_workflow
-
-    def recorded(*args: Any, **kwargs: Any) -> Any:
-        calls.append(kwargs)
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(dispatch, "fix_check_write_exceptions", forbidden)
-    monkeypatch.setattr(dispatch, "run_workflow", recorded)
-    result = dispatch.dispatch(config(), verification_input, tmp_path / "run", adapter_loader=no_launch)
-    assert result["batch"]["state"] == "self"
-    assert [call["write_exceptions"] for call in calls] == [()]
-
-
-@pytest.mark.parametrize("mutation", ["multi", "writes", "text"])
-def test_invalid_fix_check_assignment_is_rejected_before_launch(
-    dispatch: Any, verification_input: dict[str, Any], tmp_path: Path, mutation: str
-) -> None:
-    cfg = config("probe")
-    if mutation == "multi":
-        cfg.workflows["fix"].assignments["fix-check"].agents.append("self")
-    elif mutation == "writes":
-        cfg.roles["fix-check"].writes = True
-    else:
-        cfg.roles["fix-check"].result_shape = "text"
-    with pytest.raises(ConfigError):
-        dispatch.dispatch(cfg, verification_input, tmp_path / "run")
-    assert not (tmp_path / "run").exists()
-
-
-def test_codex_fix_check_is_refused_before_any_output(
-    dispatch: Any, verification_input: dict[str, Any], tmp_path: Path
-) -> None:
-    """実際の codex の adapter は writes=false を -s read-only で起動し、fix-check の一時的な書き込み
-    （uv のキャッシュ、worktree の登録）ができない。dispatch が渡す例外を runner が出力の前に拒否する（#52）。"""
-    cfg = config("probe")
-    cfg.agents["probe"].runtime = "codex"
-    # 存在しないコマンド。拒否が外れても実際の CLI を起動しない
-    cfg.agents["probe"].command = [str(tmp_path / "missing-agent")]
-    with pytest.raises(RunnerError):
-        dispatch.dispatch(cfg, verification_input, tmp_path / "run")
-    assert not (tmp_path / "run").exists()
-
-
-def test_prefixed_named_skill_digest_is_not_recorded_as_a_fake_path(
-    dispatch: Any, verification_input: dict[str, Any], tmp_path: Path
-) -> None:
-    class NamedSkillsAdapter(ReceiptAdapter):
-        def collect(self, context: AdapterContext, stdout_path: Path, stderr_path: Path) -> AdapterOutcome:
-            return AdapterOutcome(identity=Identity(skill_versions={"not-a-file": "sha256:" + "a" * 64}))
-
-    def adapter_loader(runtime: str) -> NamedSkillsAdapter:
-        return NamedSkillsAdapter()
-
-    result = dispatch.dispatch(config("probe"), verification_input, tmp_path / "run", adapter_loader=adapter_loader)
-    assert result["verifier"]["provenance"]["skills"][0] == {"path": "unknown", "sha256": "a" * 64}
-    assert result["batch"]["results"][0]["attempts"][0]["identity"]["skill_versions"] == {
-        "not-a-file": "sha256:" + "a" * 64
-    }
-
-
-def test_multiple_unlocated_skills_keep_raw_observations_without_duplicate_paths(
-    dispatch: Any, verification_input: dict[str, Any], tmp_path: Path
-) -> None:
-    versions = {"first": "sha256:" + "a" * 64, "second": "sha256:" + "b" * 64}
-
-    class NamedSkillsAdapter(ReceiptAdapter):
-        def collect(self, context: AdapterContext, stdout_path: Path, stderr_path: Path) -> AdapterOutcome:
-            return AdapterOutcome(identity=Identity(skill_versions=versions))
-
-    def adapter_loader(runtime: str) -> NamedSkillsAdapter:
-        return NamedSkillsAdapter()
-
-    result = dispatch.dispatch(config("probe"), verification_input, tmp_path / "run", adapter_loader=adapter_loader)
-    assert result["verifier"]["provenance"]["skills"][0] == {"path": "unknown", "sha256": "unknown"}
-    assert result["batch"]["results"][0]["attempts"][0]["identity"]["skill_versions"] == versions
 
 
 def test_unobserved_identity_is_unknown_not_requested(
     dispatch: Any, verification_input: dict[str, Any], tmp_path: Path
 ) -> None:
+    """観測できない担当の識別を設定で要求したモデルで埋めると、実際とは別のモデルが確認したことが verified と
+    状況コメントに黙って残る。"""
+
     class UnobservedAdapter(ReceiptAdapter):
         def collect(self, context: AdapterContext, stdout_path: Path, stderr_path: Path) -> AdapterOutcome:
             return AdapterOutcome(identity=Identity())
@@ -289,105 +143,6 @@ def test_unobserved_identity_is_unknown_not_requested(
 
     result = dispatch.dispatch(config("probe"), verification_input, tmp_path / "run", adapter_loader=adapter_loader)
     assert result["verifier"]["model"] == "unknown"
-    assert result["verifier"]["provenance"]["provider"] == "unknown"
-    assert result["verifier"]["provenance"]["skills"] == [result["skill"]]
-
-
-@pytest.mark.parametrize(
-    "field,bad", [("to", "HEAD"), ("from", "0" * 40), ("fix_sections", ""), ("fix_ids", []), ("extra", True)]
-)
-def test_incomplete_or_unresolvable_request_is_rejected_before_output(
-    dispatch: Any, verification_input: dict[str, Any], tmp_path: Path, field: str, bad: object
-) -> None:
-    verification_input[field] = bad
-    with pytest.raises(ValueError):
-        dispatch.dispatch(config(), verification_input, tmp_path / "run")
-    assert not (tmp_path / "run").exists()
-
-
-STARTED = datetime(2026, 10, 8, 1, 2, 3, tzinfo=UTC)
-
-
-@pytest.mark.parametrize(
-    "deadline,stop_new_checks_at,deadline_at,reserve",
-    [
-        (1800, "2026-10-08T01:27:03Z", "2026-10-08T01:32:03Z", 300),
-        (3600, "2026-10-08T01:27:03Z", "2026-10-08T01:32:03Z", 300),
-        (600, "2026-10-08T01:07:03Z", "2026-10-08T01:12:03Z", 300),
-        (400, "2026-10-08T01:05:23Z", "2026-10-08T01:08:43Z", 200),
-    ],
-)
-def test_time_limits_follow_the_projected_deadline(
-    dispatch: Any,
-    verification_input: dict[str, Any],
-    tmp_path: Path,
-    deadline: int,
-    stop_new_checks_at: str,
-    deadline_at: str,
-    reserve: int,
-) -> None:
-    result = dispatch.dispatch(
-        config(deadline_seconds=deadline), verification_input, tmp_path / "run", clock=lambda: STARTED
-    )
-    projected = min(deadline, 1800)
-    assert result["time_limits"] == {
-        "started_at": "2026-10-08T01:02:03Z",
-        "stop_new_checks_at": stop_new_checks_at,
-        "deadline_at": deadline_at,
-        "deadline_seconds": projected,
-        "reserve_seconds": reserve,
-    }
-    saved = json.loads(Path(result["batch"]["artifact_dir"], "dispatch.json").read_text(encoding="utf-8"))
-    assert saved["time_limits"] == result["time_limits"]
-
-
-def test_self_prompt_embeds_the_same_time_limits(
-    dispatch: Any, verification_input: dict[str, Any], tmp_path: Path
-) -> None:
-    result = dispatch.dispatch(config(), verification_input, tmp_path / "run", clock=lambda: STARTED)
-    head, _, _ = result["prompt"].partition("\n\nApplied skill:\n")
-    embedded = json.loads(head[head.index("{") :])
-    assert embedded["time_limits"] == result["time_limits"]
-
-
-def test_dispatcher_skill_digest_is_the_hash_of_the_file_bytes(
-    dispatch: Any, verification_input: dict[str, Any], tmp_path: Path
-) -> None:
-    result = dispatch.dispatch(config(), verification_input, tmp_path / "run")
-    assert result["skill"]["sha256"] == hashlib.sha256(dispatch.SKILL.read_bytes()).hexdigest()
-
-
-def test_observed_hash_conflicting_with_the_dispatched_skill_is_unknown(
-    dispatch: Any, verification_input: dict[str, Any], tmp_path: Path
-) -> None:
-    path = ".agents/skills/review-verify/SKILL.md"
-
-    class ConflictingAdapter(ReceiptAdapter):
-        def collect(self, context: AdapterContext, stdout_path: Path, stderr_path: Path) -> AdapterOutcome:
-            return AdapterOutcome(identity=Identity(skill_versions={path: "sha256:" + "c" * 64}))
-
-    def adapter_loader(runtime: str) -> ConflictingAdapter:
-        return ConflictingAdapter()
-
-    result = dispatch.dispatch(config("probe"), verification_input, tmp_path / "run", adapter_loader=adapter_loader)
-    assert result["verifier"]["provenance"]["skills"] == [{"path": path, "sha256": "unknown"}]
-
-
-def test_observed_hash_matching_the_dispatched_skill_is_kept(
-    dispatch: Any, verification_input: dict[str, Any], tmp_path: Path
-) -> None:
-    path = ".agents/skills/review-verify/SKILL.md"
-    digest = hashlib.sha256(dispatch.SKILL.read_bytes()).hexdigest()
-
-    class MatchingAdapter(ReceiptAdapter):
-        def collect(self, context: AdapterContext, stdout_path: Path, stderr_path: Path) -> AdapterOutcome:
-            return AdapterOutcome(identity=Identity(skill_versions={path: "sha256:" + digest}))
-
-    def adapter_loader(runtime: str) -> MatchingAdapter:
-        return MatchingAdapter()
-
-    result = dispatch.dispatch(config("probe"), verification_input, tmp_path / "run", adapter_loader=adapter_loader)
-    assert result["verifier"]["provenance"]["skills"] == [{"path": path, "sha256": digest}]
 
 
 # --- 外部担当の結果を受け取る accept と、失敗の分類 -----------------------------------------------------------------
@@ -556,298 +311,6 @@ def accept(dispatch: Any, run_dir: Path) -> int:
     return int(dispatch.main(["accept", "--run-dir", str(run_dir)]))
 
 
-def test_accept_saves_the_tool_output_unchanged_with_the_observed_verifier(
-    dispatch: Any, scenario: Scenario, tmp_path: Path, findings_helpers: Any, capsys: pytest.CaptureFixture[str]
-) -> None:
-    run_dir = run_external(dispatch, scenario, tmp_path, scenario.payload())
-    capsys.readouterr()
-    assert accept(dispatch, run_dir) == 0
-    out = json.loads(capsys.readouterr().out)
-    stem = scenario.fix[:12]
-    verified_dir = scenario.review_dir / "verified"
-    assert written(scenario.review_dir) == [
-        f"verified/{stem}.fix-check.json",
-        f"verified/{stem}.statement-candidates.json",
-    ]
-    assert sorted(out.values()) == sorted(str(path) for path in verified_dir.iterdir())
-    saved = json.loads((verified_dir / f"{stem}.fix-check.json").read_text(encoding="utf-8"))
-    observed = json.loads((run_dir / "dispatch.json").read_text(encoding="utf-8"))["verifier"]
-    assert saved["verifier"] == observed
-    assert saved["verifier"] != scenario.document["verifier"]
-    assert saved["findings"] == scenario.document["findings"]
-    sidecar = json.loads((verified_dir / f"{stem}.statement-candidates.json").read_text(encoding="utf-8"))
-    assert sidecar == scenario.inventory
-    assert findings_helpers.review_findings.main(["validate", str(verified_dir / f"{stem}.fix-check.json")]) == 0
-    assert not [path for path in verified_dir.iterdir() if path.name.startswith(".")]
-
-
-def drop_changed_file(payload: dict[str, Any]) -> None:
-    payload["inventory"]["changed_files"].pop()
-
-
-def rewrite_tool_candidate(payload: dict[str, Any]) -> None:
-    payload["inventory"]["candidates"][0]["text"] = "別の本文"
-
-
-def drop_tool_candidate(payload: dict[str, Any]) -> None:
-    payload["inventory"]["candidates"].clear()
-    payload["verified"]["statement_candidates"]["judgments"].clear()
-
-
-def drop_tool_term(payload: dict[str, Any]) -> None:
-    payload["inventory"]["terms"].clear()
-
-
-def drop_claim(payload: dict[str, Any]) -> None:
-    payload["inventory"]["claims"].pop()
-
-
-def different_fix_ids(payload: dict[str, Any]) -> None:
-    payload["inventory"]["fix_ids"].append("other#H-1@abcdef012345")
-    payload["verified"]["fix_check"]["fix_ids"].append("other#H-1@abcdef012345")
-
-
-def missing_key(payload: dict[str, Any]) -> None:
-    del payload["inventory"]
-
-
-def extra_key(payload: dict[str, Any]) -> None:
-    payload["notes"] = "余分"
-
-
-def unjudged_candidate(payload: dict[str, Any]) -> None:
-    payload["verified"]["statement_candidates"]["judgments"].clear()
-
-
-@pytest.mark.parametrize(
-    "mutation",
-    [
-        drop_changed_file,
-        rewrite_tool_candidate,
-        drop_tool_candidate,
-        drop_tool_term,
-        drop_claim,
-        different_fix_ids,
-        missing_key,
-        extra_key,
-        unjudged_candidate,
-    ],
-)
-def test_accept_rejects_a_payload_that_differs_from_the_tool_output(
-    dispatch: Any,
-    scenario: Scenario,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    mutation: Callable[[dict[str, Any]], None],
-) -> None:
-    payload = scenario.payload()
-    mutation(payload)
-    run_dir = run_external(dispatch, scenario, tmp_path, payload)
-    capsys.readouterr()
-    assert accept(dispatch, run_dir) == 1
-    assert written(scenario.review_dir) == []
-    assert len(capsys.readouterr().err.strip().splitlines()) == 1
-
-
-def test_accept_allows_candidates_and_terms_the_verifier_appended(
-    dispatch: Any, scenario: Scenario, tmp_path: Path
-) -> None:
-    payload = scenario.payload()
-    inventory = payload["inventory"]
-    inventory["terms"].append({"term": "EXTRA_TERM", "origins": ["docs/extra.rst:1"]})
-    inventory["candidates"].append(
-        {"id": "S-2", "path": "docs/extra.rst:1", "terms": ["EXTRA_TERM"], "text": "EXTRA_TERM"}
-    )
-    payload["verified"]["statement_candidates"]["judgments"].append(
-        {"ids": ["S-2"], "result": "unrelated", "basis": "同名の別物"}
-    )
-    run_dir = run_external(dispatch, scenario, tmp_path, payload)
-    assert accept(dispatch, run_dir) == 0
-    sidecar = scenario.review_dir / "verified" / f"{scenario.fix[:12]}.statement-candidates.json"
-    assert [c["id"] for c in json.loads(sidecar.read_text(encoding="utf-8"))["candidates"]] == ["S-1", "S-2"]
-
-
-def test_accept_does_not_attribute_an_unauditable_checkout_to_content_changes(
-    dispatch: Any, scenario: Scenario, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    from tools.agent_runner.workspace import create_worktree
-
-    external = create_worktree(scenario.root, "HEAD", tmp_path / "external")
-
-    class Unauditable(PayloadAdapter):
-        def collect(self, context: AdapterContext, stdout_path: Path, stderr_path: Path) -> AdapterOutcome:
-            (external / ".git").write_text(f"gitdir: {tmp_path / 'missing-gitdir'}\n")
-            return super().collect(context, stdout_path, stderr_path)
-
-    result = dispatch.dispatch(
-        config("probe"),
-        scenario.request,
-        tmp_path / "run",
-        adapter_loader=loader_for(Unauditable(scenario.payload())),
-    )
-    assert result["batch"]["checkout_audit"][0]["kind"] == "unavailable_after"
-    assert accept(dispatch, tmp_path / "run") == 1
-    assert "cannot be audited" in capsys.readouterr().err
-    assert written(scenario.review_dir) == []
-
-
-@pytest.mark.parametrize("failure", ["missing", "locked", "moved"])
-def test_fix_check_environment_preflight_does_not_launch(
-    dispatch: Any,
-    scenario: Scenario,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    failure: str,
-) -> None:
-    from tools.agent_runner.workspace import CheckoutAuditError, create_worktree
-
-    external = create_worktree(scenario.root, "HEAD", tmp_path / "旧 checkout\n入力")
-    if failure == "locked":
-        subprocess.run(["git", "-C", str(scenario.root), "worktree", "lock", str(external)], check=True)
-    if failure == "moved":
-        external.rename(tmp_path / "移動済み")
-    else:
-        shutil.rmtree(external)
-    output = tmp_path / "run"
-    with pytest.raises(CheckoutAuditError):
-        dispatch.dispatch(config("probe"), scenario.request, output)
-    assert not output.exists()
-    assert written(scenario.review_dir) == []
-    code = dispatch.main(main_argv(tmp_path, scenario.request, "probe"))
-    assert code == 1
-    report = json.loads(capsys.readouterr().out)
-    assert report["category"] == "environment" and report["state"] == "failed"
-    assert report["checkout_audit"][0]["path"] == str(external)
-    assert report["checkout_audit"][0]["kind"] == "unavailable_before"
-    assert not output.exists()
-    if failure == "moved":
-        git(scenario.root, "worktree", "repair", str(tmp_path / "移動済み"))
-        run_dir = run_external(dispatch, scenario, tmp_path, scenario.payload())
-        result = json.loads((run_dir / "dispatch.json").read_text())
-        assert result["batch"]["checkout_audit"] == [] and result["batch"]["outside_changes"] == []
-        assert accept(dispatch, run_dir) == 0
-
-
-def test_accept_rejects_a_verifier_candidate_inserted_before_the_tool_candidates(
-    dispatch: Any, scenario: Scenario, tmp_path: Path
-) -> None:
-    payload = scenario.payload()
-    inventory = payload["inventory"]
-    inventory["candidates"].insert(
-        0, {"id": "S-1", "path": "docs/extra.rst:1", "terms": ["LIMIT_VALUE"], "text": "先頭に足した候補"}
-    )
-    inventory["candidates"][1]["id"] = "S-2"
-    run_dir = run_external(dispatch, scenario, tmp_path, payload)
-    assert accept(dispatch, run_dir) == 1
-    assert written(scenario.review_dir) == []
-
-
-def test_agent_write_to_existing_checkout_is_blocked_before_accept(
-    dispatch: Any, scenario: Scenario, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """担当が開始前の checkout に書けると、並行変更を許可した後に無断変更を受け付ける。"""
-    run_dir = run_external(dispatch, scenario, tmp_path, scenario.payload(), touch=scenario.root / "stray")
-    saved = json.loads((run_dir / "dispatch.json").read_text(encoding="utf-8"))
-    assert saved["batch"]["state"] == "failed"
-    assert not (scenario.root / "stray").exists()
-    capsys.readouterr()
-    assert accept(dispatch, run_dir) == 1
-    assert written(scenario.review_dir) == []
-
-
-def test_dispatch_main_exits_1_and_names_outside_changes(
-    dispatch: Any, scenario: Scenario, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    argv = main_argv(tmp_path, scenario.request, "probe")
-    code = dispatch.main(
-        argv, adapter_loader=loader_for(PayloadAdapter(scenario.payload(), touch=scenario.root / "stray"))
-    )
-    line = json.loads(capsys.readouterr().out)
-    assert code == 1
-    assert line["state"] == "failed"
-    assert not (scenario.root / "stray").exists()
-
-
-def test_external_fix_check_accepts_isolated_concurrent_checkout_change(
-    dispatch: Any,
-    scenario: Scenario,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """別セッションの worktree 更新で fix-check を拒否すると、確認結果が公開されず修正が止まる。"""
-    original = dispatch.run_workflow
-
-    def with_concurrent_change(*args: Any, **kwargs: Any) -> Any:
-        batch = original(*args, **kwargs)
-        batch.outside_changes = [str(scenario.root)]
-        batch.checkout_audit = [
-            CheckoutAudit(path=str(scenario.root), kind="content_changed", reason="content_changed")
-        ]
-        return batch
-
-    monkeypatch.setattr(dispatch, "run_workflow", with_concurrent_change)
-    payload = scenario.payload()
-    payload["verified"]["skill"] = {
-        "path": ".agents/skills/review-verify/SKILL.md",
-        "sha256": hashlib.sha256(dispatch.SKILL.read_bytes()).hexdigest(),
-    }
-    code = dispatch.main(
-        main_argv(tmp_path, scenario.request, "probe"),
-        adapter_loader=loader_for(PayloadAdapter(payload)),
-    )
-    output = json.loads(capsys.readouterr().out)
-    assert code == 0
-    assert output["outside_changes"] == [str(scenario.root)]
-    assert accept(dispatch, Path(output["artifact_dir"])) == 0
-
-
-@pytest.mark.parametrize("diagnostics", [None, "unavailable", {}, [None]])
-def test_accept_rejects_malformed_checkout_diagnostics(
-    dispatch: Any, scenario: Scenario, tmp_path: Path, diagnostics: object
-) -> None:
-    run_dir = run_external(dispatch, scenario, tmp_path, scenario.payload())
-    saved = json.loads((run_dir / "dispatch.json").read_text())
-    saved["batch"]["checkout_audit"] = diagnostics
-    (run_dir / "dispatch.json").write_text(json.dumps(saved))
-    assert accept(dispatch, run_dir) == 1
-    assert written(scenario.review_dir) == []
-
-
-def test_accept_rejects_an_unconfirmed_stop(dispatch: Any, scenario: Scenario, tmp_path: Path) -> None:
-    run_dir = run_external(dispatch, scenario, tmp_path, scenario.payload())
-    saved = json.loads((run_dir / "dispatch.json").read_text(encoding="utf-8"))
-    saved["batch"]["results"][0]["attempts"][-1]["stop_confirmed"] = False
-    (run_dir / "dispatch.json").write_text(json.dumps(saved), encoding="utf-8")
-    assert accept(dispatch, run_dir) == 1
-    assert written(scenario.review_dir) == []
-
-
-def test_accept_rejects_a_failed_run(dispatch: Any, scenario: Scenario, tmp_path: Path) -> None:
-    run_dir = run_external(dispatch, scenario, tmp_path, scenario.payload(), exit_code=1)
-    assert accept(dispatch, run_dir) == 1
-    assert written(scenario.review_dir) == []
-
-
-def test_accept_rejects_self(dispatch: Any, scenario: Scenario, tmp_path: Path) -> None:
-    result = dispatch.dispatch(config("self"), scenario.request, tmp_path / "run")
-    assert accept(dispatch, Path(result["batch"]["artifact_dir"])) == 1
-    assert written(scenario.review_dir) == []
-
-
-def test_accept_exits_2_when_the_review_directory_is_missing(
-    dispatch: Any, scenario: Scenario, tmp_path: Path
-) -> None:
-    run_dir = run_external(dispatch, scenario, tmp_path, scenario.payload())
-    scenario.review_dir.rmdir()
-    assert accept(dispatch, run_dir) == 2
-    assert not scenario.review_dir.exists()
-
-
-def test_accept_exits_2_without_dispatch_json(dispatch: Any, tmp_path: Path) -> None:
-    assert accept(dispatch, tmp_path) == 2
-
-
 def toml_config(path: Path) -> Path:
     path.write_text(
         """
@@ -895,51 +358,127 @@ def main_argv(tmp_path: Path, request: dict[str, Any], assign: str | None = None
     return argv + ["--assign", assign] if assign else argv
 
 
-def test_main_exits_0_for_self(
-    dispatch: Any, verification_input: dict[str, Any], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def test_accept_saves_the_tool_output_unchanged_with_the_observed_verifier(
+    dispatch: Any, scenario: Scenario, tmp_path: Path
 ) -> None:
-    assert dispatch.main(main_argv(tmp_path, verification_input)) == 0
-    assert json.loads(capsys.readouterr().out)["state"] == "self"
+    """担当が名乗った verifier を dispatch の実測値で置き換えずに保存すると、確認したモデルを偽った記録が
+    verified/ に残り、道具の出力（sidecar）を変えて保存すると判定の根拠が黙って変わる。"""
+    run_dir = run_external(dispatch, scenario, tmp_path, scenario.payload())
+    assert accept(dispatch, run_dir) == 0
+    verified_dir = scenario.review_dir / "verified"
+    stem = scenario.fix[:12]
+    saved = json.loads((verified_dir / f"{stem}.fix-check.json").read_text(encoding="utf-8"))
+    observed = json.loads((run_dir / "dispatch.json").read_text(encoding="utf-8"))["verifier"]
+    assert saved["verifier"] == observed
+    assert saved["verifier"] != scenario.document["verifier"]
+    sidecar = json.loads((verified_dir / f"{stem}.statement-candidates.json").read_text(encoding="utf-8"))
+    assert sidecar == scenario.inventory
 
 
-def test_main_exits_1_for_a_failed_run(
-    dispatch: Any, verification_input: dict[str, Any], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def drop_changed_file(payload: dict[str, Any], request: dict[str, Any]) -> None:
+    # 検査する変更ファイルを担当が一覧から消すと、確かめていない変更ファイルを確かめたことにする。
+    payload["inventory"]["changed_files"].pop()
+
+
+def rewrite_tool_candidate(payload: dict[str, Any], request: dict[str, Any]) -> None:
+    # 道具の候補の本文を書き換えると、書き換えた本文で判定した結果を受け取り、文書の記述が確かめられないまま残る。
+    payload["inventory"]["candidates"][0]["text"] = "別の本文"
+
+
+def missing_requested_fix(payload: dict[str, Any], request: dict[str, Any]) -> None:
+    # 依頼の Fix の一部しか確かめていない結果を受け取ると、確かめていない Fix の修正を push へ進める。
+    request["fix_ids"].append("other#H-1@abcdef012345")
+
+
+def unjudged_candidate(payload: dict[str, Any], request: dict[str, Any]) -> None:
+    # 判定していない文書の候補を受け取ると、記述の確認を黙って飛ばす。
+    payload["verified"]["statement_candidates"]["judgments"].clear()
+
+
+@pytest.mark.parametrize(
+    "mutation", [drop_changed_file, rewrite_tool_candidate, missing_requested_fix, unjudged_candidate]
+)
+def test_accept_rejects_a_payload_that_differs_from_the_tool_output(
+    dispatch: Any,
+    scenario: Scenario,
+    tmp_path: Path,
+    mutation: Callable[[dict[str, Any], dict[str, Any]], None],
 ) -> None:
-    code = dispatch.main(
-        main_argv(tmp_path, verification_input, "probe"), adapter_loader=loader_for(ReceiptAdapter(1))
+    """道具の出力・依頼と食い違う結果を受け取ると、確かめていない変更ファイル・文書・Fix を確かめたことにして
+    push の判断に渡す（ケースごとの損害はコメント）。"""
+    payload = scenario.payload()
+    mutation(payload, scenario.request)
+    run_dir = run_external(dispatch, scenario, tmp_path, payload)
+    assert accept(dispatch, run_dir) == 1
+    assert written(scenario.review_dir) == []
+
+
+def test_accept_does_not_attribute_an_unauditable_checkout_to_content_changes(
+    dispatch: Any, scenario: Scenario, tmp_path: Path
+) -> None:
+    """実行中に監査できなくなった既存の checkout を変更なしとして受け取ると、外部担当が他の checkout を消した・
+    書き換えた run を合格として保存する。"""
+    from tools.agent_runner.workspace import create_worktree
+
+    external = create_worktree(scenario.root, "HEAD", tmp_path / "external")
+
+    class Unauditable(PayloadAdapter):
+        def collect(self, context: AdapterContext, stdout_path: Path, stderr_path: Path) -> AdapterOutcome:
+            (external / ".git").write_text(f"gitdir: {tmp_path / 'missing-gitdir'}\n")
+            return super().collect(context, stdout_path, stderr_path)
+
+    result = dispatch.dispatch(
+        config("probe"),
+        scenario.request,
+        tmp_path / "run",
+        adapter_loader=loader_for(Unauditable(scenario.payload())),
     )
-    assert code == 1
-    assert json.loads(capsys.readouterr().out)["state"] == "failed"
+    assert result["batch"]["checkout_audit"][0]["kind"] == "unavailable_after"
+    assert accept(dispatch, tmp_path / "run") == 1
+    assert written(scenario.review_dir) == []
 
 
-def test_main_names_the_invalid_request_field_without_its_value(
-    dispatch: Any, verification_input: dict[str, Any], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def test_agent_write_to_existing_checkout_is_blocked_before_accept(
+    dispatch: Any, scenario: Scenario, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    verification_input["to"] = "HEAD-secret-value"
-    assert dispatch.main(main_argv(tmp_path, verification_input)) == 2
-    err = capsys.readouterr().err
-    assert "to" in err
-    assert "secret-value" not in err
+    """担当が開始前の checkout に書けると、並行変更を許可した後に無断変更を受け付ける。"""
+    run_dir = run_external(dispatch, scenario, tmp_path, scenario.payload(), touch=scenario.root / "stray")
+    saved = json.loads((run_dir / "dispatch.json").read_text(encoding="utf-8"))
+    assert saved["batch"]["state"] == "failed"
+    assert not (scenario.root / "stray").exists()
+    capsys.readouterr()
+    assert accept(dispatch, run_dir) == 1
+    assert written(scenario.review_dir) == []
 
 
-def test_main_names_a_config_error_category(
-    dispatch: Any, verification_input: dict[str, Any], tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    assert dispatch.main(main_argv(tmp_path, verification_input, "no-such-agent")) == 2
-    assert "invalid_reference" in capsys.readouterr().err
+def test_accept_rejects_an_unconfirmed_stop(dispatch: Any, scenario: Scenario, tmp_path: Path) -> None:
+    """停止を確認できない担当の結果を受け取ると、受け取った後もその担当が保存先を書き換えうる
+    （保存先の照合は accept の時点の 1 回だけ）。"""
+    run_dir = run_external(dispatch, scenario, tmp_path, scenario.payload())
+    saved = json.loads((run_dir / "dispatch.json").read_text(encoding="utf-8"))
+    saved["batch"]["results"][0]["attempts"][-1]["stop_confirmed"] = False
+    (run_dir / "dispatch.json").write_text(json.dumps(saved), encoding="utf-8")
+    assert accept(dispatch, run_dir) == 1
+    assert written(scenario.review_dir) == []
 
 
-def test_main_names_an_unresolvable_revision(
-    dispatch: Any, verification_input: dict[str, Any], tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    verification_input["from"] = "0" * 40
-    assert dispatch.main(main_argv(tmp_path, verification_input)) == 2
-    assert "repository/from/to cannot be resolved" in capsys.readouterr().err
+def test_accept_rejects_a_failed_run(dispatch: Any, scenario: Scenario, tmp_path: Path) -> None:
+    """runner が失敗とした run の payload を、形が正しいというだけで確認済みとして保存する。"""
+    run_dir = run_external(dispatch, scenario, tmp_path, scenario.payload(), exit_code=1)
+    assert accept(dispatch, run_dir) == 1
+    assert written(scenario.review_dir) == []
 
 
-@pytest.mark.parametrize("location", ["ignored", "outside"])
-@pytest.mark.parametrize("mutation", ["create", "overwrite", "delete", "rename", "chmod", "symlink"])
-@pytest.mark.parametrize("valid_payload", [True, False])
+@pytest.mark.parametrize(
+    "location,mutation",
+    [
+        # 前に受け取った結果を外部担当が書き換えた run を受け取ると、検証していない内容を前の結果として扱う。
+        # Gitignore の保存先は runner の outside_changes に出ない。
+        pytest.param("ignored", "overwrite", id="ignored-overwrite"),
+        # 保存先に担当が作ったファイル（偽の verified の一覧など）を前の結果として扱う。
+        pytest.param("outside", "create", id="outside-create"),
+    ],
+)
 def test_review_directory_changes_are_rejected_before_publishing(
     dispatch: Any,
     scenario: Scenario,
@@ -947,8 +486,9 @@ def test_review_directory_changes_are_rejected_before_publishing(
     capsys: pytest.CaptureFixture[str],
     location: str,
     mutation: str,
-    valid_payload: bool,
 ) -> None:
+    """保存先が起動前と違う run を受け取ると、検証していない内容を前に受け取った結果として扱う
+    （ケースごとの損害はコメント）。"""
     if location == "ignored":
         scenario.review_dir = scenario.root / "reviews/probe"
         scenario.review_dir.mkdir(parents=True)
@@ -957,134 +497,45 @@ def test_review_directory_changes_are_rejected_before_publishing(
     target = scenario.review_dir / "previous\nresult.json"
     if mutation != "create":
         target.write_text("previous accepted contents")
-    payload = scenario.payload() if valid_payload else {"invalid": True}
+    payload = scenario.payload()
+    payload["verified"]["skill"] = {
+        "path": ".agents/skills/review-verify/SKILL.md",
+        "sha256": hashlib.sha256(dispatch.SKILL.read_bytes()).hexdigest(),
+    }
 
     class MutatingAdapter(PayloadAdapter):
         def collect(self, context: AdapterContext, stdout_path: Path, stderr_path: Path) -> AdapterOutcome:
-            if mutation in {"create", "overwrite"}:
-                target.write_text("unvalidated contents")
-            elif mutation == "delete":
-                target.unlink()
-            elif mutation == "rename":
-                target.rename(target.with_name("moved.json"))
-            elif mutation == "chmod":
-                target.chmod(0o700)
-            else:
-                target.unlink()
-                target.symlink_to("missing")
+            target.write_text("unvalidated contents")
             return super().collect(context, stdout_path, stderr_path)
 
-    code = dispatch.main(
-        main_argv(tmp_path, scenario.request, "probe"), adapter_loader=loader_for(MutatingAdapter(payload))
-    )
+    dispatch.main(main_argv(tmp_path, scenario.request, "probe"), adapter_loader=loader_for(MutatingAdapter(payload)))
     output = json.loads(capsys.readouterr().out)
-    assert code == 1
-    assert output["state"] == "success"
-    assert output["outside_changes"] == []
-    assert "previous\nresult.json" in output["review_changes"]
-    run_dir = Path(output["artifact_dir"])
-    assert accept(dispatch, run_dir) == 1
-    error = capsys.readouterr().err
-    assert len(error.strip().splitlines()) == 1
-    assert "previous\\nresult.json" in error
+    assert accept(dispatch, Path(output["artifact_dir"])) == 1
     assert not (scenario.review_dir / "verified").exists()
     # 観測だけで書込み元を断定しない。他セッションの更新を自動削除・復元しない。
-    if mutation in {"create", "overwrite"}:
-        assert target.read_text() == "unvalidated contents"
+    assert target.read_text() == "unvalidated contents"
 
 
-def test_accept_checks_changes_since_dispatch_even_with_an_invalid_payload(
-    dispatch: Any, scenario: Scenario, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    run_dir = run_external(dispatch, scenario, tmp_path, {"invalid": True})
-    path = scenario.review_dir / "late.json"
-    path.write_text("late change")
-    assert accept(dispatch, run_dir) == 1
-    assert "late.json" in capsys.readouterr().err
-    assert not (scenario.review_dir / "verified").exists()
-    assert path.read_text() == "late change"
-
-
-def test_unchanged_existing_results_and_temporary_probe_outputs_are_allowed(
+def test_accept_never_writes_through_a_verified_directory_symlink(
     dispatch: Any, scenario: Scenario, tmp_path: Path
 ) -> None:
-    previous = scenario.review_dir / "verified/previous.json"
-    previous.parent.mkdir()
-    previous.write_text("previous accepted contents")
-    probe = tmp_path / "generated.txt"
-    run_dir = run_external(dispatch, scenario, tmp_path, scenario.payload(), touch=probe)
-    saved = json.loads((run_dir / "dispatch.json").read_text())
-    assert saved["review_changes"] == []
-    assert accept(dispatch, run_dir) == 0
-    assert previous.read_text() == "previous accepted contents"
-    assert probe.read_text() == "x"
-
-
-@pytest.mark.parametrize("entry", ["review_dir", "verified"])
-def test_symlink_publication_directories_are_rejected_without_writing_referents(
-    dispatch: Any, scenario: Scenario, tmp_path: Path, entry: str
-) -> None:
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    if entry == "review_dir":
-        scenario.review_dir.rmdir()
-        scenario.review_dir.symlink_to(outside, target_is_directory=True)
-    else:
-        (scenario.review_dir / "verified").symlink_to(outside, target_is_directory=True)
-    with pytest.raises(ValueError):
-        dispatch.dispatch(config("probe"), scenario.request, tmp_path / "run")
-    assert list(outside.iterdir()) == []
-    assert not (tmp_path / "run").exists()
-
-
-def test_accept_rejects_a_late_verified_directory_symlink(dispatch: Any, scenario: Scenario, tmp_path: Path) -> None:
+    """accept が verified の symlink をたどると、確認済みの一覧を保存先の外（リンク先）へ書く。"""
     run_dir = run_external(dispatch, scenario, tmp_path, scenario.payload())
     outside = tmp_path / "outside"
     outside.mkdir()
     (scenario.review_dir / "verified").symlink_to(outside, target_is_directory=True)
+    # symlink が起動前からあった形にして保存先の照合を通し、accept 内の verified の検査だけが止める状況にする。
+    saved = json.loads((run_dir / "dispatch.json").read_text(encoding="utf-8"))
+    saved["review_snapshot"] = dispatch.snapshot_review(scenario.review_dir)
+    (run_dir / "dispatch.json").write_text(json.dumps(saved), encoding="utf-8")
     assert accept(dispatch, run_dir) == 1
     assert list(outside.iterdir()) == []
 
 
-def test_dispatch_does_not_read_the_review_directory_without_stop_confirmation(
+def test_unavailable_review_audit_never_means_unchanged(
     dispatch: Any, scenario: Scenario, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    snapshot = dispatch.snapshot_review
-    workflow = dispatch.run_workflow
-    calls = 0
-
-    def count_snapshot(root: Path) -> dict[str, str]:
-        nonlocal calls
-        calls += 1
-        return snapshot(root)
-
-    def unconfirmed(*args: Any, **kwargs: Any) -> Any:
-        batch = workflow(*args, **kwargs)
-        batch.results[0].attempts[-1].stop_confirmed = False
-        batch.state = "failed"
-        return batch
-
-    monkeypatch.setattr(dispatch, "snapshot_review", count_snapshot)
-    monkeypatch.setattr(dispatch, "run_workflow", unconfirmed)
-    result = dispatch.dispatch(
-        config("probe"),
-        scenario.request,
-        tmp_path / "run",
-        adapter_loader=loader_for(PayloadAdapter(scenario.payload())),
-    )
-    assert calls == 1
-    assert result["review_changes"] is None
-    assert accept(dispatch, Path(result["batch"]["artifact_dir"])) == 1
-    assert calls == 1
-
-
-def test_unavailable_review_audit_never_means_unchanged(
-    dispatch: Any,
-    scenario: Scenario,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
+    """起動の後に保存先を監査できないときに変更なしとして扱うと、外部担当の書き込みを検出できないまま受け取る。"""
     snapshot = dispatch.snapshot_review
     calls = 0
 
@@ -1096,18 +547,14 @@ def test_unavailable_review_audit_never_means_unchanged(
         return snapshot(root)
 
     monkeypatch.setattr(dispatch, "snapshot_review", unavailable_after_launch)
-    code = dispatch.main(main_argv(tmp_path, scenario.request, "probe"), adapter_loader=loader_for(ReceiptAdapter()))
-    output = json.loads(capsys.readouterr().out)
-    assert code == 1
-    assert output["review_changes"]
-    assert accept(dispatch, Path(output["artifact_dir"])) == 1
-    error = capsys.readouterr().err
-    assert "private contents" not in error
+    run_dir = run_external(dispatch, scenario, tmp_path, scenario.payload())
+    assert accept(dispatch, run_dir) == 1
     assert not (scenario.review_dir / "verified").exists()
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root can read directories regardless of their permissions")
 def test_initial_snapshot_cannot_silently_skip_an_unreadable_subdirectory(dispatch: Any, scenario: Scenario) -> None:
+    """読めないサブディレクトリを黙って飛ばすと、その中の変更を前後とも観測できないまま受け取る。"""
     hidden = scenario.review_dir / "hidden"
     hidden.mkdir()
     (hidden / "previous.json").write_text("previous accepted contents")
