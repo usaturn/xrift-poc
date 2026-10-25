@@ -536,15 +536,7 @@ agents = ["self"]
 class Kit:
     """テストから使う補助（importlib モードでは conftest を名前で import できないので fixture で渡す）。"""
 
-    repository: str = REPOSITORY
     number: int = NUMBER
-    branch: str = BRANCH
-    pr_url: str = PR_URL
-    records: Any = RECORDS
-
-    @staticmethod
-    def git(root: Path, *args: str) -> str:
-        return git(root, *args)
 
     @staticmethod
     def seat(head: str, name: str = "alpha", *, rerun: bool = True) -> dict[str, Any]:
@@ -559,10 +551,6 @@ class Kit:
         round_: int, head: str, outcome: str, decisions: list[dict[str, Any]], **extra: Any
     ) -> dict[str, Any]:
         return round_record(round_, head, outcome, decisions, **extra)
-
-    @staticmethod
-    def write_pair(review_dir: Path, model: str, head: str, base: str, **extra: Any) -> tuple[Path, Path]:
-        return write_pair(review_dir, model, head, base, **extra)
 
     @staticmethod
     def finalize_result(path: Path, outcome: str, *, merged: bool, stop_reason: str | None = None) -> Path:
