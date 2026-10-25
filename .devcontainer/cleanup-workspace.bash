@@ -17,6 +17,8 @@
 #   - git 作業ツリーの items/・worlds/ にデータ（親で無視したファイルを含む）があるものは削除しない
 #     （AGENTS.md「items/・worlds/ は片付けの対象にしない」。空のディレクトリだけなら対象にする）
 #   - 使用中（プロセスの cwd）と判定できるものは削除しない
+#   - 中のどれか（最上位のディレクトリ自身を含む）が MIN_AGE_DAYS 日以内に更新されたものは削除しない
+#     （最上位の mtime は、サブディレクトリの中への書き込みや既存のファイルの書き直しでは変わらない）
 #   - 経過日数のみを削除条件にしない
 #   - 冪等に何度でも実行できる。削除した対象と件数を必ず出力する
 #   - git worktree として登録済みのものは、安全条件を満たす場合に限り
@@ -30,7 +32,8 @@
 #
 # 環境変数（既定値はコンテナの実運用、テストでは差し替える）:
 #   XRIFT_POC_CLEANUP_TMP_ROOT       pr-review-* / review-fix-planning.* を探すルート（既定 /tmp）
-#   XRIFT_POC_CLEANUP_MIN_AGE_DAYS   最終更新からの最小経過日数。0 以下で無効化（既定 1）
+#   XRIFT_POC_CLEANUP_MIN_AGE_DAYS   最終更新からの最小経過日数（review-fix-planning.* は中のどれかの
+#                                  最終更新から）。0 以下で無効化（既定 1）
 #   XRIFT_POC_CLEANUP_YARN_CACHE_DIR yarn キャッシュのパス（既定 $HOME/.cache/yarn）
 #   XRIFT_POC_CLEANUP_DRY_RUN        1 で実際には削除・git worktree remove をせず
 #                                  対象だけ表示する（既定 0）
@@ -79,6 +82,19 @@ dir_is_old_enough() {
     fi
     local threshold=$((MIN_AGE_DAYS - 1))
     [ -n "$(find "$dir" -maxdepth 0 -mtime "+${threshold}" 2>/dev/null)" ]
+}
+
+# $1 の配下（$1 自身を含む）のどれも MIN_AGE_DAYS 日以内に更新されていなければ真を返す。
+# MIN_AGE_DAYS <= 0 なら常に真。最上位の mtime は、サブディレクトリの中への書き込みや既存の
+# ファイルの書き直しでは変わらないので、使っている最中の作業領域を古いと見誤らないよう配下も見る。
+# find が配下を辿りきれないとき（権限など）は判定できないので、偽を返して残す。
+tree_is_old_enough() {
+    local dir="$1" recent
+    if [ "$MIN_AGE_DAYS" -le 0 ] 2>/dev/null; then
+        return 0
+    fi
+    recent="$(find "$dir" -mtime "-${MIN_AGE_DAYS}" -print -quit 2>/dev/null)" || return 1
+    [ -z "$recent" ]
 }
 
 # $1（basename）から PR 番号を取り出して stdout に出す。
@@ -219,8 +235,8 @@ cleanup_tmp_dirs() {
             continue
         fi
 
-        if ! dir_is_old_enough "$dir"; then
-            echo "skip (younger than ${MIN_AGE_DAYS}d): ${dir}"
+        if ! tree_is_old_enough "$dir"; then
+            echo "skip (modified within ${MIN_AGE_DAYS}d somewhere inside): ${dir}"
             skipped=$((skipped + 1))
             continue
         fi
