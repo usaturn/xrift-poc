@@ -358,6 +358,51 @@ def test_keeps_uncommitted_file_in_a_deep_submodule_hidden_from_the_superproject
     assert str(worktree) in _registered_worktrees(main_repo)
 
 
+def test_keeps_review_fix_planning_clone_with_an_unpushed_commit(isolated_root: Path, tmp_path: Path) -> None:
+    """clone を消せるものとして扱うと、status が clean な push していない commit を rm -rf で黙って失う。"""
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+    seed = tmp_path / "seed"
+    _init_repo(seed)
+    subprocess.run(["git", "push", "-q", str(remote), "HEAD:refs/heads/main"], cwd=seed, check=True)
+    review_dir = isolated_root / "review-fix-planning.Clone1"
+    review_dir.mkdir()
+    clone = review_dir / "clone"
+    subprocess.run(["git", "clone", "-q", "--branch", "main", str(remote), str(clone)], check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=clone, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=clone, check=True)
+    (clone / "README.md").write_text("push していない修正\n", encoding="utf-8")
+    subprocess.run(["git", "commit", "-q", "-am", "unpushed fix"], cwd=clone, check=True)
+    unpushed = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=clone, check=True, text=True, capture_output=True
+    ).stdout.strip()
+    _make_tree_old(review_dir)
+
+    result = _run_cleanup(_env_for(isolated_root, tmp_path / "no-yarn-cache"))
+
+    assert result.returncode == 0, result.stderr
+    head = subprocess.run(["git", "-C", str(clone), "rev-parse", "HEAD"], check=False, text=True, capture_output=True)
+    assert head.stdout.strip() == unpushed
+
+
+def test_keeps_review_fix_planning_worktree_with_a_commit_only_on_its_detached_head(
+    isolated_root: Path, tmp_path: Path
+) -> None:
+    """detached HEAD の commit を確かめずに撤去すると、どの ref にも無い commit を worktree remove --force で辿れなくする。"""
+    main_repo, review_dir, worktree = _rfp_worktree(isolated_root, tmp_path, "Detach")
+    fix = worktree / "fix.txt"
+    fix.write_text("detached HEAD だけにある修正\n", encoding="utf-8")
+    subprocess.run(["git", "add", "fix.txt"], cwd=worktree, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "fix on detached HEAD"], cwd=worktree, check=True)
+    _make_tree_old(review_dir)
+
+    result = _run_cleanup(_env_for(isolated_root, tmp_path / "no-yarn-cache"))
+
+    assert result.returncode == 0, result.stderr
+    assert fix.read_text(encoding="utf-8") == "detached HEAD だけにある修正\n"
+    assert str(worktree) in _registered_worktrees(main_repo)
+
+
 def test_releases_review_fix_planning_worktree_with_only_other_ignored_files(
     isolated_root: Path, tmp_path: Path
 ) -> None:

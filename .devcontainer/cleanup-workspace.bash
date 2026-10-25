@@ -20,8 +20,11 @@
 #   - 中の git 作業ツリー（.git）は深さに関係なく探し、すべて検査してから撤去する。
 #     1 つでも次に当たれば、何も撤去せずに残す
 #     - 未コミット変更がある、または git 状態（.git の一覧を含む）を判定できない
+#     - 自分の履歴を持つリポジトリ（clone・submodule など。git-dir と common-dir が同じ）である
+#       （rm -rf すると push していない commit や stash ごと消える）
 #     - items/・worlds/ にデータ（親で無視したファイルを含む）がある
 #       （AGENTS.md「items/・worlds/ は片付けの対象にしない」。空のディレクトリだけなら対象にする）
+#     - detached HEAD の commit が、どの ref にも含まれない（worktree を撤去すると辿れなくなる）
 #   - 冪等に何度でも実行できる。削除した対象と件数を必ず出力する
 #   - git worktree として登録済みのものは、安全条件を満たす場合に限り
 #     `git worktree remove --force`（1 回。locked worktree は外さない）で撤去し、管理状態と整合させる。
@@ -148,12 +151,14 @@ release_registered_worktree() {
 # $1 配下に見つかった git 作業ツリーを、深さに関係なくすべて検査してから撤去する。
 # 次のどれかが 1 つでもあれば、何も撤去せずに 1 を返す（呼び出し元はディレクトリ全体を削除しない）。
 #   - .git の一覧を確かめられない、git 状態が判定不能、または未コミット変更がある
+#   - 自分の履歴を持つリポジトリ（clone・submodule など）である
 #   - items/・worlds/ にデータ（無視されたファイルを含む）がある
-# すべての検査を通ったら、登録済みでクリーンなものを内側から git worktree remove で撤去する
+#   - detached HEAD の commit がどの ref にも含まれない
+# すべての検査を通ったら、登録済みでクリーンな linked worktree を内側から git worktree remove で撤去する
 # （失敗したら 1 を返す）。未登録でクリーン（既に手動 remove 済みの抜け殻）なものは何もしない。
 # すべて安全に処理できたら 0 を返す（この後ディレクトリ全体を rm -rf してよい）。
 resolve_git_worktrees_inside() {
-    local dir="$1" git_entry gitdir real_gitdir status_out product_out i
+    local dir="$1" git_entry gitdir real_gitdir git_dir common_dir status_out product_out head_rc contained i
     local -a git_entries=() releasable=()
 
     # 削除・remove で配下を変更しながら同時に find で辿ると事故りやすいため、
@@ -177,6 +182,18 @@ resolve_git_worktrees_inside() {
 
         real_gitdir="$(cd "$gitdir" && pwd -P)"
 
+        # clone・submodule などは、自分の履歴（git-dir）を作業ツリーと一緒に持つ。rm -rf や --force の撤去で、
+        # push していない commit や stash ごと消えるので残す。linked worktree は git-dir と common-dir が違う。
+        if ! git_dir="$(git -C "$real_gitdir" rev-parse --path-format=absolute --git-dir 2>/dev/null)" ||
+            ! common_dir="$(git -C "$real_gitdir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
+            echo "block (unverifiable git state): ${real_gitdir}" >&2
+            return 1
+        fi
+        if [ "$git_dir" = "$common_dir" ]; then
+            echo "block (repository with its own history, such as a clone or a submodule): ${real_gitdir}" >&2
+            return 1
+        fi
+
         status_out="$(git -C "$real_gitdir" status --porcelain --untracked-files=normal 2>/dev/null)" || {
             echo "block (unverifiable git state): ${real_gitdir}" >&2
             return 1
@@ -198,6 +215,28 @@ resolve_git_worktrees_inside() {
             echo "block (product data in items/ or worlds/): ${real_gitdir}" >&2
             return 1
         fi
+
+        # detached HEAD で作った commit は、linked worktree を撤去すると ref からも reflog からも辿れなくなる。
+        # HEAD がどの ref にも含まれなければ残す（branch の上なら、撤去しても commit は branch に残る）。
+        head_rc=0
+        git -C "$real_gitdir" symbolic-ref -q HEAD >/dev/null 2>&1 || head_rc=$?
+        case "$head_rc" in
+            0) ;;
+            1)
+                contained="$(git -C "$real_gitdir" for-each-ref --contains HEAD --count=1 --format='%(refname)' 2>/dev/null)" || {
+                    echo "block (unverifiable git state): ${real_gitdir}" >&2
+                    return 1
+                }
+                if [ -z "$contained" ]; then
+                    echo "block (commits on a detached HEAD that no ref contains): ${real_gitdir}" >&2
+                    return 1
+                fi
+                ;;
+            *)
+                echo "block (unverifiable git state): ${real_gitdir}" >&2
+                return 1
+                ;;
+        esac
 
         if worktree_is_registered "$real_gitdir"; then
             releasable+=("$real_gitdir")
@@ -253,7 +292,7 @@ cleanup_tmp_dirs() {
         fi
 
         if ! resolve_git_worktrees_inside "$dir"; then
-            echo "skip (dirty, unverifiable, or product-data git worktree inside): ${dir}"
+            echo "skip (a git work tree inside must be kept): ${dir}"
             skipped=$((skipped + 1))
             continue
         fi
