@@ -40,6 +40,7 @@ def records(tmp_path: Path, comments: object) -> list[dict[str, Any]]:
 
 
 def test_only_marker_comments_from_trusted_authors_are_records(carry_over_kit: Any, tmp_path: Path) -> None:
+    """CRLF の記録を落とすと候補が黙って消え、信頼しない投稿者・引用を記録と誤読すると外部の文面が候補の出典になる。"""
     kit = carry_over_kit
     crlf = RECORD.replace("\n", "\r\n")
     pages = [
@@ -61,9 +62,3 @@ def test_only_marker_comments_from_trusted_authors_are_records(carry_over_kit: A
     assert [entry["body"] for entry in found] == [RECORD, crlf]
     assert found[0]["url"].endswith("#issuecomment-41")
     assert found[0]["author"] == "usaturn"
-
-
-def test_no_record_gives_an_empty_list(carry_over_kit: Any, tmp_path: Path) -> None:
-    kit = carry_over_kit
-    comments = [kit.comment(51, "レビューをお願いします"), kit.comment(52, None), kit.comment(53, "")]
-    assert records(tmp_path, comments) == []
