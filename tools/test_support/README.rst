@@ -10,7 +10,8 @@ test_support: 実環境の形をした共有 fixture
 ====
 
 ``tools/test_support`` は、 xrift-poc の実環境の形をした入力を共有するテスト補助パッケージである。
-``items/`` ・ ``worlds/`` を無視する環境リポジトリの main checkout、 Git の有無と origin を選べる制作物、 ``.venv`` の無い新規 worktree、そこで失敗する ``uv run`` 、改行・タブ・CRLF・非 ASCII を含む複数行の自由記述を、ローカルの Git とオフライン指定だけで再現する。
+``items/`` ・ ``worlds/`` を無視する環境リポジトリの main checkout、 Git の有無と origin を選べる制作物、 ``.venv`` の無い新規 worktree、改行・タブ・CRLF・非 ASCII を含む複数行の自由記述を、ローカルの Git だけで再現する。
+issue-queue の CLI と XRift のツールの導入のテストのために、外部のサービスの代わりになる fake も置く。
 ネットワーク・実 PR は使わない。
 
 .. _test_support_provides:
@@ -27,22 +28,19 @@ test_support: 実環境の形をした共有 fixture
     ``create_owned_worktree`` は ``git worktree add --detach`` で ``.venv`` を持たない worktree を作る。
 
 ``tools.test_support.texts``
-    ``FINDING_CONTENT`` と ``FINDING_REASON`` は、改行・タブ・CRLF・非 ASCII 文字を含み、識別子として解釈できない（ ``str.isidentifier()`` が ``False`` ）自由記述のサンプル。
+    ``FINDING_CONTENT`` は、改行・タブ・CRLF・非 ASCII 文字を含み、識別子として解釈できない（ ``str.isidentifier()`` が ``False`` ）レビュー指摘の本文のサンプル。
 
-``tools.test_support.worktree_race``
-    ``plant_racer`` は、並行した ``git worktree add`` の書きかけの登録（ ``commondir`` が空）を ``<repository>/.git/worktrees/<name>`` に置き、その ``commondir`` のパスを返す。
-    書き終えるまで、同じリポジトリの ``git worktree add`` は登録の一覧を読むところで、何も作らずに終了コード 128 で止まる（#68）。
-    ``commondir`` に ``../..`` を書くと、相手が書き終えた状態になる。
-    本物の ``git worktree add`` と同じく ``locked`` を置き、別の場所で作ってから rename で一括で置くので、 ``git commit`` が切り離して起動する自動 maintenance の prune に消されない（#88）。
+``tools.test_support.issue_queue``
+    ``make_queue_env`` は、 issue-queue の CLI（ ``.agents/skills/issue-queue/scripts/queue.py`` ）を動かす環境を作り、 ``QueueEnv`` を返す。
+    GitHub の URL を bare の remote に差し替えた環境リポジトリを作り、偽の ``gh`` ・ ``herdr`` （ ``FAKE_CLI`` 。状態を ``services.json`` に読み書きする）を ``PATH`` の先頭に置く。
+    ``QueueEnv`` は CLI の呼び出しと、 PR のマージ・子の pane の状態・報告など、各工程の前提を作る操作を持つ。
 
-``tools.test_support.uv``
-    ``offline_uv_env`` は ``UV_OFFLINE=1`` ・隔離した ``UV_CACHE_DIR`` ・ ``UV_PYTHON=<テスト実行中の interpreter>`` を立てた環境変数を返す。
-    テストを動かしている venv の ``bin`` と、親ディレクトリに ``pyvenv.cfg`` がある別の venv の ``bin`` は ``PATH`` から除く。残っていると、 ``uv run`` が spawn するコマンドが漏れた venv から解決され、 venv 無し worktree での失敗を再現できない。
-    ``UV_PROJECT_ENVIRONMENT`` も外す。 外側の実行環境が設定する別の venv が残っていると、 uv が worktree の ``.venv`` の代わりにそれを使い、同じく再現できない。
-    ``run_uv_offline`` はその環境で ``uv`` を起動し、 ``CompletedProcess`` を返す。
+``tools.test_support.xrift``
+    ``SKILLS_NPX_FAKE`` は、 ``npx -y skills@<v> add https://github.com/<repo>/tree/<ref> ...`` を受けて、 skills CLI と同じ配置（ ``.agents/skills/<name>`` 、 ``.claude/skills/<name>`` のリンク、 ``skills-lock.json`` ）を作る偽の ``npx`` の本文。
+    環境変数 ``FAKE_SKILLS_MODE`` で、 lock の ref が固定したコミットと違う形（ ``wrong-ref`` ）と、必須のスキルが欠ける形（ ``missing`` ）を選ぶ。
 
 ``tools.test_support.plugin``
-    pytest fixture ``env_repo_factory`` ・ ``env_repo`` ・ ``owned_worktree`` ・ ``outside_runner`` ・ ``outside_codex`` 。制作物は ``create_product`` を直接呼んで作る。
+    pytest fixture ``outside_runner`` ・ ``outside_codex`` 。
     ``outside_runner`` は、テストの中だけ ``AGENT_RUNNER_DEPTH`` を外す。
     runner の担当（ ``AGENT_RUNNER_DEPTH=1`` ）が関連テストを実行しても、偽の adapter・偽の CLI だけを起動するテストが ``nested_invocation`` で落ちないようにする。
     本物の担当を起動しうるテストには使わない。
@@ -59,20 +57,7 @@ test_support: 実環境の形をした共有 fixture
 fixture 経由
 ------------
 
-test module の先頭でプラグインを宣言する ::
-
-    pytest_plugins = ("tools.test_support.plugin",)
-
-
-    def test_something(env_repo: EnvRepo, owned_worktree: Path) -> None:
-        product = create_product(env_repo.root, "worlds", "空白 ワールド", git=False)
-
-複数個の構築には ``env_repo_factory`` を使う ::
-
-    def test_two(env_repo_factory: Callable[[], EnvRepo]) -> None:
-        first, second = env_repo_factory(), env_repo_factory()
-
-偽の担当だけを起動する test module は、モジュール単位で ``outside_runner`` を使う。
+偽の担当だけを起動する test module は、先頭でプラグインを宣言し、モジュール単位で ``outside_runner`` を使う。
 モジュールに後から足したテストにも効く ::
 
     pytest_plugins = ("tools.test_support.plugin",)
@@ -90,10 +75,6 @@ test module の先頭でプラグインを宣言する ::
 
     env = create_env_repo(tmp_path / "repo")
     worktree = create_owned_worktree(env.root, tmp_path / "owned")
-    result = run_uv_offline(
-        ["run", "--project", "tools/devenv", "--no-sync", "pytest"],
-        cwd=worktree,
-        cache_dir=tmp_path / "uv-cache",
-    )
+    product = create_product(env.root, "worlds", "空白 ワールド", git=False)
 
 ``create_env_repo`` は既定で ``tools/devenv/pyproject.toml`` と ``tools/devenv/uv.lock`` を実 checkout からコピーしてコミットする（ ``copy_paths`` で変えられる）。

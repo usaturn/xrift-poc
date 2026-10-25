@@ -100,38 +100,6 @@ class QueueEnv:
     def launch(self, run: str) -> dict[str, Any]:
         return self.call("launch", "--run", run)["run"]["attempts"][-1]
 
-    def interrupt_launch(self, run: str, boundary: str) -> None:
-        """本来のsaveを実行した直後にプロセスを中断する。保存状態を捏造しない。"""
-        script = """
-import sys
-sys.path.insert(0, sys.argv[1])
-from issue_queue.cli import main
-from issue_queue.storage import Store
-run, boundary = sys.argv[2:]
-original = Store.save
-def save(self, path, state):
-    original(self, path, state)
-    attempt = state.current()
-    if attempt and attempt.launch == boundary:
-        raise KeyboardInterrupt("interrupted after persisted boundary")
-Store.save = save
-sys.argv = ["queue.py", "launch", "--run", run]
-main()
-"""
-        result = subprocess.run(
-            [sys.executable, "-c", script, str(CLI.parent), run, boundary],
-            cwd=self.root,
-            env=self.env,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert result.returncode != 0 and "KeyboardInterrupt" in result.stderr, (
-            result.returncode,
-            result.stdout[:1000],
-            result.stderr[-1000:],
-        )
-
     def child(self, attempt: dict[str, Any], state: str) -> None:
         data = self.data()
         data["panes"][attempt["pane_id"]]["agent_status"] = state
@@ -232,16 +200,6 @@ main()
         followup = self.launch(run)
         self.ack(run, followup)
         return run, followup
-
-    def cleanup(self) -> tuple[str, dict[str, Any]]:
-        """持ち越しを終えて片付けの子を起動し、ackまで進める。"""
-        run, followup = self.followup()
-        self.report(run, followup)
-        self.child(followup, "done")
-        self.call("advance", "--run", run)
-        cleanup = self.launch(run)
-        self.ack(run, cleanup)
-        return run, cleanup
 
 
 def make_queue_env(base: Path) -> QueueEnv:

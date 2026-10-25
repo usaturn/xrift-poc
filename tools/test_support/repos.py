@@ -53,7 +53,6 @@ class EnvRepo:
     """`create_env_repo` が作る環境リポジトリの main checkout。"""
 
     root: Path
-    head: str
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -75,7 +74,6 @@ def _configure(repo: Path) -> None:
 def create_env_repo(
     base_dir: Path,
     *,
-    origin_url: str = ENV_ORIGIN,
     copy_paths: Sequence[str] = ("tools/devenv/pyproject.toml", "tools/devenv/uv.lock"),
 ) -> EnvRepo:
     """`base_dir/xrift-poc` に環境リポジトリの main checkout を作る。
@@ -101,14 +99,14 @@ def create_env_repo(
     _git(root, "add", "-A")
     _git(root, "commit", "-qm", "fixture env commit")
     head = _git(root, "rev-parse", "HEAD")
-    _git(root, "remote", "add", "origin", origin_url)
+    _git(root, "remote", "add", "origin", ENV_ORIGIN)
     _git(root, "update-ref", "refs/remotes/origin/main", head)
     _git(root, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
     _git(root, "checkout", "-q", "--detach", "origin/main")
     _git(root, "branch", "-q", "-D", "main")
     for kind in ("items", "worlds"):
         (root / kind).mkdir()
-    return EnvRepo(root=root, head=head)
+    return EnvRepo(root=root)
 
 
 def create_product(
