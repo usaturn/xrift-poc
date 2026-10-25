@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
@@ -352,3 +353,38 @@ def test_scan_context_owner_and_api_failures_are_not_approval(tmp_path: Path) ->
     with pytest.raises(target.TargetError) as excinfo:
         target.scan_context(value, root, runner=FakeGh({}))
     assert error_code(excinfo) == target.EXIT_OWNER
+
+
+def isolate_git_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """利用者の global・system の git 設定（insteadOf・pushInsteadOf）で、push 先の展開が変わらないようにする。"""
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+
+def test_scan_context_rejects_push_rewritten_to_another_repository(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """pushInsteadOf で push 先だけが別のリポジトリに書き換わると、PR の base の履歴を検査せずに送る。"""
+    isolate_git_config(monkeypatch)
+    root, value, pr = scan_checkout(tmp_path)
+    git(root, "commit", "--allow-empty", "-m", "fix")
+    git(root, "config", "url.https://github.com/someone/.pushInsteadOf", "https://github.com/usaturn/")
+
+    with pytest.raises(target.TargetError) as excinfo:
+        target.scan_context(value, root, runner=gh_for(pr))
+    assert error_code(excinfo) == target.EXIT_CLONE
+
+
+def test_scan_context_destination_only_checks_every_push_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """2 つ目の push 先を見ないと未検査の commit を別のリポジトリへ送り、URL を表示すると認証情報が出る。"""
+    isolate_git_config(monkeypatch)
+    root = make_parent(tmp_path / "空白 と 日本語")
+    userinfo = "agent:" + "-".join(["not", "a", "real", "token"])
+    git(root, "config", "--add", "remote.origin.pushurl", PARENT_ORIGIN)
+    git(root, "config", "--add", "remote.origin.pushurl", f"https://{userinfo}@github.com/someone/xrift-poc.git")
+
+    assert target.main(["scan-context", "--destination-only", "--checkout", str(root)]) == target.EXIT_CLONE
+    captured = capsys.readouterr()
+    assert userinfo not in captured.err + captured.out

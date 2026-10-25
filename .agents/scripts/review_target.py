@@ -7,6 +7,7 @@
 - ``review-dir <PR|パス> [--for-planning]``: 保存済みのレビューディレクトリを探す（review-fix-planning・review-verify）
 - ``clone --target <JSON> --dest <パス> [--checkout-branch]``: 対象の PR のリポジトリを一時 clone する
 - ``scan-context --target <JSON> --checkout <パス>``: push 前に PR と checkout を照合し base/head ref を返す
+- ``scan-context --destination-only --checkout <パス>``: push 前に、push 先が fetch 先と同じリポジトリかだけを確かめる
 
 PR の指定は、番号（``3``・``#3``。親の origin のリポジトリの PR）か PR の URL（そのリポジトリの PR）。
 保存先は親の main worktree（``agent_tmp.py root`` と同じ）の
@@ -711,17 +712,57 @@ def clone_repository(target: CloneTarget, dest: Path, *, checkout_branch: bool) 
     return dest
 
 
+def _require_git_root(checkout: Path) -> Path:
+    root = checkout.resolve()
+    if _toplevel(root) != root:
+        raise TargetError(EXIT_CLONE, f"Git の root で検査してください: {root}")
+    return root
+
+
+def check_push_destination(checkout: Path) -> None:
+    """``git push origin`` の送り先が、どれも ``git fetch origin`` の取得元と同じリポジトリであることを確かめる。
+
+    検査の範囲は fetch 先から取得した base から決めるので、push 先が別のリポジトリだと、push 先に無い base の
+    履歴を検査せずに送る（Issue #111）。行き先そのものを比べるので、``origin_repository`` と違い、insteadOf・
+    pushInsteadOf・pushurl を展開した ``git remote get-url`` の値を使う。同じ URL（insteadOf で fetch と push が
+    同じ先に書き換わる場合を含む）か、同じ GitHub のリポジトリ（https と ssh の違い）なら通す。
+    URL は認証情報を含みうるので、表示には読めた ``owner/repo`` だけを使う。
+    """
+    fetched = _git(checkout, "remote", "get-url", "origin")
+    pushed = _git(checkout, "remote", "get-url", "--push", "--all", "origin")
+    fetch_url = fetched.stdout.rstrip("\n")
+    push_urls = pushed.stdout.splitlines()
+    if fetched.returncode or pushed.returncode or not fetch_url or not push_urls:
+        raise TargetError(EXIT_CLONE, "origin の fetch 先・push 先を読めません")
+    fetch_repository = github_repository(fetch_url)
+    for push_url in push_urls:
+        push_repository = github_repository(push_url)
+        if push_url == fetch_url or same_repository(push_repository, fetch_repository):
+            continue
+        unreadable = "GitHub のリポジトリとして読めない URL"
+        raise TargetError(
+            EXIT_CLONE,
+            f"origin の push 先（{push_repository or unreadable}）が、fetch 先"
+            f"（{fetch_repository or unreadable}）と同じリポジトリではありません。"
+            "検査の範囲は fetch 先の base から決めるので、"
+            "このまま push すると push 先に無い commit を検査せずに送ります。"
+            "remote.origin.pushurl・url.<base>.pushInsteadOf・remote.origin.url の複数の値を見直してください",
+        )
+
+
 def scan_context(value: object, checkout: Path, *, runner: Runner = _run) -> dict[str, str]:
-    """解決済み PR と送信先・履歴を再確認する。場所の許可は scan_before_push の route 検査が担当する。"""
+    """解決済み PR と送信先・履歴を再確認する。場所の許可は scan_before_push の route 検査が担当する。
+
+    送信先は、remote の設定値（url・pushurl が PR の repository の単一の URL）と、展開した push 先
+    （``check_push_destination``）の両方で確かめる。
+    """
     snapshot = CloneTarget.from_json(value)
     data = cast(dict[str, Any], value)
     base_ref = data.get("base_ref")
     if not isinstance(base_ref, str) or not base_ref:
         raise TargetError(EXIT_USAGE, "--target に base_ref がありません")
     require_planning_owner(snapshot.repository)
-    checkout = checkout.resolve()
-    if _toplevel(checkout) != checkout:
-        raise TargetError(EXIT_CLONE, f"Git の root で検査してください: {checkout}")
+    checkout = _require_git_root(checkout)
     for branch in (base_ref, snapshot.head_ref):
         if _git(checkout, "check-ref-format", f"refs/heads/{branch}").returncode:
             raise TargetError(EXIT_USAGE, f"ブランチ名として使えません: {branch!r}")
@@ -739,6 +780,7 @@ def scan_context(value: object, checkout: Path, *, runner: Runner = _run) -> dic
                 EXIT_CLONE,
                 f"{key} が PR の repository と一致する単一の URL ではありません",
             )
+    check_push_destination(checkout)
 
     pr = fetch_pull_request(snapshot.repository, snapshot.number, runner=runner)
     if (
@@ -763,6 +805,12 @@ def scan_context(value: object, checkout: Path, *, runner: Runner = _run) -> dic
     }
 
 
+def destination_context(checkout: Path) -> dict[str, str]:
+    """PR を照合せず、push 先が fetch 先と同じリポジトリかだけを確かめる（scan_before_push の引数なしの入口）。"""
+    check_push_destination(_require_git_root(checkout))
+    return {}
+
+
 # CLI
 
 
@@ -781,8 +829,14 @@ def main(argv: Sequence[str] | None = None, *, runner: Runner = _run) -> int:
     clone_parser.add_argument("--dest", required=True, help="new directory for the clone")
     clone_parser.add_argument("--checkout-branch", action="store_true", help="check out the head branch to fix it")
     scan_parser = commands.add_parser("scan-context", help="check the PR and push destination before secret scanning")
-    scan_parser.add_argument("--target", required=True, help="JSON printed by resolve or review-dir")
-    scan_parser.add_argument("--checkout", required=True, help="Git root containing the fix commits")
+    scan_input = scan_parser.add_mutually_exclusive_group(required=True)
+    scan_input.add_argument("--target", help="JSON printed by resolve or review-dir")
+    scan_input.add_argument(
+        "--destination-only",
+        action="store_true",
+        help="check only that origin pushes to the repository it fetches from (no PR)",
+    )
+    scan_parser.add_argument("--checkout", required=True, help="Git root that pushes the scanned commits")
     args = parser.parse_args(argv)
     try:
         if args.command == "resolve":
@@ -791,6 +845,8 @@ def main(argv: Sequence[str] | None = None, *, runner: Runner = _run) -> int:
             result = find_review_directory(
                 args.target, parent_root=default_parent_root(), for_planning=args.for_planning, runner=runner
             )
+        elif args.command == "scan-context" and args.destination_only:
+            result = destination_context(Path(args.checkout))
         else:
             try:
                 value: object = json.loads(args.target)
