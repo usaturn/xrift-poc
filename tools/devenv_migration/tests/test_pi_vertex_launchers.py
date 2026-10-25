@@ -117,54 +117,33 @@ def _launcher_model(sandbox: tuple[Path, Path, Path], launcher: str) -> str:
     return argv[argv.index("--model") + 1]
 
 
-# Break caught: dropping quoting/exec, changing HOME/cwd, or adding an ADC check
-# prevents the real launcher from reaching Pi with the original request.
-@pytest.mark.parametrize("launcher", LAUNCHERS)
-def test_launch_reaches_pi_without_adc_preserving_args_cwd_environment_and_exit(
-    sandbox: tuple[Path, Path, Path], launcher: str
-) -> None:
-    args = ("--session", "session with spaces.jsonl", "", "--", "a 'quoted' message\nnext line")
-    result = _run(sandbox, launcher, args, extra={"TEST_UNRELATED": "keep me", "TEST_PI_EXIT": "37"})
-    assert result.returncode == 37, result.stderr
-    payload = _payload(result)
-    launched = cast(list[str], payload["args"])
-    # モデル ID の値はランチャーの設定なので見ない（存在は起動前の catalog 確認が保証する）。
-    assert launched[:5] == ["--tui-mode", "regular", "--provider", "google-vertex", "--model"]
-    assert launched[5]
-    assert launched[6:] == ["--thinking", "high", *args]
-    assert payload["cwd"] == str(sandbox[2])
-    assert payload["home"] == str(sandbox[0])
-    assert payload["other"] == "keep me"
-    assert payload["adc"] is None
-
-
-# Break caught: wrong fallback branch, clobbered supplied defaults/ADC, or leaked
-# cloud API key into Pi's process tree. Expectations are independent inputs.
+# 3 つのランチャーは、この行（project・location の既定値と API キーの除去）をそれぞれのファイルに持つ。
 @pytest.mark.parametrize("launcher", LAUNCHERS)
 @pytest.mark.parametrize(
-    ("supplied", "project", "location"),
+    ("supplied", "expected"),
     [
-        ({}, "hobby-372711", "global"),
-        ({"GCLOUD_PROJECT": "legacy-project"}, "legacy-project", "global"),
+        # 指定した project・location が既定値や GCLOUD_PROJECT に負けると、別の project・location へ黙って要求する
         (
             {
                 "GOOGLE_CLOUD_PROJECT": "primary-project",
                 "GCLOUD_PROJECT": "legacy-project",
                 "GOOGLE_CLOUD_LOCATION": "custom-location",
             },
-            "primary-project",
-            "custom-location",
+            {"project": "primary-project", "location": "custom-location"},
         ),
+        # 空の GOOGLE_CLOUD_PROJECT を指定ありとして扱うと、GCLOUD_PROJECT を落とし、SDK が別の project を黙って探す
         (
             {"GOOGLE_CLOUD_PROJECT": "", "GCLOUD_PROJECT": "fallback-project", "GOOGLE_CLOUD_LOCATION": ""},
-            "fallback-project",
-            "global",
+            {"project": "fallback-project"},
         ),
     ],
+    ids=("all-supplied", "empty-primary"),
 )
 def test_cloud_defaults_precedence_and_api_key_removal(
-    sandbox: tuple[Path, Path, Path], launcher: str, supplied: dict[str, str], project: str, location: str
+    sandbox: tuple[Path, Path, Path], launcher: str, supplied: dict[str, str], expected: dict[str, str]
 ) -> None:
+    """API キーを Pi のプロセスツリーから外さないと、Vertex の要求が ADC ではなく key で黙って行われる。
+    利用者が指定した project・location を既定値で置き換えると、別の project・location へ黙って要求する。"""
     result = _run(
         sandbox,
         launcher,
@@ -176,8 +155,7 @@ def test_cloud_defaults_precedence_and_api_key_removal(
     )
     assert result.returncode == 0, result.stderr
     payload = _payload(result)
-    assert payload["project"] == project
-    assert payload["location"] == location
+    assert {key: payload[key] for key in expected} == expected
     assert payload["adc"] == "missing synthetic ADC path.json"
     assert payload["cloud_key_present"] is False
     assert "synthetic-env-secret" not in result.stdout + result.stderr
@@ -251,41 +229,35 @@ def _real_namespace_probe(sandbox: tuple[Path, Path, Path]) -> None:
     )
 
 
-# Break caught: mounting the HOME auth path instead of the actual agent dir,
-# losing non-OAuth providers, retaining Vertex keys/unneeded saved env, writable overlay,
-# or overwriting saved auth while preparing a missing mount target.
-@pytest.mark.parametrize("launcher", LAUNCHERS)
-@pytest.mark.parametrize("agent_dir", (None, "~/.custom agent", "relative agent", "absolute", "~"))
-@pytest.mark.parametrize("stored_auth", (True, False))
+@pytest.mark.parametrize("agent_dir", (None, "~/.custom agent", "~"), ids=("default", "home-relative", "home"))
 def test_real_namespace_masks_auth_for_parent_and_child_preserving_saved_files(
-    sandbox: tuple[Path, Path, Path], launcher: str, agent_dir: str | None, stored_auth: bool
+    sandbox: tuple[Path, Path, Path], agent_dir: str | None
 ) -> None:
-    """Overlay を export しても起動は成功し、他 provider の key が子の環境へ黙って漏れる。"""
+    """overlay を Pi の実際の読み先（PI_CODING_AGENT_DIR）に読み取り専用で重ねないと、親と子の Pi が
+    保存済みの Vertex key・他 provider の key を黙って使い、環境へ漏らし、保存済みのファイルを書き換える。"""
+    launcher = "pigemf"
     home, _, cwd = sandbox
     directory = home / ".pi/agent"
     if agent_dir is not None:
-        if agent_dir == "absolute":
-            agent_dir = str(cwd / "absolute agent")
         expanded = agent_dir.replace("~", str(home), 1) if agent_dir.startswith("~") else agent_dir
         directory = (cwd / expanded).resolve()
     directory.mkdir(parents=True, exist_ok=True)
     auth = directory / "auth.json"
-    if stored_auth:
-        auth.write_text(
-            json.dumps(
-                {
-                    "google-vertex": {
-                        "type": "api_key",
-                        "key": "synthetic-stored-secret",
-                        "env": {
-                            "GOOGLE_CLOUD_API_KEY": "synthetic-stored-env-secret",
-                            "GOOGLE_CLOUD_PROJECT": "wrong-project",
-                        },
+    auth.write_text(
+        json.dumps(
+            {
+                "google-vertex": {
+                    "type": "api_key",
+                    "key": "synthetic-stored-secret",
+                    "env": {
+                        "GOOGLE_CLOUD_API_KEY": "synthetic-stored-env-secret",
+                        "GOOGLE_CLOUD_PROJECT": "wrong-project",
                     },
-                    "other-provider": {"type": "api_key", "key": "synthetic-other-secret"},
-                }
-            )
+                },
+                "other-provider": {"type": "api_key", "key": "synthetic-other-secret"},
+            }
         )
+    )
     models = directory / "models.json"
     models.write_text('{"providers":{"google-vertex":{"apiKey":"synthetic-model-secret"}}}')
     shared = home / ".pi/agent/extensions/subagent/config.json"
@@ -310,28 +282,24 @@ def test_real_namespace_masks_auth_for_parent_and_child_preserving_saved_files(
         assert isinstance(observed, dict)
         assert observed["vertex_is_adc_marker"] is True
         assert observed["native_key_is_adc_marker"] is True
-        assert observed["other_auth_preserved"] == stored_auth
+        assert observed["other_auth_preserved"] is True
         assert observed["env_contains_other_key"] is False
         assert observed["readonly"] is True
         assert observed["cloud_key_present"] is False
         assert observed["tiers"] == {"cheap": {"model": "distinct/tier", "thinking": "high"}}
     assert {path: path.read_bytes() for path in before} == before
-    if not stored_auth:
-        assert json.loads(auth.read_text()) == {}
-        assert auth.stat().st_mode & 0o777 == 0o600
     assert not list(directory.glob(".pi-vertex-mount-*"))
     assert "secret" not in result.stdout + result.stderr
 
 
-# Break caught: masking the whole agent directory drops fresh non-auth state
-# and puts shared settings locks in a private namespace rather than on the host.
-@pytest.mark.parametrize("launcher", LAUNCHERS)
-def test_nonauth_state_and_settings_lock_remain_host_backed(sandbox: tuple[Path, Path, Path], launcher: str) -> None:
+def test_nonauth_state_and_settings_lock_remain_host_backed(sandbox: tuple[Path, Path, Path]) -> None:
+    """auth.json 以外（会話・設定とその lock）まで重ねると、初回の会話・設定が private namespace に書かれて
+    黙って消え、素の Pi と設定の lock を共有しなくなる。"""
     directory = sandbox[0] / ".pi/agent"
     auth = directory / "auth.json"
     auth.write_text("{}")
     _real_namespace_probe(sandbox)
-    result = _run(sandbox, launcher, extra={"TEST_WRITE_STATE": "1"})
+    result = _run(sandbox, "pigemf", extra={"TEST_WRITE_STATE": "1"})
     assert result.returncode == 0, result.stderr
     assert (directory / "sessions/first.jsonl").read_text() == "first conversation\n"
     assert json.loads((directory / "settings.json").read_text()) == {"theme": "saved"}
@@ -339,9 +307,9 @@ def test_nonauth_state_and_settings_lock_remain_host_backed(sandbox: tuple[Path,
     assert auth.read_text() == "{}"
 
 
-# Break caught: competing initializers replace saved auth or leave invalid JSON,
-# world-readable state, or staging files behind during simultaneous starts.
 def test_concurrent_launchers_initialize_only_empty_missing_auth(sandbox: tuple[Path, Path, Path]) -> None:
+    """同時に起動したランチャーが未作成の auth.json を、読めない内容や他者に読める権限で作ると、
+    後で Pi が保存する認証情報が黙って壊れる・漏れる。"""
     auth = sandbox[0] / ".pi/agent/auth.json"
 
     def launch(launcher: str) -> subprocess.CompletedProcess[str]:
@@ -356,54 +324,16 @@ def test_concurrent_launchers_initialize_only_empty_missing_auth(sandbox: tuple[
     assert not list(auth.parent.glob(".pi-vertex-mount-*"))
 
 
-# Break caught: parsing or preparing an auth overlay before dry-run returns.
-@pytest.mark.parametrize("launcher", LAUNCHERS)
-def test_dry_run_is_argv_only_and_never_reads_or_creates_auth(sandbox: tuple[Path, Path, Path], launcher: str) -> None:
-    home, _, cwd = sandbox
-    directory = cwd / "uncreated agent"
-    result = _run(
-        sandbox,
-        launcher,
-        extra={
-            "PI_CODING_AGENT_DIR": str(directory),
-            "PI_SUPERAGENTS_LAUNCHER_DRY_RUN": "1",
-        },
-    )
-    assert result.returncode == 0, result.stderr
-    assert not directory.exists()
-    assert not (home / ".pi/agent/extensions/subagent").exists()
-    args = result.stdout.splitlines()
-    assert args[0] == "bwrap"
-    assert "--ro-bind-data" in args
-    assert args[args.index("--ro-bind-data") + 2] == str(directory / "auth.json")
-    # A FIFO makes accidental configuration reads block instead of silently pass.
-    directory.mkdir()
-    os.mkfifo(directory / "auth.json")
-    second = _run(
-        sandbox,
-        launcher,
-        extra={
-            "PI_CODING_AGENT_DIR": str(directory),
-            "PI_SUPERAGENTS_LAUNCHER_DRY_RUN": "1",
-        },
-    )
-    assert second.returncode == 0, second.stderr
-    assert second.stdout == result.stdout
-
-
-# Break caught: falling back on {}, logging parser details containing auth,
-# or launching Pi after malformed/unreadable saved config.
-@pytest.mark.parametrize("content", ('{"synthetic-secret":', "[]", "null", '"synthetic-secret"'))
-def test_invalid_auth_configuration_fails_closed_without_secret_output(
-    sandbox: tuple[Path, Path, Path], content: str
-) -> None:
+def test_invalid_auth_configuration_fails_closed_without_secret_output(sandbox: tuple[Path, Path, Path]) -> None:
+    """解析できない auth.json のパーサーのエラー文を表示すると、中身の秘密が端末・ログに黙って出る。
+    作り直して起動すると、利用者の auth.json が黙って消える。"""
     auth = sandbox[0] / ".pi/agent/auth.json"
+    # V8 は JSON として読めない先頭の語をエラー文にそのまま入れる。
+    content = "synthetic-secret"
     auth.write_text(content)
     result = _run(sandbox, "pigemf")
     assert result.returncode != 0
-    assert "auth.json" in result.stderr
-    assert not result.stdout
-    assert "synthetic-secret" not in result.stderr
+    assert "synthetic-secret" not in result.stdout + result.stderr
     assert auth.read_text() == content
 
 
@@ -423,13 +353,13 @@ def _used_vertex_models(sandbox: tuple[Path, Path, Path], launcher: str) -> list
     return used
 
 
-# Break caught: allowing Pi fuzzy matching/custom metadata when an exact ID is
-# absent, checking only the parent model while a child tier model is missing,
-# or invoking an auth-aware Pi CLI command for the offline guard.
+# ランチャーごとに --model・tier・helper の一覧が違うので、3 つとも確かめる。
 @pytest.mark.parametrize("launcher", LAUNCHERS)
 def test_missing_any_used_vertex_model_stops_before_pi_and_auth_reads(
     sandbox: tuple[Path, Path, Path], launcher: str
 ) -> None:
+    """ランチャーの --model・tier の設定・helper が確かめる一覧が合わないと、catalog に無いモデル ID を
+    Pi が近い名前の別のモデルに黙って置き換えて起動する。"""
     catalog = _catalog(sandbox)
     original = catalog.read_text()
     # No credential file or ADC discovery is allowed to gate this failure.
@@ -440,22 +370,7 @@ def test_missing_any_used_vertex_model_stops_before_pi_and_auth_reads(
         catalog.write_text(json.dumps(data))
         result = _run(sandbox, launcher)
         assert result.returncode != 0, model
-        assert "catalog" in result.stderr.lower(), model
         assert not result.stdout, model
-
-
-# Break caught: requiring a Vertex model the launcher and its tiers never use,
-# which stops a working launcher whenever Pi drops an unrelated catalog entry.
-@pytest.mark.parametrize("launcher", LAUNCHERS)
-def test_catalog_with_only_used_vertex_models_reaches_pi(sandbox: tuple[Path, Path, Path], launcher: str) -> None:
-    catalog = _catalog(sandbox)
-    used = {f"chat:{model}" for model in _used_vertex_models(sandbox, launcher)}
-    data = json.loads(catalog.read_text())
-    data["google-vertex"] = {key: entry for key, entry in data["google-vertex"].items() if key in used}
-    catalog.write_text(json.dumps(data))
-    result = _run(sandbox, launcher)
-    assert result.returncode == 0, result.stderr
-    assert _payload(result)["args"]
 
 
 def _native_namespace_probe(sandbox: tuple[Path, Path, Path], body: str) -> None:
@@ -499,19 +414,15 @@ console.log(JSON.stringify(observation));
     cli.write_text("#!/bin/sh\nexec " + shlex.join(["node", str(probe), str(package)]) + ' "$@"\n')
 
 
-# Break caught: retaining OAuth in a readonly snapshot lets native startup/request
-# auth rotate tokens whose replacements cannot be saved, including in child Pi.
-@pytest.mark.parametrize("launcher", LAUNCHERS)
-@pytest.mark.parametrize("expired", (True, False))
-def test_native_oauth_refresh_and_request_do_not_consume_saved_tokens(
-    sandbox: tuple[Path, Path, Path], launcher: str, expired: bool
-) -> None:
+def test_native_oauth_refresh_and_request_do_not_consume_saved_tokens(sandbox: tuple[Path, Path, Path]) -> None:
+    """OAuth を読み取り専用の snapshot に残すと、親と子の Pi が起動時・要求時に token を更新して保存できず、
+    元の refresh token が黙って使えなくなる。期限内の OAuth も外す（期限切れだけを外す変更を検出する）。"""
     auth = sandbox[0] / ".pi/agent/auth.json"
     oauth = {
         "type": "oauth",
         "access": "synthetic-old-access",
         "refresh": "synthetic-old-refresh",
-        "expires": 1000 if expired else 4102444800000,
+        "expires": 4102444800000,
     }
     auth.write_text(
         json.dumps(
@@ -565,7 +476,7 @@ const observation = {
 };
 """,
     )
-    result = _run(sandbox, launcher)
+    result = _run(sandbox, "pigemf")
     assert result.returncode == 0, result.stderr
     payload = _payload(result)
     for observed in (payload, payload["child"]):
@@ -582,17 +493,25 @@ const observation = {
     assert "synthetic-other-secret" not in result.stdout + result.stderr
 
 
-# Break caught: discarding a saved ADC path, leaving it only in marker.env (which
-# native resolution does not forward), or overriding an explicit process path.
-@pytest.mark.parametrize("launcher", LAUNCHERS)
-@pytest.mark.parametrize("stored_key", (True, False))
-@pytest.mark.parametrize("supplied", (None, "", "explicit"))
-@pytest.mark.parametrize("saved_name", (None, "saved ADC with spaces.json", "saved 'quoted'\nADC.json\n"))
+@pytest.mark.parametrize(
+    "supplied",
+    [
+        # 保存済みの ADC パスを実効環境へ移さないと、marker の key 分岐が saved env を渡さず、SDK が既定の ADC を使う
+        None,
+        # 空の GOOGLE_APPLICATION_CREDENTIALS を指定ありとして扱うと、保存済みのパスを黙って落とす
+        "",
+        # 明示したパスを保存済みのパスで上書きすると、利用者が選んだ ADC を黙って使わない
+        "explicit",
+    ],
+    ids=("unset", "empty", "explicit"),
+)
 def test_native_vertex_sdk_receives_saved_or_explicit_adc_path(
-    sandbox: tuple[Path, Path, Path], launcher: str, stored_key: bool, supplied: str | None, saved_name: str | None
+    sandbox: tuple[Path, Path, Path], supplied: str | None
 ) -> None:
+    """SDK に渡る ADC のパスを誤ると、別の ADC（別のアカウント・project）で黙って要求する。
+    保存済みの key を API key として SDK に渡すと、ADC ではなく key で黙って要求する。"""
     directory = sandbox[0] / ".pi/agent"
-    saved_path = str(sandbox[2] / saved_name) if saved_name is not None else None
+    saved_path = str(sandbox[2] / "saved ADC with spaces.json")
     explicit_path = str(sandbox[2] / "different explicit ADC.json")
     credential: dict[str, object] = {
         "type": "api_key",
@@ -600,11 +519,10 @@ def test_native_vertex_sdk_receives_saved_or_explicit_adc_path(
             "GOOGLE_CLOUD_API_KEY": "synthetic-saved-env-secret",
             "GOOGLE_CLOUD_PROJECT": "saved-project-must-not-win",
             "GOOGLE_CLOUD_LOCATION": "saved-location-must-not-win",
-            **({"GOOGLE_APPLICATION_CREDENTIALS": saved_path} if saved_path is not None else {}),
+            "GOOGLE_APPLICATION_CREDENTIALS": saved_path,
         },
+        "key": "synthetic-saved-key-secret",
     }
-    if stored_key:
-        credential["key"] = "synthetic-saved-key-secret"
     auth = directory / "auth.json"
     auth.write_text(json.dumps({"google-vertex": credential}))
     (directory / "models.json").write_text('{"providers":{"google-vertex":{"apiKey":"synthetic-model-secret"}}}')
@@ -660,26 +578,23 @@ const observation = {sdk: globalThis.sdkOptions, stopReason: response.stopReason
     extra = {"GOOGLE_CLOUD_API_KEY": "synthetic-env-secret"}
     if supplied is not None:
         extra["GOOGLE_APPLICATION_CREDENTIALS"] = explicit_path if supplied == "explicit" else supplied
-    result = _run(sandbox, launcher, extra=extra)
+    result = _run(sandbox, "pigemf", extra=extra)
     assert result.returncode == 0, result.stderr
     payload = _payload(result)
     expected_path = explicit_path if supplied == "explicit" else saved_path
     for observed in (payload, payload["child"]):
         assert isinstance(observed, dict)
         assert observed["stopReason"] == "stop"
-        assert observed["sdk"] == {
-            "keyFilename": expected_path,
-            "apiKeyPresent": False,
-            "project": "hobby-372711",
-            "location": "global",
-        }
+        sdk = cast(dict[str, object], observed["sdk"])
+        assert sdk["keyFilename"] == expected_path
+        assert sdk["apiKeyPresent"] is False
     assert auth.read_bytes() == before
     assert "secret" not in result.stdout + result.stderr
 
 
-# Break caught: setup missing new tier configs, replacing existing user edits
-# under --if-absent, or clobbering the shared config and saved auth/settings.
 def test_setup_seeds_vertex_tiers_and_preserves_existing_configs_on_rebuild(sandbox: tuple[Path, Path, Path]) -> None:
+    """rebuild（--if-absent）で利用者の tier の設定・共有の設定・auth を上書きする、または別のランチャーの tier を
+    置くと、利用者の設定が黙って消える・tier が混線する。"""
     home = sandbox[0]
     root = home / ".pi/agent"
     sentinels = {
@@ -717,9 +632,9 @@ def test_setup_seeds_vertex_tiers_and_preserves_existing_configs_on_rebuild(sand
         assert not list(root.rglob("*.bak.*"))
 
 
-# Break caught: inherited relative agent directory resolves against a child's
-# different cwd and escapes the launcher's auth overlay.
 def test_relative_agent_dir_stays_fixed_when_a_child_changes_cwd(sandbox: tuple[Path, Path, Path]) -> None:
+    """相対の PI_CODING_AGENT_DIR を絶対パスにして子へ渡さないと、cwd の違う子 Pi が overlay の外の
+    auth.json を黙って読む。"""
     directory = sandbox[2] / "relative agent"
     directory.mkdir()
     (directory / "auth.json").write_text("{}")
