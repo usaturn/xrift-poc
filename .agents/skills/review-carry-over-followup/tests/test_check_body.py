@@ -36,6 +36,7 @@ CASES: dict[str, tuple[str, int | None, bool, bool]] = {
     "records-marker": ("\n<!-- review-records:v1 -->\n", 0, True, False),
     "absolute-path": ("\nログ: /home/someone/project/run.log\n", 0, True, False),
     "rg-missing": ("", 0, False, False),
+    "too-long": ("a" * 65537, 0, True, False),
 }
 # zsh は rg の段と対照だけを確かめる（Gitleaks の段は、実物の Gitleaks のテストが zsh でも確かめる）
 COMBINATIONS = [("bash", case) for case in CASES] + [("zsh", "clean"), ("zsh", "absolute-path")]
@@ -73,6 +74,7 @@ def run_check(skill_shell: Any, tmp_path: Path, shell: str, body: str, env: dict
 def test_check_body_rejects_failures(skill_shell: Any, tmp_path: Path, shell: str, case: str) -> None:
     """検査の段が失敗を通すと、記録のマーカー・絶対パスを含む本文や未検査の本文が公開の PR・Issue に黙って載る。
 
+    長すぎる本文は GitHub が拒否するが、手順 6 の先の書き込み（新しい Issue など）が済んだ後になる。
     ``clean`` は、常に拒否する実装（fake の ``PATH`` の不足を含む）でも拒否のケースが通るのを防ぐ対照である。
     """
     extra, scanner_exit, rg, expected = CASES[case]

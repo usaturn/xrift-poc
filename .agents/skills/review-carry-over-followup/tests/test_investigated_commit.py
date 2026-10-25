@@ -1,4 +1,4 @@
-"""手順 3 の調べる commit の固定を、SKILL.md のブロックのまま bash で実行する。
+"""手順 3 の調べる commit の固定と後片付けを、SKILL.md のブロックのまま bash で実行する。
 
 origin は GitHub の URL のまま置き、``url.<bare>.insteadOf`` でローカルの bare に向ける（ネットワークを使わない）。
 bare の既定ブランチは ``main`` で、``release/1.x`` と ``refs/pull/<N>/head`` を持つ。
@@ -147,7 +147,7 @@ def make_case(tmp_path: Path, *, product: bool, merged_into: str | None, state: 
     return Case(env.root, session, tmpdir, remote, (f"url.{remote.bare}.insteadOf", url))
 
 
-def run_script(skill_shell: Any, case: Case, script: str) -> Any:
+def run_script(skill_shell: Any, case: Case, script: str, *, pr_number: int = PR_NUMBER) -> Any:
     config_key, config_value = case.insteadof
     return skill_shell.run(
         SHELL,
@@ -161,17 +161,21 @@ def run_script(skill_shell: Any, case: Case, script: str) -> Any:
             "TMPDIR": str(case.tmpdir),
             "SESSION": str(case.session),
             "PARENT": str(case.parent),
-            "PR_NUMBER": str(PR_NUMBER),
+            "PR_NUMBER": str(pr_number),
         },
     )
 
 
-def run_pin(skill_shell: Any, case: Case) -> dict[str, str]:
-    """固定のブロックを実行し、表示した値と、作った worktree の HEAD（``WORKTREE_HEAD``）を返す。"""
+def run_pin_and_cleanup(skill_shell: Any, case: Case) -> dict[str, str]:
+    """固定のブロックの後に後片付けのブロックを同じシェルで実行し、表示した値を返す。
+
+    間で、固定のブロックが作った worktree の HEAD を ``WORKTREE_HEAD`` として表示する。
+    """
     script = "\n".join(
         (
             skill_shell.block("pin the investigated commit"),
             'printf \'WORKTREE_HEAD=%s\\n\' "$(git -C "$REPRO_ROOT/worktree" rev-parse HEAD)"',
+            skill_shell.block("clean up the investigation"),
             "",
         )
     )
@@ -205,9 +209,10 @@ def test_pin_selects_the_default_branch_or_the_pr_head(
     investigated: str,
     in_default: str,
 ) -> None:
-    """調べる commit・リポジトリやマージ先の判定を取り違えると、誤った commit を調べた結論を事後調査として公開する。"""
+    """調べる commit やマージ先の判定を取り違えると誤った結論を公開し、後片付けが消しすぎると親の checkout を失う。"""
     case = make_case(tmp_path, product=product, merged_into=merged_into, state=state)
-    values = run_pin(skill_shell, case)
+    parent_head = git(case.parent, "rev-parse", "HEAD")
+    values = run_pin_and_cleanup(skill_shell, case)
     expected = case.remote.main if investigated == "main" else case.remote.pr_head
     assert (values["DEFAULT_BRANCH"], values["INVESTIGATED_SHA"]) == ("main", expected)
     assert values["PR_HEAD_SHA"] == case.remote.pr_head
@@ -218,14 +223,22 @@ def test_pin_selects_the_default_branch_or_the_pr_head(
         assert values["TARGET_ROOT"] == str(Path(values["REPRO_ROOT"]) / "repo")
     else:
         assert values["TARGET_ROOT"] == str(case.parent)
+    # 後片付けは自分の作ったものだけを消す（親の checkout と TMPDIR は残る）
+    assert git(case.parent, "rev-parse", "HEAD") == parent_head
+    assert case.tmpdir.is_dir()
 
 
-def test_pin_stops_when_the_latest_commits_cannot_be_fetched(skill_shell: Any, tmp_path: Path) -> None:
-    """fetch の失敗を見逃すと、手元に残る古い origin/main を黙って調べ、正しく見える値を表示する。"""
+@pytest.mark.parametrize("failure", ["remote-unreachable", "pr-ref-missing"])
+def test_pin_stops_when_the_latest_commits_cannot_be_fetched(skill_shell: Any, tmp_path: Path, failure: str) -> None:
+    """fetch の失敗を見逃すと、手元に残る古い origin/main・PR の head を黙って調べ、正しく見える値を表示する。"""
     case = make_case(tmp_path, product=False, merged_into="release/1.x", state="MERGED")
-    # 親には、以前に取得した古い origin/main が残っている
-    assert git(case.parent, "rev-parse", "refs/remotes/origin/main") != case.remote.main
-    case.remote.bare.rename(case.remote.bare.with_name("moved.git"))
-    result = run_script(skill_shell, case, skill_shell.block("pin the investigated commit"))
+    pr_number = PR_NUMBER if failure == "remote-unreachable" else PR_NUMBER + 1
+    # 親には、以前に取得した古い origin/main と、後片付けの前に止まった実行の PR の ref が残っている
+    stale = git(case.parent, "rev-parse", "refs/remotes/origin/main")
+    assert stale != case.remote.main
+    git(case.parent, "update-ref", f"refs/carry-over/{pr_number}", stale)
+    if failure == "remote-unreachable":
+        case.remote.bare.rename(case.remote.bare.with_name("moved.git"))
+    result = run_script(skill_shell, case, skill_shell.block("pin the investigated commit"), pr_number=pr_number)
     assert result.returncode != 0
     assert "INVESTIGATED_SHA=" not in result.stdout
