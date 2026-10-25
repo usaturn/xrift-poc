@@ -134,13 +134,11 @@ class FakeAdapter:
         self,
         options: dict[str, dict[str, object]] | None = None,
         *,
-        env: dict[str, str] | None = None,
         outcome_state: State | None = None,
         identity: Identity | None = None,
         diagnosis: Diagnosis | None = None,
     ) -> None:
         self.options = options or {}
-        self.env = env or {}
         self.outcome_state: State | None = outcome_state
         self.identity = identity or Identity()
         self.diagnosis = diagnosis
@@ -154,7 +152,6 @@ class FakeAdapter:
                     "options": self.options.get(context.request.agent_id, {}),
                 }
             ).encode(),
-            env=self.env,
         )
 
     def collect(self, context: AdapterContext, stdout_path: Path, stderr_path: Path) -> AdapterOutcome:
@@ -485,21 +482,20 @@ def test_only_allowlisted_environment_and_redacted_results(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """許可しない資格情報・GIT_* が担当に渡る、ログ・payload・identity・request.json に秘密が黙って残る。"""
-    monkeypatch.setenv("SERVICE_TOKEN", "token-value")
-    monkeypatch.setenv("UNCONFIGURED_SECRET", "ambient-value")
-    monkeypatch.setenv("GIT_DIR", "/bogus-ambient-git")
+    ambient = {
+        "SERVICE_TOKEN": "token-value",
+        "Extra_Password": "password-value",
+        "UNCONFIGURED_SECRET": "ambient-value",
+        "GIT_DIR": "/bogus-ambient-git",
+    }
+    for name, value in ambient.items():
+        monkeypatch.setenv(name, value)
     # The same ambient values are the exec environment commands inherit from.
-    monkeypatch.setattr(
-        environ,
-        "_literal",
-        environ.literal_environ()
-        | {"SERVICE_TOKEN": "token-value", "UNCONFIGURED_SECRET": "ambient-value", "GIT_DIR": "/bogus-ambient-git"},
-    )
+    monkeypatch.setattr(environ, "_literal", environ.literal_environ() | ambient)
     cfg = configuration()
-    cfg.agents["a"].env = ["SERVICE_TOKEN", "GIT_DIR"]
+    cfg.agents["a"].env = ["SERVICE_TOKEN", "Extra_Password", "GIT_DIR"]
     fake = FakeAdapter(
         {"a": {"payload": {"nested": ["token-value", {"x": "password-value"}]}}},
-        env={"AGENT_RUNNER_DEPTH": "0", "Extra_Password": "password-value"},
         identity=Identity(model="token-value", skill_versions={"version": "password-value"}),
     )
     batch = run_workflow(
@@ -517,7 +513,7 @@ def test_only_allowlisted_environment_and_redacted_results(
         "prompt",
         repository,
         output_dir=tmp_path / "environment",
-        adapter_loader=lambda _: FakeAdapter(env={"AGENT_RUNNER_DEPTH": "0"}),
+        adapter_loader=lambda _: FakeAdapter(),
     )
     payload = environment.results[0].attempts[0].payload
     assert isinstance(payload, dict)
