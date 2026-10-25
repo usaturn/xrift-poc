@@ -91,7 +91,12 @@ def test_start_records_options_and_effective_assignments(
     run = json.loads((Path(started["run_dir"]) / "run.json").read_text(encoding="utf-8"))
     assert run["options"]["max_cycles"] == 2
     assert run["options"]["hold_action"] == expected
-    assert reuse_or_run(loop, env)["planning"]["hold_action"] == expected
+    planning = reuse_or_run(loop, env)["planning"]
+    assert planning["hold_action"] == expected
+    options = planning["run_roles_options"]
+    assert options[options.index("--assign") + 1] == "implement=beta"
+    review_config = loop.load_review_config(loop.load_run(Path(started["run_dir"])))
+    assert review_config.workflows["review"].assignments["inspect"].agents == ["beta", "alpha"]
     assert run["assignments"]["review"]["inspect"]["agents"] == ["beta", "alpha"]
     assert run["assignments"]["fix"]["implement"]["agents"] == ["beta"]
 
@@ -116,8 +121,8 @@ def test_record_for_another_head_is_not_taken_as_this_cycle(loop: Any, env: Any,
 
 
 def test_fixes_pushed_requires_the_pr_head_to_be_the_pushed_commit(loop: Any, env: Any, kit: Any) -> None:
-    """記録の commit と PR の HEAD を照合しないと、push の失敗・別の push による上書きを「修正を push した」として
-    次のサイクル・上限まで進め、そう報告する。
+    """記録の commit と PR の HEAD を照合しないと、
+    push の失敗・別の push による上書きを「修正を push した」として次のサイクル・上限まで進め、そう報告する。
     """
     env.start()
     head = env.gh.head()
@@ -174,8 +179,8 @@ def test_inherited_skip_changed_without_evidence_is_rejected(loop: Any, env: Any
 def test_no_fix_needed_needs_a_merged_finalize_result_at_the_same_head(
     loop: Any, env: Any, kit: Any, tmp_path: Path
 ) -> None:
-    """finalize の「マージ済み」を PR の実際の状態と照合しないと、マージしていない PR を
-    merged・no_fix_needed として終え、完了と報告する。
+    """finalize の「マージ済み」を PR の実際の状態と照合しないと、
+    マージしていない PR を merged・no_fix_needed として終え、完了と報告する。
     """
     env.start()
     head = env.gh.head()
