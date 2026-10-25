@@ -28,8 +28,7 @@ def test_bash_suites_are_found() -> None:
 @pytest.mark.parametrize("suite", SUITES)
 def test_bash_suite_passes(suite: str, tmp_path: Path) -> None:
     """このテストが無いと、各スイートが守る挙動（tier 設定の重ね方、資格情報の受け渡し、
-    利用者の設定の保持、herdr のセッションの修復、サイドバーの git の状態）が黙って壊れても
-    CI で気づけない。"""
+    利用者の設定の保持、herdr のセッションの修復）が黙って壊れても CI で気づけない。"""
     env = dict(os.environ)
     # 各スイートが mktemp -d で作る作業領域を、pytest の一時ディレクトリの下に置く。
     env["TMPDIR"] = str(tmp_path)
