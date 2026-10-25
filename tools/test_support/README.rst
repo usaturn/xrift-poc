@@ -32,7 +32,7 @@ issue-queue の CLI と XRift のツールの導入のテストのために、�
 
 ``tools.test_support.issue_queue``
     ``make_queue_env`` は、 issue-queue の CLI（ ``.agents/skills/issue-queue/scripts/queue.py`` ）を動かす環境を作り、 ``QueueEnv`` を返す。
-    bare の remote を GitHub の URL の代わりにした環境リポジトリと、偽の ``gh`` ・ ``herdr`` （ ``FAKE_CLI`` 。状態を ``services.json`` に読み書きする）を ``PATH`` の先頭に置く。
+    GitHub の URL を bare の remote に差し替えた環境リポジトリを作り、偽の ``gh`` ・ ``herdr`` （ ``FAKE_CLI`` 。状態を ``services.json`` に読み書きする）を ``PATH`` の先頭に置く。
     ``QueueEnv`` は CLI の呼び出しと、 PR のマージ・子の pane の状態・報告など、各工程の前提を作る操作を持つ。
 
 ``tools.test_support.xrift``

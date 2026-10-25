@@ -1,9 +1,9 @@
 """`tools.test_support` の pytest fixture。
 
 利用側の test module で ``pytest_plugins = ("tools.test_support.plugin",)``
-を宣言して読み込む。どちらの fixture も、テストの中だけ外側の実行環境の
-環境変数を外す。環境リポジトリと制作物は ``tools.test_support.repos`` の
-factory を直接呼んで作る。
+を宣言して読み込む。どちらの fixture も、外側の実行環境が付ける環境変数
+（``AGENT_RUNNER_DEPTH``・``CODEX_THREAD_ID``）をテストの中だけ外す。
+環境リポジトリと制作物は ``tools.test_support.repos`` の factory を直接呼んで作る。
 
 ここの fixture は autouse にしない。test module で読み込んだプラグインの fixture は
 テスト一式から見え、autouse だと読み込んだ後に収集したモジュールにも効く。
