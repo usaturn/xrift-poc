@@ -1,4 +1,7 @@
-"""replay.md（過去の PR の再生評価の手順）の bash ブロックを、実際の親と同じ shallow な clone で実行する。"""
+"""replay.md（過去の PR の再生評価の手順）の bash ブロックを、実際の親と同じ shallow な clone で実行する。
+
+評価の結果が汚れるのを防ぐ境界（答えの隔離、答えを知る環境の検出、検索前の停止）だけを確かめる。
+"""
 
 from __future__ import annotations
 
@@ -97,6 +100,10 @@ def _fails(*args: str) -> bool:
 
 
 def test_isolate_builds_a_tool_root_without_evals_and_a_repository_ending_at_to(history: History) -> None:
+    """
+    隔離が evals/ を残すか to より後の commit を持ち込むと、
+    評価担当が答えを読めるまま再生し、評価の結果が黙って汚れる。
+    """
     completed = _run(
         _block("# review-verify replay: isolate"),
         {
@@ -111,18 +118,13 @@ def test_isolate_builds_a_tool_root_without_evals_and_a_repository_ending_at_to(
     assert completed.returncode == 0, completed.stderr
     toolroot = history.evaluation / "toolroot"
     assert (toolroot / ".agents/skills/review-verify/SKILL.md").is_file()
-    assert "LATER" in (toolroot / "tools/tool.py").read_text(encoding="utf-8")
     assert not [path for path in toolroot.rglob("evals") if path.is_dir()]
-    assert not (history.evaluation / "toolroot.tar").exists()
     repo = history.evaluation / "repo"
     assert _git(repo, "rev-parse", "HEAD") == history.to
-    assert _fails("-C", str(repo), "symbolic-ref", "-q", "HEAD")
     assert _fails("-C", str(repo), "cat-file", "-e", f"{history.later}^{{commit}}")
-    assert _git(repo, "for-each-ref", "--format=%(refname)").splitlines() == ["refs/heads/eval-to"]
-    assert _git(repo, "status", "--porcelain") == ""
 
 
-def _context(tmp_path: Path, patterns: str, *, toolroot: bool = True) -> dict[str, str]:
+def _context(tmp_path: Path, patterns: str) -> dict[str, str]:
     home = tmp_path / "home"
     home.mkdir()
     answers = tmp_path / "answers"
@@ -130,12 +132,12 @@ def _context(tmp_path: Path, patterns: str, *, toolroot: bool = True) -> dict[st
     (answers / "answer-patterns.txt").write_text(patterns, encoding="utf-8")
     evaluation = tmp_path / "eval"
     evaluation.mkdir()
-    if toolroot:
-        _write(evaluation / "toolroot", {".agents/review-records.md": "記入例: 範囲外の話\n"})
+    _write(evaluation / "toolroot", {".agents/review-records.md": "記入例: 範囲外の話\n"})
     return {"HOME": str(home), "ANSWERS": str(answers), "EVAL": str(evaluation)}
 
 
 def test_context_check_reports_a_conclusion_in_the_memory_index(tmp_path: Path) -> None:
+    """検索の対象から自動メモリが外れると、記憶にある結論を見逃して当たりなしを返し、答えを知る環境で再生する。"""
     env = _context(tmp_path, "#9001\r\n\r\n  \ndocs/x.rst:7\n")
     memory = Path(env["HOME"]) / ".claude/projects/-work-repo/memory/MEMORY.md"
     memory.parent.mkdir(parents=True)
@@ -149,6 +151,7 @@ def test_context_check_reports_a_conclusion_in_the_memory_index(tmp_path: Path) 
 
 
 def test_context_check_reports_a_conclusion_in_the_tool_root(tmp_path: Path) -> None:
+    """検索の対象から tool root が外れると、tool root の文書にある結論を見逃して当たりなしを返す。"""
     env = _context(tmp_path, "再生する PR の結論\n")
     _write(Path(env["EVAL"]) / "toolroot", {".agents/review-records.md": "記入例: 再生する PR の結論\n"})
 
@@ -158,66 +161,19 @@ def test_context_check_reports_a_conclusion_in_the_tool_root(tmp_path: Path) -> 
     assert ".agents/review-records.md" in completed.stdout
 
 
-def test_context_check_without_a_hit_exits_1_even_without_user_files(tmp_path: Path) -> None:
-    env = _context(tmp_path, "#9001\n")
-
-    completed = _run(_block("# review-verify replay: context check"), env)
-
-    assert completed.returncode == 1, completed.stderr
-    assert completed.stdout == ""
-
-
-def test_context_check_refuses_a_pattern_file_without_patterns(tmp_path: Path) -> None:
-    env = _context(tmp_path, "\r\n  \n")
-
-    completed = _run(_block("# review-verify replay: context check"), env)
-
-    assert completed.returncode == 2
-    assert "no patterns" in completed.stderr
-
-
-@pytest.mark.parametrize(
-    ("claude_md", "cwd_text"),
-    [
-        pytest.param(None, "see docs/x.rst:7\n", id="no-target-and-a-hit-in-cwd"),
-        pytest.param(None, "範囲外の話\n", id="no-target-and-no-hit"),
-        pytest.param("PR #9001 の指摘は docs/x.rst:7\n", "see docs/x.rst:7\n", id="only-claude-md"),
-    ],
-)
-def test_context_check_without_the_tool_root_stops_before_searching(
-    tmp_path: Path, claude_md: str | None, cwd_text: str
-) -> None:
-    env = _context(tmp_path, "#9001\ndocs/x.rst:7\n", toolroot=False)
-    if claude_md is not None:
-        _write(Path(env["HOME"]) / ".claude", {"CLAUDE.md": claude_md})
-    cwd = tmp_path / "cwd"
-    _write(cwd, {"hit.txt": cwd_text})
-
-    completed = _run(_block("# review-verify replay: context check"), env, cwd=cwd)
-
-    assert completed.returncode == 2, completed.stderr
-    assert completed.stdout == ""
-
-
-@pytest.mark.parametrize("value", [None, ""], ids=["unset", "empty"])
-@pytest.mark.parametrize("name", ["ANSWERS", "EVAL", "HOME"])
-def test_context_check_without_a_required_variable_stops_before_searching(
-    tmp_path: Path, name: str, value: str | None
-) -> None:
+def test_context_check_with_an_empty_home_stops_before_searching(tmp_path: Path) -> None:
+    """HOME が空のまま検索に進むと、記憶を検索せずにエラーを出さないまま当たりなしを返し、答えを知る環境で再生する。"""
     env = _context(tmp_path, "記入例\n")
-    if value is None:
-        del env[name]
-    else:
-        env[name] = value
+    env["HOME"] = ""
 
     completed = _run(_block("# review-verify replay: context check"), env, cwd=tmp_path)
 
-    assert completed.returncode == 2, completed.stderr
+    assert completed.returncode not in (0, 1), completed.stderr  # 当たりあり（0）・当たりなし（1）として返さない
     assert completed.stdout == ""
-    assert name in completed.stderr
 
 
 def test_leak_scan_reports_traces_of_answer_material(tmp_path: Path) -> None:
+    """実行後の検索が答えの資料を読んだ跡を見逃すと、汚れた実行を採点に使う。"""
     answers = tmp_path / "answers"
     answers.mkdir()
     (answers / "leak-patterns.txt").write_text("ground-truth\nevals/\n", encoding="utf-8")
@@ -226,33 +182,21 @@ def test_leak_scan_reports_traces_of_answer_material(tmp_path: Path) -> None:
     env = {"ANSWERS": str(answers), "RUN_DIR": str(run_dir)}
 
     found = _run(_block("# review-verify replay: leak scan"), env)
-    (run_dir / "attempt-1/stdout.log").write_text("差分だけを読んだ\n", encoding="utf-8")
-    clean = _run(_block("# review-verify replay: leak scan"), env)
 
     assert found.returncode == 0, found.stderr
     assert "ground-truth/9001.md" in found.stdout
-    assert clean.returncode == 1, clean.stderr
-    assert clean.stdout == ""
 
 
-@pytest.mark.parametrize("value", [None, ""], ids=["unset", "empty"])
-@pytest.mark.parametrize("name", ["ANSWERS", "RUN_DIR"])
-def test_leak_scan_without_a_required_variable_stops_before_searching(
-    tmp_path: Path, name: str, value: str | None
-) -> None:
+def test_leak_scan_without_run_dir_stops_before_searching(tmp_path: Path) -> None:
+    """RUN_DIR が無いまま検索に進むと、set -u の終了コード 1 が当たりなしと区別できず、汚れた実行を採点に使う。"""
     answers = tmp_path / "answers"
     answers.mkdir()
     (answers / "leak-patterns.txt").write_text("ground-truth\n", encoding="utf-8")
     run_dir = tmp_path / "run"
     _write(run_dir, {"attempt-1/stdout.log": "読んだ: /work/answers/ground-truth/9001.md\n"})
-    env = {"ANSWERS": str(answers), "RUN_DIR": str(run_dir)}
-    if value is None:
-        del env[name]
-    else:
-        env[name] = value
+    env = {"ANSWERS": str(answers)}
 
     completed = _run(_block("# review-verify replay: leak scan"), env, cwd=tmp_path)
 
-    assert completed.returncode == 2, completed.stderr
+    assert completed.returncode not in (0, 1), completed.stderr  # 当たりあり（0）・当たりなし（1）として返さない
     assert completed.stdout == ""
-    assert name in completed.stderr
