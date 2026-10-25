@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -240,12 +239,10 @@ class LoopEnv:
         *,
         findings: int = 0,
         errors: dict[str, str] | None = None,
-        probes: dict[str, str] | None = None,
     ) -> ReviewerAdapter:
         """現在の HEAD を対象にした偽のレビュアー（agent_id → success・failed・crash、または起動ごとの列）。
 
         errors は crash のときに stdout へ出す error イベントの message（provider のエラー文の代わり）。
-        probes は短い確認（role が probe の依頼）への答え方で、ok（既定）・wrong・crash・hang。
         """
         head = self.gh.head()
         agents: dict[str, Any] = {}
@@ -255,7 +252,6 @@ class LoopEnv:
             agents[agent] = {
                 "behavior": behavior,
                 "error": (errors or {}).get(agent),
-                "probe": (probes or {}).get(agent, "ok"),
                 "review_file": str(review),
                 "findings_file": str(self.review_dir / "findings" / f"{model}-{head[:12]}.json"),
                 "document": candidates_document(head, self.base(), model, review.name, findings=findings),
@@ -374,7 +370,7 @@ def finalize_result(path: Path, outcome: str, *, merged: bool, stop_reason: str 
 # 失敗したときと同じく、tool_root に登録した実際の worktree を残して cleanup=failed と retained_paths を返す。
 # outside は別セッションの更新を adapter.collect で再現する（runner の監査の outside_changes に出る）
 REVIEWER_PROGRAM = r"""
-import json, pathlib, re, shutil, subprocess, sys, tempfile, time
+import json, pathlib, re, shutil, subprocess, sys, tempfile
 request = json.load(sys.stdin)
 receipt_path, scenario_path = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
 scenario = json.loads(scenario_path.read_text(encoding="utf-8"))
@@ -382,13 +378,8 @@ agent = request["agent_id"]
 receipt = {key: request[key] for key in ("schema_version", "run_id", "request_id", "agent_id", "role")}
 if request["role"] == "probe":
     # 短い確認: 起動した cwd（runner の worktree）の README.md の 1 行目を、決まった形で返す
-    probe = scenario["agents"][agent]["probe"]
-    if probe == "crash":
-        sys.exit(3)
-    if probe == "hang":
-        time.sleep(60)
     first_line = pathlib.Path("README.md").read_text(encoding="utf-8").splitlines()[0]
-    answer = {"probe": "ok", "first_line": first_line} if probe == "ok" else {"probe": "no"}
+    answer = {"probe": "ok", "first_line": first_line}
     receipt.update(status="success", payload=answer)
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
     sys.exit(0)
@@ -545,15 +536,7 @@ agents = ["self"]
 class Kit:
     """テストから使う補助（importlib モードでは conftest を名前で import できないので fixture で渡す）。"""
 
-    repository: str = REPOSITORY
     number: int = NUMBER
-    branch: str = BRANCH
-    pr_url: str = PR_URL
-    records: Any = RECORDS
-
-    @staticmethod
-    def git(root: Path, *args: str) -> str:
-        return git(root, *args)
 
     @staticmethod
     def seat(head: str, name: str = "alpha", *, rerun: bool = True) -> dict[str, Any]:
@@ -570,10 +553,6 @@ class Kit:
         return round_record(round_, head, outcome, decisions, **extra)
 
     @staticmethod
-    def write_pair(review_dir: Path, model: str, head: str, base: str, **extra: Any) -> tuple[Path, Path]:
-        return write_pair(review_dir, model, head, base, **extra)
-
-    @staticmethod
     def finalize_result(path: Path, outcome: str, *, merged: bool, stop_reason: str | None = None) -> Path:
         return finalize_result(path, outcome, merged=merged, stop_reason=stop_reason)
 
@@ -583,55 +562,12 @@ def kit() -> Kit:
     return Kit()
 
 
-# 偽の herdr。受け取った引数を FAKE_HERDR_LOG に 1 行ずつ追記し、FAKE_HERDR_MODE（ok・fail・hang）に従って終わる。
-# hang は自分で待つ 1 つのプロセスなので、subprocess.run の期限切れの kill で止まる
-HERDR_PROGRAM = r"""
-import json, os, sys, time
-with open(os.environ["FAKE_HERDR_LOG"], "a", encoding="utf-8") as stream:
-    stream.write(json.dumps(sys.argv[1:]) + "\n")
-mode = os.environ.get("FAKE_HERDR_MODE", "ok")
-if mode == "fail":
-    sys.stderr.write("pane not found\n")
-    sys.exit(1)
-if mode == "hang":
-    time.sleep(60)
-"""
-
-
-@dataclass(frozen=True)
-class FakeHerdr:
-    log: Path
-    monkeypatch: pytest.MonkeyPatch
-
-    def calls(self) -> list[list[str]]:
-        if not self.log.exists():
-            return []
-        return [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()]
-
-    def set_mode(self, mode: str) -> None:
-        self.monkeypatch.setenv("FAKE_HERDR_MODE", mode)
-
-
 @pytest.fixture(autouse=True)
 def no_herdr(monkeypatch: pytest.MonkeyPatch) -> None:
     # Herdr のペインの中（HERDR_ENV=1）では、herdr が利用者のセッションにつながっていて、start が実際のペインの
-    # 名前を変える。loop のテストからは外し、名前を変えるテストだけが偽の herdr を置いて設定し直す
+    # 名前を変える。loop のテストからは外す
     monkeypatch.delenv("HERDR_ENV", raising=False)
     monkeypatch.delenv("HERDR_PANE_ID", raising=False)
-
-
-@pytest.fixture
-def fake_herdr(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeHerdr:
-    """PATH の先頭に偽の herdr を置く。HERDR_ENV・HERDR_PANE_ID は各テストが設定する。"""
-    directory = tmp_path / "herdr-bin"
-    directory.mkdir()
-    program = directory / "herdr"
-    program.write_text(f"#!{sys.executable}\n{HERDR_PROGRAM}", encoding="utf-8")
-    program.chmod(0o755)
-    log = tmp_path / "herdr-calls.jsonl"
-    monkeypatch.setenv("FAKE_HERDR_LOG", str(log))
-    monkeypatch.setenv("PATH", f"{directory}{os.pathsep}{os.environ['PATH']}")
-    return FakeHerdr(log, monkeypatch)
 
 
 @pytest.fixture
