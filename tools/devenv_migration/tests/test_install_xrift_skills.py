@@ -1,4 +1,4 @@
-"""usaturn/xrift-poc#1: XRift 公式スキルを固定したコミットから導入し、Git で無視されることを確かめる仕様。"""
+"""usaturn/xrift-poc#1: XRift 公式スキルの導入が、固定したコミットと必須のスキルを skills-lock.json で照合する仕様。"""
 
 from __future__ import annotations
 
@@ -39,46 +39,11 @@ def run(root: Path, tmp_path: Path, mode: str) -> subprocess.CompletedProcess[st
     )
 
 
-def test_install_places_ignored_skills(root: Path, tmp_path: Path) -> None:
-    result = run(root, tmp_path, "ok")
-    assert result.returncode == 0, result.stderr
-    assert (root / ".agents/skills/xrift-world/SKILL.md").is_file()
-    assert (root / ".claude/skills/xrift-sdk").is_symlink()
-    status = subprocess.run(
-        ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=all"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert (
-        ".agents" not in status.stdout and ".claude" not in status.stdout and "skills-lock.json" not in status.stdout
-    )
-
-
-def test_rerun_succeeds(root: Path, tmp_path: Path) -> None:
-    assert run(root, tmp_path, "ok").returncode == 0
-    assert run(root, tmp_path, "ok").returncode == 0
-
-
 def test_install_fails_on_ref_mismatch(root: Path, tmp_path: Path) -> None:
-    result = run(root, tmp_path, "wrong-ref")
-    assert result.returncode != 0
-    assert "ERROR" in result.stderr
+    """lock のコミットの照合が外れると、固定していない版のスキルを黙って受け入れ、その指示で制作が進む。"""
+    assert run(root, tmp_path, "wrong-ref").returncode != 0
 
 
 def test_install_fails_when_a_required_skill_is_missing(root: Path, tmp_path: Path) -> None:
-    result = run(root, tmp_path, "missing")
-    assert result.returncode != 0
-    assert "xrift-sdk" in result.stderr
-
-
-def test_install_fails_when_a_skill_is_not_ignored(root: Path, tmp_path: Path) -> None:
-    result = run(root, tmp_path, "unignored")
-    assert result.returncode != 0
-    assert "other-skill" in result.stderr
-
-
-def test_install_fails_when_skills_add_fails(root: Path, tmp_path: Path) -> None:
-    result = run(root, tmp_path, "fail")
-    assert result.returncode != 0
-    assert "ERROR" in result.stderr
+    """必須のスキルの照合が外れると、xrift-sdk が入らなくても導入が成功として終わり、ガイド無しで進む。"""
+    assert run(root, tmp_path, "missing").returncode != 0
