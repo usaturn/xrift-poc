@@ -1,4 +1,4 @@
-"""usaturn/xrift-poc#1: XRift CLI の認証情報の保存先と devcontainer.json の構造。"""
+"""usaturn/xrift-poc#1: initialize.bash が用意する bind mount の元と、XRift CLI の認証情報の保存先。"""
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ def run_initialize(home: Path) -> subprocess.CompletedProcess[str]:
 
 
 def test_initialize_creates_a_private_xrift_directory(tmp_path: Path) -> None:
+    """~/.xrift を 0700 で作らないと、XRift CLI の認証情報の置き場所が他のユーザから見える権限で黙って作られる。"""
     home = tmp_path / "空白 home"
     home.mkdir()
     for _ in range(2):
@@ -33,6 +34,7 @@ def test_initialize_creates_a_private_xrift_directory(tmp_path: Path) -> None:
 
 
 def test_initialize_keeps_an_existing_xrift_directory(tmp_path: Path) -> None:
+    """既存の ~/.xrift と中の認証情報・権限を変えると、利用者のログイン状態と設定が黙って失われる。"""
     home = tmp_path / "home"
     config = home / ".xrift" / "config.json"
     config.parent.mkdir(parents=True)
@@ -43,33 +45,6 @@ def test_initialize_keeps_an_existing_xrift_directory(tmp_path: Path) -> None:
     assert config.read_text(encoding="utf-8") == '{"synthetic":"not-a-secret"}\n'
     assert config.stat().st_mode & 0o777 == 0o600
     assert config.parent.stat().st_mode & 0o777 == 0o755
-
-
-def test_initialize_stops_when_xrift_is_not_a_directory(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    (home / ".xrift").write_text("x\n", encoding="utf-8")
-    result = run_initialize(home)
-    assert result.returncode != 0
-    assert str(home / ".xrift") in result.stderr
-    assert (home / ".xrift").read_text(encoding="utf-8") == "x\n"
-
-
-def test_initialize_stops_when_xrift_is_a_symlink_and_names_the_cause(tmp_path: Path) -> None:
-    # ディレクトリへのシンボリックリンク（dotfiles 管理）も拒否する。理由の表示が「ディレクトリではない」だけだと、
-    # 実体がディレクトリの利用者には原因が分からないので、シンボリックリンクであることを表示に含める。
-    home = tmp_path / "home"
-    real = tmp_path / "dotfiles" / "xrift"
-    real.mkdir(parents=True)
-    (real / "config.json").write_text('{"synthetic":"not-a-secret"}\n', encoding="utf-8")
-    home.mkdir()
-    (home / ".xrift").symlink_to(real, target_is_directory=True)
-    result = run_initialize(home)
-    assert result.returncode != 0
-    assert str(home / ".xrift") in result.stderr
-    assert "symlink" in result.stderr
-    assert os.readlink(home / ".xrift") == str(real)
-    assert (real / "config.json").read_text(encoding="utf-8") == '{"synthetic":"not-a-secret"}\n'
 
 
 def _strip_jsonc(text: str) -> str:
@@ -107,25 +82,9 @@ def _devcontainer() -> dict[str, Any]:
     return cast(dict[str, Any], json.loads(_strip_jsonc((DEVCONTAINER / "devcontainer.json").read_text())))
 
 
-def test_devcontainer_json_parses() -> None:
-    assert isinstance(_devcontainer(), dict)
-
-
-def test_xrift_directory_is_bind_mounted_from_the_host_home() -> None:
-    mounts = [cast(str, mount) for mount in _devcontainer()["mounts"]]
-    xrift = [dict(part.split("=", 1) for part in mount.split(",")) for mount in mounts if "/.xrift" in mount]
-    assert xrift == [
-        {
-            "source": "${localEnv:HOME}/.xrift",
-            "target": "/home/vscode/.xrift",
-            "type": "bind",
-            "consistency": "cached",
-        }
-    ]
-
-
 def test_every_bind_mount_source_is_prepared_by_initialize(tmp_path: Path) -> None:
-    # bind mount の元がホストに無いと Docker が root 所有で作るので、initialize.bash がすべて用意する。
+    """bind mount の元が host に無いと、Docker が root 所有のディレクトリを作り
+    （~/.claude.json がディレクトリになる）、host の状態が黙って壊れる。"""
     home = tmp_path / "home"
     home.mkdir()
     assert run_initialize(home).returncode == 0

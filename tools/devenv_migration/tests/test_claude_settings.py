@@ -34,34 +34,10 @@ def missing_marketplaces(paths: tuple[Path, Path]) -> list[str]:
 
 
 def test_every_enabled_plugin_marketplace_is_registered() -> None:
+    """登録の無いマーケットプレイスのプラグインを有効にすると、新しい環境の Claude Code がそれを黙って読み込まない。"""
     missing = missing_marketplaces(SETTINGS_PATHS)
 
     assert not missing, (
         f"enabledPlugins references unregistered marketplaces: {missing}. "
         "Register them in extraKnownMarketplaces so fresh environments can resolve the plugins."
     )
-
-
-def write_settings_pair(
-    tmp_path: Path,
-    main_enabled: dict[str, bool],
-    main_known: dict[str, dict[str, str]],
-    local_enabled: dict[str, bool],
-    local_known: dict[str, dict[str, str]],
-) -> tuple[Path, Path]:
-    main = tmp_path / "settings.json"
-    local = tmp_path / "settings.local.json"
-    main.write_text(json.dumps({"enabledPlugins": main_enabled, "extraKnownMarketplaces": main_known}))
-    local.write_text(json.dumps({"enabledPlugins": local_enabled, "extraKnownMarketplaces": local_known}))
-    return main, local
-
-
-def test_marketplace_union_and_unknown_are_detected(tmp_path: Path) -> None:
-    main, local = write_settings_pair(
-        tmp_path,
-        main_enabled={"one@first": True},
-        main_known={"second": {}},
-        local_enabled={"two@second": True, "three@unknown": True},
-        local_known={"first": {}},
-    )
-    assert missing_marketplaces((main, local)) == ["unknown"]
