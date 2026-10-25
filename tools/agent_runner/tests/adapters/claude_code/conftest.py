@@ -1,31 +1,11 @@
 """Fixtures for the claude-code adapter tests."""
 
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
 from tools.agent_runner.adapters import AdapterContext
 from tools.agent_runner.models import Agent, Request, Role
-
-FAKE_CLI = Path(__file__).with_name("fake_cli.py")
-
-
-@pytest.fixture
-def repository(tmp_path: Path) -> Path:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    for args in (
-        ["init", "-q"],
-        ["config", "user.email", "test@example.invalid"],
-        ["config", "user.name", "Test"],
-    ):
-        subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
-    (repo / "tracked.txt").write_text("original")
-    subprocess.run(["git", "-C", str(repo), "add", "tracked.txt"], check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "fixture"], check=True, capture_output=True)
-    return repo
 
 
 @pytest.fixture
@@ -46,7 +26,7 @@ def context(tmp_path: Path) -> AdapterContext:
     )
     agent = Agent(
         runtime="claude-code",
-        command=[sys.executable, str(FAKE_CLI)],
+        command=["claude"],
         model="opus",
     )
     role = Role(writes=False, deadline_seconds=60.0, result_shape="json")
