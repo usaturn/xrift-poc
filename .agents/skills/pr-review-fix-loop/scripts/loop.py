@@ -1145,7 +1145,7 @@ def cleanup_output(
 
     停止を確認できない（force でない）ときは何も消さない。worktree は対象の checkout から外す
     （force のときだけ --force）。秘密が残りうる sensitive_paths と、pr-review が残すと報告した出力領域の中の
-    パス（その中の worktree を含む）は、消さずに残して報告する。
+    パス（その中の worktree と、そのパスを含む worktree を含む）は、消さずに残して報告する。
     """
     parent = Path(resource.path)
     if not parent.name.startswith(TMP_PREFIX) or parent.is_symlink():
@@ -1187,6 +1187,10 @@ def cleanup_output(
             continue
         if any(location.is_relative_to(path) for path in declared.values()):
             # pr-review が残すと報告した session の中の worktree。declared として報告する
+            continue
+        if any(path.is_relative_to(location) for path in declared.values()):
+            # 外すと、中にある pr-review が残すと報告したパスも消える
+            retained.append(str(worktree))
             continue
         try:
             git_output(tool_root, "worktree", "remove", *(["--force"] if force else []), str(worktree))
