@@ -6,6 +6,8 @@ Claude Code・pi・Codex は、独立した Git リポジトリの中から起�
 読むので、スキルのリンクは独立した Git リポジトリの制作物にだけ置く。Pi 1.3.0 は project の設定
 （``.pi/`` の ``APPEND_SYSTEM.md``・``mcp.json``・``settings.json``）を、起動した cwd の ``.pi/`` からだけ
 読み、祖先を辿らない（2026-10-21 に確認）。``.pi/`` のリンクは Git 未初期化の制作物にも置く。
+Cursor CLI の親スキルの利用は、リンク済みの独立 Git と、その中のリンク済み worktree を対応範囲とする。
+未初期化の制作物での制約と版付きの観測は、親の README.md と PORTING.md「Cursor CLI の対応範囲」を参照する。
 
 - ``link [dir]``: 独立した Git リポジトリの制作物では、``<dir>/.agents/skills/<name>`` と
   ``<dir>/.claude/skills/<name>`` に、``<root>/.agents/skills/<name>`` への絶対パスのリンクを置き、置いたリンクを
@@ -356,8 +358,11 @@ def link(directory: Path, env_root: Path) -> Report:
     if not found.git:
         _link_pi(found.path, env_root.resolve(), report)
         report.note = (
-            "Git 未初期化の制作物。スキルは祖先の xrift-poc から読めるのでリンクせず、.pi/ のリンクだけを置いた。"
-            "git init したら xrift-link を実行し、親のスキルへのリンクを置く"
+            "Git 未初期化の制作物。スキルはリンクせず、.pi/ のリンクだけが対象。"
+            "Claude Code・pi・Codex は祖先のスキルを読む。"
+            "Cursor CLI はこの状態での親スキルの利用を対応範囲に含めない"
+            "（親の README.md と PORTING.md「Cursor CLI の対応範囲」を参照）。"
+            "Git を初期化して使う場合は xrift-link を再実行する。スキルのためだけの Git 初期化は不要"
         )
         return report
     target = found.path

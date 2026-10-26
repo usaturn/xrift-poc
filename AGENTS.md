@@ -223,6 +223,7 @@ xrift check --build
 - Pi は、project の設定（`.pi/` の `APPEND_SYSTEM.md`・`mcp.json`・`settings.json`）を起動した cwd の `.pi/` からだけ読み、親の `.pi/` を読まない。Pi を使う制作物では、Git 未初期化でも `xrift-link` を実行し、`.pi/` にこの 3 つへのリンクを置く（Git 未初期化ならスキルはリンクしない）。Pi は制作物のルート（worktree ならそのルート）から起動する
 - `.pi/` のリンク先は親の main checkout のファイルである。制作物から起動した Pi で project の設定を変える操作（`pi mcp add -l` など）は、親のファイルを書き換える
 - Codex は `cod` で起動する（親の `AGENTS.md` を読むよう `project_root_markers` を指定している）
+- Cursor CLI の親スキルの利用は、`xrift-link` 済みの独立した Git リポジトリの制作物と、その中のリンク済み worktree を対応範囲とする。Git 未初期化の制作物では Claude Code・pi・Codex を使い（Pi は上記の `xrift-link` が必要）、スキルのためだけに Git を初期化しない。Cursor CLI `2026.10.16-e3cb207` では、未初期化の制作物でスキルが一覧に無いというモデル応答と read イベントなしを観測した。新しい版は未再検証で、内部の探索原因は断定しない。条件別の結果と限界は `PORTING.md` の「Issue #8 の追加確認（2026-10-18）」、採用した運用は「Cursor CLI の対応範囲」を参照する
 
 ## スキルの置き場所
 
