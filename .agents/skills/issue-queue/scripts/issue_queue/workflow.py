@@ -424,7 +424,7 @@ class Workflow:
             raise QueueError("未解放のclaimがあります")
         # 確認時のHEADのまま残るopen PRだけを保持として通す。
         retained = {(d.pr, d.pr_head) for d in self.run.decisions if d.category == "retain" and d.pr is not None}
-        unconfirmed = [p["number"] for p in inventory["open_prs"] if (p["number"], p["head"]["sha"]) not in retained]
+        unconfirmed = [p["number"] for p in inventory["open_prs"] if (p["number"], p["head_sha"]) not in retained]
         if unconfirmed:
             raise QueueError(
                 f"未確認または確認後に更新されたopen PRがあります。処理対象と競合を確認してください: {unconfirmed}"

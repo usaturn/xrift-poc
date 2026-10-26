@@ -240,7 +240,11 @@ class External:
             "origin_main": self.git("rev-parse", "origin/main"),
             "remote_main": remote_main[0],
             "worktrees": records,
-            "open_prs": self.pages("pulls?state=open&per_page=100"),
+            # 照合に使う番号とHEADだけを残す。応答の全体（本文・_linksなど）はobservationに保存しない。
+            "open_prs": [
+                {"number": p["number"], "head_sha": p["head"]["sha"], "head_ref": p["head"]["ref"]}
+                for p in self.pages("pulls?state=open&per_page=100")
+            ],
             "claims": self.git("ls-remote", "--heads", "origin", "refs/heads/agent-claims/*"),
             "local_claims": self.git("for-each-ref", "--format=%(refname)", "refs/heads/agent-claims"),
         }

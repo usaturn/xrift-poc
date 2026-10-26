@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 from .external import External
 from .lifecycle import acknowledge, launch, submit
-from .models import Decision, Init, Result
+from .models import Decision, Init, Result, Run
 from .publishing import Publication, publish
 from .storage import QueueError, Store
 from .workflow import Workflow, ended_message, initialize
@@ -23,6 +23,7 @@ def parser() -> argparse.ArgumentParser:
     commands = root.add_subparsers(dest="command", required=True)
     init = commands.add_parser("init", help="方針JSONから新しいrunを作る")
     init.add_argument("--input", type=Path, required=True)
+    init.add_argument("--full", action="store_true", help="runの全体も出力する")
     for name in (
         "status",
         "reconcile",
@@ -43,6 +44,7 @@ def parser() -> argparse.ArgumentParser:
     ):
         item = commands.add_parser(name)
         item.add_argument("--run", required=True)
+        item.add_argument("--full", action="store_true", help="runの全体も出力する")
         if name in {"ack", "report", "publish"}:
             item.add_argument("--attempt", required=True)
         if name in {"report", "publish"}:
@@ -68,6 +70,35 @@ def parser() -> argparse.ArgumentParser:
             item.add_argument("--path", type=Path)
             item.add_argument("--pr", type=int)
     return root
+
+
+def summary(run: Run) -> dict[str, Any]:
+    """次の判断に使う項目。runの全体は--fullかstate.jsonで読む。"""
+    attempt = run.current()
+    return {
+        "issue": None if run.complete else run.queue[run.index],
+        "phase": run.phase,
+        "attempt": None
+        if attempt is None
+        else {
+            "id": attempt.id,
+            "launch": attempt.launch,
+            "pane_id": attempt.pane_id,
+            "agent_name": attempt.agent_name,
+            "acknowledged": attempt.acknowledged,
+            "outcome": attempt.result.outcome if attempt.result else None,
+            "pr_url": attempt.pr_url,
+            # 子は投稿のURLを結果のurlsに書く。
+            "effects": [{"key": e.key, "state": e.state, "url": e.url} for e in attempt.effects],
+        },
+    }
+
+
+def describe(work: Workflow, *, full: bool) -> dict[str, Any]:
+    described: dict[str, Any] = {"run_dir": str(work.path), **summary(work.run)}
+    if full:
+        described["run"] = work.run.model_dump(mode="json")
+    return described
 
 
 def main() -> int:
@@ -201,14 +232,14 @@ def main() -> int:
                 # 意図保存後のAPI失敗もrunに残す。unknownを未実行に戻さない。
                 if args.command != "status":
                     work.save()
-            response.update(run_dir=str(work.path), run=work.run.model_dump(mode="json"))
+            response.update(describe(work, full=args.full))
         print(json.dumps(response, ensure_ascii=False))
         return 0
     except (QueueError, OSError, ValueError, KeyError, ValidationError) as error:
         next_action = error.next_action if isinstance(error, QueueError) else "inspect"
         response = {"status": "blocked", "reason": str(error), "next": next_action}
         if work is not None:
-            response.update(run_dir=str(work.path), run=work.run.model_dump(mode="json"))
+            response.update(describe(work, full=args.full))
         print(json.dumps(response, ensure_ascii=False))
         return 3
 

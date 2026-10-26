@@ -65,8 +65,9 @@ class QueueEnv:
         return file
 
     def call(self, *args: str, pane_id: str = "w1:p1", code: int = 0) -> dict[str, Any]:
+        # 既定の出力は要約なので、runの全体を読む試験のために--fullを付ける。
         result = subprocess.run(
-            [sys.executable, str(CLI), *args],
+            [sys.executable, str(CLI), *args, "--full"],
             cwd=self.root,
             env={**self.env, "HERDR_PANE_ID": pane_id},
             capture_output=True,
