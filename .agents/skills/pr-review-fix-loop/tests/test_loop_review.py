@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, cast
 
@@ -357,3 +359,49 @@ def test_finish_reports_the_first_attempt_and_keeps_its_worktree(loop: Any, env:
     assert str(env.parent) in finished["cycles"][0]["outside_changes"]
     # 消さない。パスに改行を含むので、-z で読む loop の一覧で照合する
     assert Path(worktree).is_dir() and Path(worktree) in loop._registered_worktrees(env.parent)
+
+
+def test_cleanup_keeps_sessions_that_pr_review_retained_inside_the_output(loop: Any, env: Any, tmp_path: Path) -> None:
+    """runner の出力領域（試行の TMPDIR）の中に pr-review が残すと報告した session を回収で消すと、
+    制作物の PR の一時 clone と下書きが、保持の報告の前に消える（一時 clone は tool_root に登録されない）。"""
+    result, _ = accepted_result(env, tmp_path)
+    attempt = result.attempts[-1]
+    parent = Path(tempfile.mkdtemp(prefix=str(loop.TMP_PREFIX), dir=env.tmp_root))
+    resource = loop.Resource(path=str(parent), cycle=1, state="created")
+    results: list[Result] = []
+    declared: list[Path] = []
+    # helper の dict 形式と、loop が受け付ける list 形式
+    for agent, as_list in (("alpha", False), ("beta", True)):
+        session = loop._output_dir(resource) / f"{agent}-run/attempt-1/tmp/pr-review-900-{agent}"
+        clone = session / "worktree"
+        subprocess.run(["git", "clone", "-q", str(env.remote), str(clone)], check=True, capture_output=True)
+        draft = session / "review-backup" / "draft.md"
+        draft.parent.mkdir()
+        draft.write_text("下書き\n", encoding="utf-8")
+        paths = {"worktree": str(clone), "draft": str(draft), "session_dir": str(session), "pr_ref": "refs/x/900"}
+        payload = {
+            **cast(dict[str, Any], attempt.payload),
+            "agent_id": agent,
+            "status": "failed",
+            "cleanup": "failed",
+            "retained_paths": list(paths.values()) if as_list else paths,
+        }
+        failed = attempt.model_copy(update={"agent_id": agent, "payload": payload})
+        results.append(result.model_copy(update={"actual_agent": agent, "attempts": [failed]}))
+        declared += [clone, draft, session]
+    batch = BatchResult(
+        run_id="run-1",
+        state="success",
+        assignments={"inspect": ["alpha", "beta"]},
+        results=results,
+        outside_changes=[],
+        elapsed_seconds=1.0,
+        artifact_dir=loop._output_dir(resource),
+    )
+    assert not any(path.is_relative_to(parent) for path in loop._registered_worktrees(env.parent))
+
+    retained = loop.cleanup_output(env.parent, resource, batch)
+
+    assert all(path.exists() for path in declared)
+    assert {str(path) for path in declared} <= set(retained)
+    assert resource.state == "retained"

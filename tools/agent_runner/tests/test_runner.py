@@ -675,6 +675,9 @@ def test_unreadable_scratch_is_reported_instead_of_success(repository: Path, tmp
         assert not host_file.exists()
     finally:
         host_file.unlink(missing_ok=True)
+        # 読めないまま残すと、runner の担当がこのテストを実行したとき、外側の runner の試行が失敗になる
+        for unreadable in (tmp_path / "run").rglob("same.txt"):
+            unreadable.chmod(0o600)
 
 
 def test_replaced_scratch_root_does_not_redact_external_files(
