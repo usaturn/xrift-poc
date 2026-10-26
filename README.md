@@ -66,7 +66,8 @@ xrift check --build
 
 - `xrift create` は、テンプレートの取得から依存の導入まで行います。`npm run build`（`tsc && vite build`）と `npm run typecheck`（`tsc --noEmit`）も使えます
 - `xrift check --build` は、ワールドかアイテムかを `xrift.json` から判定し、ビルドしてから検査します。XRift CLI 0.25.0 では、種類を書く `xrift check world --build`・`xrift check item --build` はビルドしないので使いません。`dist/` の無い新規の制作物では失敗し、`dist/` があれば古い成果物を検査します（[#57](https://github.com/usaturn/xrift-poc/issues/57)）
-- プレビューはホストのブラウザで `http://localhost:5173` を開きます。2 つ目以降のプロジェクトは `npm run dev -- --host 0.0.0.0 --port 5174` のように 5174〜5179 を使います
+- プレビュー用の 5173〜5179 は `forwardPorts` に明示しています。2 つ目以降のプロジェクトは `npm run dev -- --host 0.0.0.0 --port 5174 --strictPort` のように 5174〜5179 を使います
+- ホストのブラウザでは、VS Code の「ポート」に表示された転送先を開きます（同じポートなら `http://localhost:5173`、追加分は `http://localhost:5174` など）。既存の接続は設定の編集だけで直ったとは扱いません。手動転送と再作成後の確認は [.devcontainer/README.md の手順](.devcontainer/README.md#追加プレビューの転送とホスト確認)を参照してください
 - コンテナ内でブラウザの描画を確かめるときは、Python Playwright を使います（`uv run --project "$XRIFT_POC_ROOT/tools/devenv" python <script>`。ブラウザが無いときは `uv run --project "$XRIFT_POC_ROOT/tools/devenv" playwright install chromium` で入れます）。制作物のディレクトリからも実行できるよう、`--project` は絶対パスで指定します
 - `xrift check` のセキュリティ検査を省略するオプション（`--ignore-warnings`・`--skip-check`）は、標準の手順に使いません
 

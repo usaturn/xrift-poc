@@ -208,7 +208,7 @@ xrift check --build
 
 - `xrift create` は依存の導入まで行う。制作物の Git は利用者が必要に応じて初期化する（セットアップは制作物を作らない・clone しない）
 - 検査は `xrift check --build` で行う。ワールドかアイテムかを `xrift.json` から判定し、`buildCommand` でビルドしてから検査する。XRift CLI 0.25.0 では、`xrift check world --build`・`xrift check item --build` のように種類を書くと、`--build`（`--json`・`--ignore-warnings` も同じ）が親の `check` に渡り、`world`・`item` の処理に届かない。オプションを先に書く `xrift check --build world` も同じである。このためビルドせず、`dist/` の無い新規の制作物では `Dist directory not found` で失敗し、`dist/` があれば古い成果物を検査して成功する（usaturn/xrift-poc#57）。CLI を更新して直ったことを確かめるまで、種類を書く形を使わない
-- プレビューはホストのブラウザで `http://localhost:5173` を開く。2 つ目以降のプロジェクトは `npm run dev -- --host 0.0.0.0 --port 5174` のように 5174〜5179 を使う
+- プレビュー用の 5173〜5179 は `forwardPorts` に明示している。2 つ目以降のプロジェクトは `npm run dev -- --host 0.0.0.0 --port 5174 --strictPort` のように 5174〜5179 を使う。ホストでは VS Code の「ポート」の実際の転送先を開く（同じポートなら `http://localhost:5173`、追加分は `http://localhost:5174` など）。既存接続は設定の編集だけで修復したとは扱わない。手動転送と再作成後のワールド・アイテム両方の確認は [.devcontainer/README.md](.devcontainer/README.md#追加プレビューの転送とホスト確認) に従い、ディレクトリ・起動コマンド・両側のポート・両 URL の結果を記録する。ホストの再作成とブラウザ操作は利用者が行う
 - コンテナ内でのブラウザの確認は Python Playwright（`uv run --project "$XRIFT_POC_ROOT/tools/devenv" python <script>`）で行う
 - 制作物は親の `.gitignore` で無視しているため、親のルートからパスを付けずに `rg` で検索すると、制作物の中は検索されない。親のルートからは `rg <pattern> worlds/<name>` のようにパスを明示するか、制作物のディレクトリの中から検索する
 - 認証: `xrift login` は利用者が手動で行う。エージェントはログインを求めて待たない。状態は `xrift whoami` で確かめる
