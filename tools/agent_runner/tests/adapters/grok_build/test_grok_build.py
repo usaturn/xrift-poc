@@ -55,6 +55,14 @@ def _result(tmp_path: Path, **fields: object) -> Path:
     return _write(tmp_path / "stdout.log", json.dumps(body) + "\n")
 
 
+def test_collect_duplicate_answer_is_not_success(tmp_path: Path) -> None:
+    """重複キーの回答やその内側の object を採用すると、外側の指摘が黙って消える。"""
+    stdout = _result(tmp_path, text='説明\n{"findings":[{"id":"消える指摘"}],"findings":[]}\n完了')
+    outcome = ADAPTER.collect(_context(tmp_path), stdout, _write(tmp_path / "stderr.log", ""))
+    assert outcome.state == "response_failed"
+    assert outcome.receipt is None
+
+
 def test_prepare_write_role_bypasses_permissions_and_passes_effort(tmp_path: Path) -> None:
     """読み取りの役割で権限の確認を飛ばす・設定の model・effort・args が渡らないと黙って動く。"""
     spec = ADAPTER.prepare(_context(tmp_path, effort="high", args=("--flag",)))

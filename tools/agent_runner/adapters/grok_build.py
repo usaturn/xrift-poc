@@ -7,6 +7,7 @@ from typing import cast
 
 from tools.agent_runner.adapters import AdapterContext, AdapterOutcome, Capabilities, LaunchSpec
 from tools.agent_runner.adapters.skills import prompt_lines
+from tools.agent_runner.adapters.strict_json import decode, raw_decode
 from tools.agent_runner.models import Identity, Receipt, State
 
 _AUTHENTICATION = re.compile(
@@ -35,21 +36,25 @@ def _locate(text: str) -> tuple[dict[str, object] | None, int, int]:
     """Return the first decodable outer object and its [start, end) span."""
     stripped = text.strip()
     try:
-        whole: object = json.loads(stripped)
+        whole = decode(stripped)
     except json.JSONDecodeError:
         pass
+    except ValueError:
+        return None, -1, -1
     else:
         if isinstance(whole, dict) and whole:
             start = text.index("{")
             return cast(dict[str, object], whole), start, start + len(stripped)
-    decoder = json.JSONDecoder()
     for index, character in enumerate(text):
         if character != "{":
             continue
         try:
-            value, end = decoder.raw_decode(text[index:])
+            value, end = raw_decode(text[index:])
         except json.JSONDecodeError:
             continue
+        except ValueError:
+            # Do not salvage a nested object after rejecting the outer answer.
+            return None, -1, -1
         if isinstance(value, dict) and value:
             return cast(dict[str, object], value), index, index + end
     return None, -1, -1

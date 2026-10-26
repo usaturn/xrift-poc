@@ -9,6 +9,7 @@ from typing import cast
 
 from tools.agent_runner.adapters import AdapterContext, AdapterOutcome, Capabilities, LaunchSpec
 from tools.agent_runner.adapters.skills import prompt_lines, verified_versions
+from tools.agent_runner.adapters.strict_json import decode, raw_decode
 from tools.agent_runner.models import Identity, Receipt, State
 
 _AUTHENTICATION = re.compile(
@@ -44,20 +45,24 @@ def _read(path: Path) -> str:
 def _json_object(text: str) -> dict[str, object] | None:
     stripped = text.strip()
     try:
-        whole: object = json.loads(stripped)
+        whole = decode(stripped)
     except json.JSONDecodeError:
         pass
+    except ValueError:
+        return None
     else:
         if isinstance(whole, dict) and whole:
             return cast(dict[str, object], whole)
-    decoder = json.JSONDecoder()
     for index, character in enumerate(text):
         if character != "{":
             continue
         try:
-            value, _end = decoder.raw_decode(text[index:])
+            value, _end = raw_decode(text[index:])
         except json.JSONDecodeError:
             continue
+        except ValueError:
+            # Do not salvage a nested object after rejecting the outer answer.
+            return None
         if isinstance(value, dict) and value:
             return cast(dict[str, object], value)
     return None
