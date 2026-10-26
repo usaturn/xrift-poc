@@ -828,7 +828,12 @@ def check_findings_draft(findings_draft: Path, draft: Path, state: Mapping[str, 
             raise WorkspaceError("findings draft review_file does not match the pinned review file")
         if session_repository(state) is not None and value["pr"]["repository"] != session_repository(state):
             raise WorkspaceError("findings draft repository does not match the pinned review")
-        review_findings.check_pair(draft.read_text(encoding="utf-8"), value)
+        markdown = draft.read_text(encoding="utf-8")
+        review_findings.check_pair(markdown, value)
+        # PR 修正ループと同じ判定。保存して success を返したレビューを loop が却下しないようにする
+        problem = review_findings.review_history_problem(markdown, state["commit"])
+        if problem is not None:
+            raise WorkspaceError(f"review draft: {problem}")
     except json.JSONDecodeError as error:
         raise WorkspaceError(f"findings draft is not valid JSON: {error.msg}") from error
     except review_findings.FindingsError as error:

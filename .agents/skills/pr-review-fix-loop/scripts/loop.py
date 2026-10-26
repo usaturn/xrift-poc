@@ -79,9 +79,6 @@ PROBE_PROMPT = (
     "説明文を付けない（```json のコードフェンスで囲んでもよい）。\n"
     "ほかのファイルを読まない。ファイルを変更しない。別のエージェントを起動しない。\n"
 )
-_HISTORY_ROW = re.compile(
-    r"^\|[^|\n]*\|\s*`?(?P<head>[0-9a-f]{12})`?\s*\|\s*(?:Initial|Update)\s*\|\s*$", re.MULTILINE
-)
 
 
 def _load(name: str, path: Path) -> ModuleType:
@@ -837,11 +834,6 @@ def review_dir_for(root: Path, pull: PullState) -> Path:
 # --- 再利用できる成果 ---------------------------------------------------------------------------------------------
 
 
-def last_history_head(markdown: str) -> str | None:
-    rows = _HISTORY_ROW.findall(markdown)
-    return cast(str, rows[-1]) if rows else None
-
-
 def find_reusable(review_dir: Path, pr: PrRef, head: str) -> list[ReusedReview]:
     """現在の HEAD を対象にした、検査を通る成果 2 件（候補一覧と、対になる本文）を探す。"""
     folder = review_dir / "findings"
@@ -860,7 +852,7 @@ def find_reusable(review_dir: Path, pr: PrRef, head: str) -> list[ReusedReview]:
                 document["kind"] != "candidates"
                 or document["reviewed_head"] != head
                 or document["pr"] != pr.key()
-                or last_history_head(markdown) != head[:12]
+                or findings.review_history_problem(markdown, head) is not None
             ):
                 continue
             findings.check_pair(markdown, document)
@@ -1061,8 +1053,11 @@ def verify_reviewer(result: Result, *, pr: PrRef, head: str, review_dir: Path) -
         markdown = review.read_text(encoding="utf-8")
         if document["kind"] != "candidates" or document["reviewed_head"] != head or document["pr"] != pr.key():
             return reject("artifacts", "候補一覧が別の対象を指す")
-        if last_history_head(markdown) != head[:12]:
-            return reject("artifacts", "レビューファイルの最後の Review history の HEAD がサイクルの HEAD と違う")
+        problem = findings.review_history_problem(markdown, head)
+        if problem is not None:
+            return reject(
+                "artifacts", f"レビューファイルの最後の Review history の HEAD がサイクルの HEAD と違う（{problem}）"
+            )
         findings.check_pair(markdown, document)
     except (OSError, ValueError) as error:
         return reject("artifacts", f"成果 2 件の検査に失敗した: {str(error)[:200]}")
