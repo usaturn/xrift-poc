@@ -21,6 +21,16 @@ class QueueError(Exception):
         self.next_action = next_action
 
 
+LOCK_BUSY = "別のqueue操作（子のack・report・publishなど）が進行中です。何も実行していません"
+
+
+class LockBusy(QueueError):
+    """別のqueue操作がロックを持っていて、コマンドを何も実行しなかった。一時的な競合で、待ってから照合し直す。"""
+
+    def __init__(self, message: str):
+        super().__init__(message, next_action="wait")
+
+
 class Store:
     def __init__(self, parent: Path):
         self.parent = parent.resolve()
@@ -36,7 +46,7 @@ class Store:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
             except BlockingIOError as error:
-                raise QueueError("別のqueue操作が進行中です") from error
+                raise LockBusy(LOCK_BUSY) from error
             try:
                 yield
             finally:

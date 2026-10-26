@@ -322,6 +322,9 @@ if tool == "herdr":
             Path(str(file) + ".waiting").touch()
             import time
             time.sleep(data["wait_seconds"])
+            # 待機の間に別のプロセス（子のpublishなど）が書いた記録を消さないよう、読み直してから書く。
+            data = json.loads(file.read_text())
+            data["calls"].append([tool, *args])
         emit({"result": {"state": "done"}})
     if args[:2] == ["pane", "close"]:
         data["panes"].pop(args[2], None)

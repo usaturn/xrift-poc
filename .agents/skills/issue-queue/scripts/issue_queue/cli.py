@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -14,8 +15,16 @@ from .external import External
 from .lifecycle import acknowledge, launch, submit
 from .models import Decision, Init, Result, Run
 from .publishing import Publication, publish
-from .storage import QueueError, Store
+from .storage import LockBusy, QueueError, Store
 from .workflow import Workflow, ended_message, initialize
+
+# 子のコマンド。司令塔の照合などの終了を待ってから実行する。
+CHILD_COMMANDS = {"ack", "report", "publish"}
+# Herdrのイベントの待機の上限と、照合のロックのやり直しの間隔・最短の期限（秒）。
+HERDR_WAIT_SECONDS = 30
+LOCK_RETRY_SECONDS = 1
+LOCK_WAIT_SECONDS = 30
+ERRORS = (QueueError, OSError, ValueError, KeyError, ValidationError)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -101,17 +110,21 @@ def describe(work: Workflow, *, full: bool) -> dict[str, Any]:
     return described
 
 
-def main() -> int:
-    args = parser().parse_args()
+def blocked(error: Exception, work: Workflow | None, *, full: bool) -> tuple[int, dict[str, Any]]:
+    next_action = error.next_action if isinstance(error, QueueError) else "inspect"
+    response: dict[str, Any] = {"status": "blocked", "reason": str(error), "next": next_action}
+    if work is not None:
+        response.update(describe(work, full=full))
+    return 3, response
+
+
+def run_command(args: argparse.Namespace, store: Store, ext: External) -> tuple[int, dict[str, Any]]:
+    """1つのコマンドをロックの中で実行し、終了コードと応答を返す。stateはロックの中で読み直す。"""
     work: Workflow | None = None
     response: dict[str, Any] = {}
     try:
-        parent = Path(os.environ["XRIFT_POC_ROOT"]).resolve()
-        ext = External(parent)
-        ext.validate_parent()
-        store = Store(parent)
-        # 子のコマンドは司令塔のwait・reconcileの終了を待って直列化する。司令塔同士の競合は拒否する。
-        with store.lock(wait=args.command in {"ack", "report", "publish"}):
+        # 子のコマンドは司令塔の照合などの終了を待って直列化する。司令塔のコマンドは待たずにbusyで返す。
+        with store.lock(wait=args.command in CHILD_COMMANDS):
             if args.command == "init":
                 path, run = initialize(store, ext, Init.model_validate_json(args.input.read_text()))
                 work = Workflow(store, ext, path, run)
@@ -212,14 +225,7 @@ def main() -> int:
                     work.run.event("stop_requested", after=args.after)
                 elif args.command == "advance":
                     work.advance()
-                elif args.command == "wait":
-                    attempt = work.run.current()
-                    if attempt and attempt.pane_id:
-                        # settledは完了ではない。待機のtimeout後も必ず現在状態を取得する。
-                        try:
-                            work.ext.herdr("agent", "wait", attempt.pane_id, "--timeout", "30000")
-                        except QueueError:
-                            pass
+                # waitのHerdrのイベントの待機は、子の記録を待たせないようロックの外で済ませてある（wait_command）。
                 if args.command in {"reconcile", "wait", "advance", "resume", "end"}:
                     state, next_action, reason = work.observe()
                 else:
@@ -233,15 +239,69 @@ def main() -> int:
                 if args.command != "status":
                     work.save()
             response.update(describe(work, full=args.full))
-        print(json.dumps(response, ensure_ascii=False))
-        return 0
-    except (QueueError, OSError, ValueError, KeyError, ValidationError) as error:
-        next_action = error.next_action if isinstance(error, QueueError) else "inspect"
-        response = {"status": "blocked", "reason": str(error), "next": next_action}
-        if work is not None:
-            response.update(describe(work, full=args.full))
-        print(json.dumps(response, ensure_ascii=False))
-        return 3
+        return 0, response
+    except LockBusy as error:
+        # 何も実行していない。一時的な競合で、利用者への報告が要る停止とは区別する。
+        return 3, {"status": "busy", "reason": str(error), "next": error.next_action}
+    except ERRORS as error:
+        return blocked(error, work, full=args.full)
+
+
+def current_pane(store: Store, run_dir: str) -> str | None:
+    """ロックを取らずにstate.jsonを読み、今のattemptのpaneを返す。保存はreplaceなので書きかけの内容は読まない。
+
+    Herdrの待機のきっかけにだけ使う。照合と保存は、run_commandがロックの中で読み直したstateで行う。
+    """
+    try:
+        attempt = store.load(run_dir).current()
+    except ERRORS:
+        return None
+    return attempt.pane_id if attempt else None
+
+
+def herdr_wait(ext: External, pane_id: str, seconds: float) -> None:
+    # settledは完了ではない。待機のtimeout・失敗の後も必ず現在状態を照合する。
+    try:
+        ext.herdr("agent", "wait", pane_id, "--timeout", str(int(seconds * 1000)))
+    except QueueError:
+        pass
+
+
+def observe_locked(
+    args: argparse.Namespace, store: Store, ext: External, deadline: float
+) -> tuple[int, dict[str, Any]]:
+    """照合を実行する。ロックが取れなければ、1秒おきに期限（少なくとも最初の競合から30秒）までやり直す。
+
+    子のpublishなどは数秒でロックを放す。負荷で長引いても、待機を利用者への報告が要る停止にしない。
+    """
+    code, response = run_command(args, store, ext)
+    until = max(deadline, time.monotonic() + LOCK_WAIT_SECONDS)
+    while response["status"] == "busy" and time.monotonic() < until:
+        time.sleep(LOCK_RETRY_SECONDS)
+        code, response = run_command(args, store, ext)
+    return code, response
+
+
+def wait_command(args: argparse.Namespace, store: Store, ext: External) -> tuple[int, dict[str, Any]]:
+    """子のpaneのHerdrのイベントをロックの外で待ってから、ロックの中で照合する。"""
+    if pane_id := current_pane(store, args.run):
+        herdr_wait(ext, pane_id, HERDR_WAIT_SECONDS)
+    return observe_locked(args, store, ext, time.monotonic())
+
+
+def main() -> int:
+    args = parser().parse_args()
+    try:
+        parent = Path(os.environ["XRIFT_POC_ROOT"]).resolve()
+        ext = External(parent)
+        ext.validate_parent()
+        store = Store(parent)
+    except ERRORS as error:
+        code, response = blocked(error, None, full=args.full)
+    else:
+        code, response = (wait_command if args.command == "wait" else run_command)(args, store, ext)
+    print(json.dumps(response, ensure_ascii=False))
+    return code
 
 
 if __name__ == "__main__":
