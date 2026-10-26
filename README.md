@@ -106,7 +106,10 @@ xrift check --build
 - `.pi/` のリンクは、親の main checkout のファイルを指します。制作物から起動した Pi で project の設定を変える操作（`pi mcp add -l`・`pi install -l`、`/mcp` での有効・無効の切り替えなど）は、親のファイルを書き換えます。その制作物だけの設定にするときは、そのリンクを消して自分のファイルを置き、`xrift-link` を実行し直します
 - 制作物から起動した Pi に設定が効いていることは、制作物のルートで `pi mcp list` を実行し、`google-dev-knowledge` が出ることで確かめます
 - Codex は `cod` で起動します。独立した Git リポジトリの制作物から起動しても、親の `AGENTS.md` を読むよう `project_root_markers=[".devcontainer"]` を指定しています。この指定は codex-cli 0.162.1 で確かめました。将来の版で `project_root_markers` の意味が変わると、親の `AGENTS.md` を読めなくなるおそれがあるので、Codex を更新したら制作物から起動して確かめ直します。制作物が自前の `.devcontainer` を持つ場合は、その制作物のディレクトリがルートになり、親の `AGENTS.md` を読めません
-- Cursor CLI・Grok Build の読み込みは確かめていません。手動で確かめる手順は [PORTING.md](PORTING.md) の「未実施」にあります
+- Cursor CLI の親スキルの利用は、`xrift-link` を実行した独立した Git リポジトリの制作物と、その中のリンク済み worktree を対応範囲とします。Git 未初期化の制作物では Claude Code・pi・Codex を使います（Pi は上記の `xrift-link` が必要です）。スキルのためだけに Git を初期化することは勧めません
+  - Cursor CLI `2026.10.16-e3cb207` では、親・リンク済み独立 Git・リンク済み worktree で `repository-ownership` と `xrift-world` の read 成功を観測しました。未初期化の制作物とリンク無しの独立 Git では、モデルが両スキルを一覧に無いと報告し、read イベントもありませんでした。単なる「未確認」ではありません
+  - これは当時の観測に基づく対応範囲で、新しい版では再検証していません。内部カタログの dump は取得しておらず、原因は断定していません。詳細と検証の限界は [Issue #8 の追加確認（2026-10-18）](PORTING.md#issue-8-の追加確認2026-10-18)、採用した運用は [Cursor CLI の対応範囲](PORTING.md#cursor-cli-の対応範囲) にあります
+- Grok Build の読み込みは確かめていません。手動で確かめる手順は [PORTING.md](PORTING.md) の「未実施」にあります
 
 どの制作物の Git・Issue・PR を操作するかは、`uv run --no-project python "$XRIFT_POC_ROOT/.agents/scripts/route_target.py" <変更するパス>` で判定します。Git 未初期化の制作物は、祖先の xrift-poc に誤って振り分けず、操作を止めます。
 
