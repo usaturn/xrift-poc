@@ -20,11 +20,20 @@ from .workflow import Workflow, ended_message, initialize
 
 # 子のコマンド。司令塔の照合などの終了を待ってから実行する。
 CHILD_COMMANDS = {"ack", "report", "publish"}
-# Herdrのイベントの待機の上限と、照合のロックのやり直しの間隔・最短の期限（秒）。
+# Herdrのイベントの待機の上限、wait --max-secondsの照合の間隔、照合のロックのやり直しの間隔・最短の期限（秒）。
 HERDR_WAIT_SECONDS = 30
+WAIT_POLL_SECONDS = 30
 LOCK_RETRY_SECONDS = 1
 LOCK_WAIT_SECONDS = 30
 ERRORS = (QueueError, OSError, ValueError, KeyError, ValidationError)
+
+
+def seconds(value: str) -> int:
+    """wait --max-secondsの値。Herdrの1回の待機（30秒）から1時間まで。"""
+    number = int(value)
+    if not 30 <= number <= 3600:
+        raise argparse.ArgumentTypeError("30〜3600秒で指定してください")
+    return number
 
 
 def parser() -> argparse.ArgumentParser:
@@ -58,6 +67,8 @@ def parser() -> argparse.ArgumentParser:
             item.add_argument("--attempt", required=True)
         if name in {"report", "publish"}:
             item.add_argument("--input", required=True, type=Path)
+        if name == "wait":
+            item.add_argument("--max-seconds", type=seconds, help="この秒数まで待機を繰り返す")
         if name == "stop":
             item.add_argument("--after", choices=("followup", "cleanup"), required=True)
         if name == "resume":
@@ -283,10 +294,29 @@ def observe_locked(
 
 
 def wait_command(args: argparse.Namespace, store: Store, ext: External) -> tuple[int, dict[str, Any]]:
-    """子のpaneのHerdrのイベントをロックの外で待ってから、ロックの中で照合する。"""
-    if pane_id := current_pane(store, args.run):
-        herdr_wait(ext, pane_id, HERDR_WAIT_SECONDS)
-    return observe_locked(args, store, ext, time.monotonic())
+    """子のpaneのHerdrのイベントをロックの外で待ってから、ロックの中で照合する。
+
+    --max-secondsがあれば約30秒おきに繰り返し、次のどれかで返す: nextがwait以外になる、
+    statusかnextがこの呼び出しの最初の照合から変わる、照合が失敗する（終了コード3）、期限に達する。
+    各回の照合はロックの中でstateを読み直すので、待機の間の子のack・report・publishの記録を上書きしない。
+    """
+    start = time.monotonic()
+    deadline = start + (args.max_seconds or 0)
+    first: tuple[str, str] | None = None
+    while True:
+        began = time.monotonic()
+        if pane_id := current_pane(store, args.run):
+            remaining = HERDR_WAIT_SECONDS if args.max_seconds is None else deadline - began
+            herdr_wait(ext, pane_id, max(1.0, min(HERDR_WAIT_SECONDS, remaining)))
+        code, response = observe_locked(args, store, ext, deadline)
+        now = time.monotonic()
+        state = (response["status"], response["next"])
+        first = first or state
+        if code or response["next"] != "wait" or state != first or now >= deadline:
+            response["waited_seconds"] = round(now - start)
+            return code, response
+        # Herdrの待機がすぐ戻った（子がidle・doneなど）ときも、外部状態の照合は約30秒おきにする。
+        time.sleep(max(0.0, min(began + WAIT_POLL_SECONDS, deadline) - now))
 
 
 def main() -> int:
