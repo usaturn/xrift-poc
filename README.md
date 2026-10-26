@@ -110,7 +110,6 @@ xrift check --build
 - Cursor CLI の親スキルの利用は、`xrift-link` を実行した独立した Git リポジトリの制作物と、その中のリンク済み worktree を対応範囲とします。Git 未初期化の制作物では Claude Code・pi・Codex を使います（Pi は上記の `xrift-link` が必要です）。スキルのためだけに Git を初期化することは勧めません
   - Cursor CLI `2026.10.16-e3cb207` では、親・リンク済み独立 Git・リンク済み worktree で `repository-ownership` と `xrift-world` の read 成功を観測しました。未初期化の制作物とリンク無しの独立 Git では、モデルが両スキルを一覧に無いと報告し、read イベントもありませんでした。単なる「未確認」ではありません
   - これは当時の観測に基づく対応範囲で、新しい版では再検証していません。内部カタログの dump は取得しておらず、原因は断定していません。詳細と検証の限界は [Issue #8 の追加確認（2026-10-18）](PORTING.md#issue-8-の追加確認2026-10-18)、採用した運用は [Cursor CLI の対応範囲](PORTING.md#cursor-cli-の対応範囲) にあります
-- Grok Build の読み込みは確かめていません。手動で確かめる手順は [PORTING.md](PORTING.md) の「未実施」にあります
 
 どの制作物の Git・Issue・PR を操作するかは、`uv run --no-project python "$XRIFT_POC_ROOT/.agents/scripts/route_target.py" <変更するパス>` で判定します。Git 未初期化の制作物は、祖先の xrift-poc に誤って振り分けず、操作を止めます。
 

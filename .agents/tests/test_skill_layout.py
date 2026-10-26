@@ -16,7 +16,7 @@ AGENTS_SKILLS = REPO_ROOT / ".agents/skills"
 CLAUDE_SKILLS = REPO_ROOT / ".claude/skills"
 # 写しを置かない、ランタイム専用の置き場所。
 RUNTIME_SKILL_DIRS = tuple(
-    REPO_ROOT / runtime / "skills" for runtime in (".devin", ".cognition", ".codex", ".cursor", ".grok", ".pi")
+    REPO_ROOT / runtime / "skills" for runtime in (".devin", ".cognition", ".codex", ".cursor", ".pi")
 )
 # まだ一本化していないスキル（親 #564 の各子が担当する）。一本化する変更で、ここから外す。
 PENDING = frozenset[str]()

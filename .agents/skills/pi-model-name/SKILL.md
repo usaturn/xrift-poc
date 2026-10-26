@@ -16,7 +16,7 @@ description: pi で現在動いている AI のモデルや provider を尋ね�
 
 使わない場面:
 
-- pi 以外のランタイム（Codex / Claude / Cursor / Grok）のモデル確認
+- pi 以外のランタイム（Codex / Claude / Cursor）のモデル確認
 - モデルカタログの一覧や切替操作（`pi --list-models`、`--model` 起動引数、`/model` の話）
 - 料金・性能比較などのモデル選定相談
 

@@ -24,6 +24,7 @@
 | `public/`、`.gitmodules`、`prepare_public_checkout`、`public/uv.lock` を使う Playwright の導入 | MaatLog のアプリ用 |
 | `tools/devenv_migration/tests/test_application_checkout.py`、`test_cutover_contract.py`、`tools/devenv_migration/evidence/` | MaatLog の `public/` と cutover の記録 |
 | ポート 8000 | MaatLog の sphinx-autobuild 用 |
+| Grok Build の runtime・adapter・導入・mount・更新・専用テスト | 当初移植したが #162 で撤去した。移植元の Grok Build 専用変更は今後取り込まない。Pi / Cursor CLI の Grok モデル対応と Herdr の種別は対象外。ホストの `~/.grok` は変更しない |
 | DeepSeek Harness（DSH）の runtime・導入・ランチャー・設定・専用テスト | 当初移植したが #123 で撤去した。移植元の DSH 専用変更は今後取り込まない。Pi の DeepSeek と共通の runner 機能は対象外 |
 | `tools/review_triage` と専用テスト・API キーの手順 | 当初移植したが #118 で撤去した。現行の手順から使われておらず、利用手順の新設は対象外とした。今後の取り込みからも外す。以下に残るパス・識別子は移植当時の記録で、現在は存在しない |
 | `opencode.json` | OpenCode はセットアップで導入していない。設定ファイルだけ置くと導入済みと誤解される |
@@ -367,6 +368,11 @@ XRift CLI 0.25.0 で、親の main checkout の `worlds/issue-8-preview` と `it
 - 当時の `devcontainer.json` の `forwardPorts` には5173があるが、5174〜5179は無かった。`portsAttributes` のラベルだけでは転送は保証されない。当時のコンテナでは VS Code の「ポート」→「ポートの転送」で5174を追加できたが、追加後のホスト表示は未確認だった。恒久対応は #59 に分けた（現在の設定は下の「Issue #59 の追加プレビューポート」を参照）。
 
 ### Cursor CLI・Grok Build の読み込み
+
+以下は当時の観測記録である。Grok Build は #162 で撤去し、ここに記録した
+独立した Git の制作物で親の指示を読まない制約も、現在の対応範囲から外した。
+Cursor CLI の対応範囲は変えない。既存コンテナと個人設定の移行は
+[.devcontainer/README.md](.devcontainer/README.md#grok-build-撤去後の移行162) を参照する。
 
 | 対象 | 版と確認方法 | 結果と限界 |
 |---|---|---|

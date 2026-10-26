@@ -1,6 +1,6 @@
 ---
 name: agent-handoff
-description: エージェント間で作業を受け渡すときに使う。渡す側 —「区切りのいい所で停止して引き継ぎ資料を作って」「別のエージェントに実装させる」「この Spec を渡せば足りるか」「handoff を書いて」「hand this off」「write a handoff」と言われたとき。受け取る側 — 他のエージェント（Codex / Grok / 別セッションの Claude Code）が superpowers・brainstorming・writing-plans・review-fix-planning・subagent-driven-development・python-tdd-team で進めた作業を「引き継いで」「続きをやって」「どこまで終わったか確認して」と言われたとき。tmp/docs_draft/claude_handoffs/ の handoff アーティファクトを読み書きし、決定済みの裁定・触ってはいけない範囲・検証手順・反映先まで引き渡す
+description: エージェント間で作業を受け渡すときに使う。渡す側 —「区切りのいい所で停止して引き継ぎ資料を作って」「別のエージェントに実装させる」「この Spec を渡せば足りるか」「handoff を書いて」「hand this off」「write a handoff」と言われたとき。受け取る側 — 他のエージェント（Codex / 別セッションの Claude Code）が superpowers・brainstorming・writing-plans・review-fix-planning・subagent-driven-development・python-tdd-team で進めた作業を「引き継いで」「続きをやって」「どこまで終わったか確認して」と言われたとき。tmp/docs_draft/claude_handoffs/ の handoff アーティファクトを読み書きし、決定済みの裁定・触ってはいけない範囲・検証手順・反映先まで引き渡す
 allowed-tools: Read, Grep, Glob, Skill, Bash(ls *), Bash(cat *), Bash(git *), Bash(gh *), Bash(uv run *), Write(tmp/docs_draft/claude_handoffs/**), Edit(tmp/docs_draft/claude_handoffs/**), Write(docs_draft/superpowers/**), Edit(docs_draft/superpowers/**)
 ---
 

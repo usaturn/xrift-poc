@@ -37,7 +37,7 @@ uv run --project "$TOOL_ROOT/tools/devenv" --locked python \
   <利用者が指定したオプション>
 ```
 
-- `--controller-model` は、review-fix-planning が状況コメントに使う `MODEL_NAME` と同じ値にする。`--controller-runtime` は `claude-code`・`devin`・`pi`・`codex`・`cursor`・`grok-build` のどれか。
+- `--controller-model` は、review-fix-planning が状況コメントに使う `MODEL_NAME` と同じ値にする。`--controller-runtime` は `claude-code`・`devin`・`pi`・`codex`・`cursor` のどれか。
 - `--max-cycles N`: サイクルの上限（1〜10、既定 3）。
 - `--hold-action skip|fix`: 利用者が指定したときだけ渡す。新規起動で未指定なら helper が `skip` を適用する。明示した `skip`・`fix` はそのまま適用する。
 - `--assign ROLE=AGENT[,AGENT]`（複数可）: `inspect`（レビュアー、複数可）と、`implement`・`self-review`・`fix-check`（各 1 つ。review-fix-planning の `run_roles.py` に渡す）。agent は agent-runner の設定に定義された名前。

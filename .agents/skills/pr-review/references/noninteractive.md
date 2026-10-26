@@ -7,7 +7,7 @@
 | 引数 | 意味 |
 |---|---|
 | `--pr` | 必須。番号・`#番号`は親origin、URLはそのrepo。非対話で欠けたらfailed。別repoの同じ番号を探さない |
-| `--runtime` | 必須。claude-code / devin / pi / codex / cursor / grok-build |
+| `--runtime` | 必須。claude-code / devin / pi / codex / cursor |
 | `--model-name` | 現runtimeが提示した正確なモデルだけ。Codexは省略。Piは省略すれば実PI_MODELを使うがPI_PROVIDERも必須。指定値の不一致は拒否 |
 | `--request` | runnerが渡した実Request JSON。run_id/request_id/agent_id/roleを使用し、work_dir=cwd、result_shape=jsonを照合。非runnerなら省略し未観測をunknownにする |
 | `--review-commit` | 任意の40桁SHA。省略はresolve時のPR head。明示指定はPR全体の対象commitであり、commit単体diffの指定ではない |

@@ -1,7 +1,7 @@
 # 汎用の非対話エージェント実行器。資格情報の値は書かない。
 schema_version = 1
 
-# codex / cursor / grok-build の agent は #566 が追加する。
+# codex / cursor の agent は #566 が追加する。
 [agents.claude-opus]
 runtime = "claude-code"
 command = ["claude"]
@@ -90,15 +90,6 @@ command = ["agent"]
 model = "grok-4.7-xhigh"
 approval = "noninteractive"
 skill_sources = [".cursor/skills", ".claude/skills", ".agents/skills", ".codex/skills"]
-env = ["HOME", "PATH"]
-
-# Grok Build（grok コマンド）。実測既定モデルは grok-4.7。
-[agents.grok-build]
-runtime = "grok-build"
-command = ["grok"]
-model = "grok-4.7"
-approval = "noninteractive"
-skill_sources = [".grok/skills", ".claude/skills", ".agents/skills", ".cursor/skills"]
 env = ["HOME", "PATH"]
 
 # 役割の期限（#616）。pr-review の全体予算に合わせて 45 分とし、implement だけ 90 分にする。

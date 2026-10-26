@@ -362,7 +362,6 @@ function herdrstart(){
 function update(){
     claude update
     npm install -g @openai/codex@latest
-    grok update
     pi update
     pi update --extensions
     agent update

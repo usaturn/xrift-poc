@@ -15,22 +15,62 @@ Herdr の復元手順は `.devcontainer/docs/herdr-session-cwd-restore.md` を�
 
 `devcontainer.json` は、ホストの次のディレクトリとファイルをコンテナにそのまま bind mount する。`initialize.bash` がホスト側で、無いものだけを作る（既存のものは変えない）。
 
-`~/.codex`・`~/.claude`・`~/.claude.json`・`~/.grok`・`~/.pi`・`~/.local/share/devin`・`~/.config/devin`・`~/.local/share/cursor-agent`・`~/.config/gh`・`~/.cursor`・`~/.config/cursor`・`~/.config/gcloud`・`~/.xrift`
+`~/.codex`・`~/.claude`・`~/.claude.json`・`~/.pi`・`~/.local/share/devin`・`~/.config/devin`・`~/.local/share/cursor-agent`・`~/.config/gh`・`~/.cursor`・`~/.config/cursor`・`~/.config/gcloud`・`~/.xrift`
 
 - これらは maatlog-poc など、同じホームを mount する他のコンテナと共有になる。セットアップ（`install_beforehand.bash`）は共有のディレクトリに対して、次の 3 種類の操作をする
   - 無いときだけ置く: `~/.pi/agent/models.json`、`~/.pi/agent/extensions/subagent.d/<launcher>/config.json`（`setup_pi_superagents.zsh --if-absent`）。既存の利用者の編集は書き換えない
   - 導入・更新する（再実行のたびに実行し、共有のディレクトリを書き換える）:
     - Claude Code のマーケットプレイス `dashed/claude-marketplace` の追加と、プラグイン 3 種（`example-skills`・`web-quality-skills`・`ripgrep`）の導入（`~/.claude`）
-    - `npx skills add ... -g` による `herdr`・`find-skills` のグローバルスキルの導入（`~/.claude`・`~/.pi`・`~/.grok`）。XRift スキルは `-g` を付けず、親のリポジトリ内（`.agents/skills`・`.claude/skills`）に導入するので、共有のディレクトリは書き換えない
+    - `npx skills add ... -g` による `herdr`・`find-skills` のグローバルスキルの導入（`~/.claude`・`~/.pi`）。XRift スキルは `-g` を付けず、親のリポジトリ内（`.agents/skills`・`.claude/skills`）に導入するので、共有のディレクトリは書き換えない
     - pi の拡張の導入（`@teelicht/pi-superagents` と、`git:github.com/obra/superpowers`・`npm:@plannotator/pi-extension` など。`~/.pi`）
     - Devin のプラグイン `obra/superpowers` の導入（ログイン済みのときだけ。`~/.local/share/devin`・`~/.config/devin`）
-    - Claude Code・Grok Build・Cursor CLI・Devin CLI・Codex CLI のインストーラの実行（各ツールの本体や設定が、mount 先に書かれることがある）
+    - Claude Code・Cursor CLI・Devin CLI・Codex CLI のインストーラの実行（各ツールの本体や設定が、mount 先に書かれることがある）
   - 所有権を直す: bind mount 先が root 所有で作られていたとき、そのディレクトリ自身だけを現在のユーザーに `chown` する（再帰しない）
 - `~/.config` そのものは bind mount していない（mount するのは上記の `~/.config/devin`・`~/.config/gh`・`~/.config/cursor`・`~/.config/gcloud` だけ）。次の設定はコンテナの中にだけあり、他のコンテナとは共有しない。リビルドすると消え、`postCreateCommand` の `install_beforehand.bash` がもう一度置く
   - 無いときだけ置く: `~/.config/agent-runner/config.toml`（`XDG_CONFIG_HOME` が絶対パスならその下）、`~/.config/herdr/config.toml`。同じコンテナで再実行しても、既存の編集は書き換えない
   - 毎回上書きする: `~/.config/starship.toml`。設定の元は `.devcontainer/starship.toml` で、コンテナの中で編集しても、セットアップの再実行やリビルドで雛形の内容に戻る。変更を残すときは `.devcontainer/starship.toml` を編集する
 - `~/.xrift` は XRift CLI の認証情報（`config.json`）の保存先。`initialize.bash` が新しく作るときは権限を 700 にする。既にあるディレクトリの権限と中身は変えない。ディレクトリ以外のもの（シンボリックリンクを含む）がある場合は、理由を表示して止まる
 - `containerEnv` の `XRIFT_POC_ROOT` に、親の main checkout のパス（`${containerWorkspaceFolder}`）を設定する。`route_target.py`・`project_link.py`・`xrift-link` が使う
+
+## Grok Build 撤去後の移行（#162）
+
+Grok Build（`grok` コマンド）は導入・更新・mount の対象から外した。
+Pi の `pixg`、Cursor CLI の `cursor-grok47` と alias `cur`、
+Grok のモデル名は引き続き使える。
+
+1. **マージ前でも実施できる個人設定の移行:** 有効な agent-runner の個人設定
+   （`AGENT_RUNNER_CONFIG` → 絶対パスの
+   `XDG_CONFIG_HOME/agent-runner/config.toml` → `~/.config/agent-runner/config.toml`
+   の順）をバックアップして編集する。雛形の全文コピーが残っている場合は
+   `[agents.grok-build]` のテーブル全体を削除する。
+   別名でも `runtime = "grok-build"` の agent があれば削除し、
+   workflow の `agents`・`fallback` にあるその agent への参照も外す。
+   Pi / Cursor の Grok の担当は削除しない。
+   古い定義が1件でも残ると、撤去後は未割り当てでも設定の検証に失敗し、
+   runner のすべてのコマンドが `{"error": "invalid_value"}` で止まる。
+   導入処理の再実行では既存の個人設定は更新されない。
+2. **コンテナは再作成を推奨:** `Dev Containers: Rebuild Container` を利用者が実行する。
+   これで古い `~/.grok` の mount とコンテナ内の `~/.local/bin/grok` のリンクが無くなり、
+   新しい postCreate は Grok Build を導入しない。
+   ホストの `~/.grok`（bin・認証情報・グローバルスキルを含む）は削除しない。
+3. **再作成しない場合:** 古い mount は残る。コンテナ内で
+   `ls -l "$HOME/.local/bin/grok"` と `readlink "$HOME/.local/bin/grok"` を確認し、
+   次のように想定したリンクだけを削除する。リンク先のファイルや
+   `~/.grok` の中身には触れない。別の実体・リンク先なら削除せず確認する。
+
+   ```bash
+   if [ -L "$HOME/.local/bin/grok" ] &&
+      [ "$(readlink "$HOME/.local/bin/grok")" = "$HOME/.grok/bin/grok" ]; then
+       rm -- "${HOME:?}/.local/bin/grok"
+   fi
+   ```
+
+再作成後は新しいシェルで `command -v grok` が何も返さず、
+postCreate が成功したことを確かめる。個人設定の移行後、親の root で
+`uv run --project tools/devenv python -m tools.agent_runner check` と
+`uv run --project tools/devenv python -m tools.agent_runner list` を実行する。
+続けて実際の PR 修正ループの `review` が動くことを確認する。
+これらのホスト操作・実サービスの確認は利用者が行う。
 
 ## コンテナの権限と認証情報
 
@@ -283,9 +323,9 @@ project_doc_fallback_filenames = ["CLAUDE.md"]
 端末 UI を操作せず、agent（起動方法）・role（仕事）・workflow（割り当て）の
 3 層設定から CLI を起動し、同期で結果を回収する。
 共通仕様は [tools/agent_runner/interfaces.rst](../tools/agent_runner/interfaces.rst) に定義する。
-#560 は基盤だけを提供し、六ランタイムの具体的な adapter と agent 定義は
+#560 は基盤だけを提供し、五ランタイムの具体的な adapter と agent 定義は
 #565 / #566、PR レビューの接続は #568 が追加する。基盤だけの状態では
-六ランタイムは「未対応」と表示される。別モデルや Herdr への暗黙の代替はしない。
+五ランタイムは「未対応」と表示される。別モデルや Herdr への暗黙の代替はしない。
 
 ### 設定と確認
 

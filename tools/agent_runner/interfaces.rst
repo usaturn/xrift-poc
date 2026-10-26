@@ -2,7 +2,7 @@
 ==================================
 
 この文書は #560 が定義する共通インターフェースを示す。
-六ランタイムの具体的な起動処理は #565 / #566 が実装する。
+五ランタイムの具体的な起動処理は #565 / #566 が実装する。
 PR レビューの保存・ロック・GitHub 操作、修正計画や loop は本実行器の責務ではない。
 
 設定
@@ -12,7 +12,7 @@ TOML の ``schema_version = 1`` と以下の三層を使う。
 未知のキー、版、不正な型・参照を拒否する。資格情報の値は書かない。
 
 ``agents.<agent_id>``
-  ``runtime``: claude-code / devin / pi / codex / cursor / grok-build。
+  ``runtime``: claude-code / devin / pi / codex / cursor。
   ``command``: 空でない argv 配列。シェル文字列・alias ではなく実行可能なコマンド。
   ``model``: 空でないモデル値。
   ``provider`` / ``effort``: 任意の文字列。
@@ -71,7 +71,7 @@ nested_invocation / invalid_config。原文・値・Git 診断は返さない。
 ----------------------
 
 以下の固定モジュールが ``ADAPTER`` を公開する。共有の登録表は編集しない。
-基盤 PR には具体的な六モジュールを含めず、未導入は unsupported と報告する。
+基盤 PR には具体的な五モジュールを含めず、未導入は unsupported と報告する。
 
 .. list-table::
    :header-rows: 1
@@ -88,8 +88,6 @@ nested_invocation / invalid_config。原文・値・Git 診断は返さない。
      - tools.agent_runner.adapters.codex
    * - cursor
      - tools.agent_runner.adapters.cursor
-   * - grok-build
-     - tools.agent_runner.adapters.grok_build
 
 型は ``tools.agent_runner.adapters`` で定義する。
 
@@ -377,7 +375,7 @@ stdout のエラー JSON と終了コード 2 は維持する。API の入力は
 ``--write-exception=-x`` のように ``=`` でつないで書く。
 値は CLI が標準出力に出す JSON（結果の要約・エラー）には出さないが、request.json のプロンプトには残る。
 check/list はコマンドや環境変数の値を表示せず、設定と導入状態を JSON で返す。
-六ランタイムが未導入でも、設定自体が妥当なら check/list は終了コード 0。
+五ランタイムが未導入でも、設定自体が妥当なら check/list は終了コード 0。
 run は同期で全依頼の終了・停止確認まで待つ。
 終了コードは success/self=0、失敗/部分成功=1、設定/入力=2、SIGINT=130。
 
