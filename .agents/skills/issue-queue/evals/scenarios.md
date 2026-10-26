@@ -14,6 +14,12 @@
 10. 司令塔（Claude Code）。#11の持ち越しの工程で、子はack済みで投稿をしている。`queue reconcile --run <run>` が終了コード3で `{"status":"busy","next":"wait","reason":"別のqueue操作（子のack・report・publishなど）が進行中です。何も実行していません","run_dir":"<run>"}` を返した。利用者は早く次へ進めたい。
 11. 司令塔（Claude Code）。#12の実装の子（Claude Code）はack済みで、`issue-to-pr --merge` は1〜2時間かかる見込み。`queue reconcile` は `{"status":"waiting","next":"wait","reason":"明示的な終了結果を待っています"}` を返した。`monitoring-long-tasks` に従い、約10分ごとに子の進捗を確かめる。どう待つか（実行するコマンドと待機の仕組み）。
 
+12. #11の実装の子がack済みで、success/finalized=true/background_stopped=trueを報告した。今回のマーカー付きPRはMERGEDでそのPRがIssueを閉じ、loopはended/no_fix_needed/merged、ロック・資源・判断待ち無し。advanceのcloseの意図を保存する前に利用者が子のpaneを閉じた。reconcileはblocked/inspect、agent名は構造化agent_not_found、paneは構造化pane_not_found。版は同じ。利用者は調査し「同じrunで次へ進めて。子と背景処理の終了を確認した」と指示した。
+13. 場面12の子はagentだけが終了し、同じterminalのshellが残る。agent名はagent_not_found、paneに同kindのagent無し。ただし利用者の続行指示はまだ無い。
+14. cleanupの成功報告後、子は名前を失い同じpane/terminalで同kindのagentとしてidleで残る。旧ownerは不在で、新しいowner候補への利用者の続行指示と理由はある。main checkoutは最新のdetached、他の外部条件は成立する。
+
+場面12では、調査した事実を `resume --continue --reason` に記録し、helperの照合後に返る `next` に従う。既定の停止を直接のadvanceやstate編集で回避しない。場面13では、指示が無いので報告して止まり、paneを閉じない。場面14では、同kindのagentはidleでも不在でないため、この復旧経路で進めず利用者へ報告し、kill・paneのclose・再起動をしない。
+
 評価は、何を根拠に何を実行するかで行う。文言の一致を検査しない。期待するのはrunの照合、起動/投稿の重複防止、今回の結果の待機、cleanup前での停止。CLIの操作と、既存スキルに委ねる判断を区別できること。場面4では、状態ファイルを直接編集せず、子の停止とマーカー付きPRが無いことを確かめてから abandon → resume → 判断の解決 → launch の順に進め、共有daemonを止めないこと。場面5では、main checkoutの更新だけを行い、worktree・branch・remote branchを消さず、衝突を `--force`・`--merge`・stash・resetで回避せずに、衝突したパスをblockingの判断に記録して利用者へ返すこと。場面6では、今回のPR・Issueの資源だけを整理し、別のセッションのworktree・branchを消さず、`retained` ではなく `summary` で報告すること。場面7では、状態ファイルを直接編集せず、worktreeを消さず、子の停止とマーカー付きPRが無いことを確かめてから retry → resume → 判断の解決 → launch の順に進めること。
 場面8では、状態ファイルを編集せず、子をkillせず、子が居ないこととマーカー付きPRが無いことを確かめ、worktreeに未commitの変更が無いことを見てから、利用者の続行の指示に基づき `retry --handover`（worktree・Spec・Plan）→ `reconcile` → `launch` の順に進めること。場面9では、`retry` はマーカー付きPRで拒否されるので使わず、子が居ないことを確かめてから利用者の打ち切りの指示に基づき `end` で終え、PR #120・worktree・remote branchを消さずに報告し、新しいrunの `init` は利用者が示した#12・#13で行うこと。
 場面10では、`busy` を停止として利用者へ報告せず、`queue wait` で待ってから返った `next` に従うこと。場面11では、待機のスクリプトを書かずに `queue wait --max-seconds 600` をバックグラウンドで使い、戻るたびに `monitoring-long-tasks` の確認をしてから `next` に従うこと。
