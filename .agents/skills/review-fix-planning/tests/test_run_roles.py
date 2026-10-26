@@ -26,6 +26,24 @@ mod: Any = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = mod
 SPEC.loader.exec_module(mod)
 
+
+def test_broken_personal_config_never_falls_back_to_template(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """壊れた個人設定リンクを無視すると、意図しない担当やafter_runの設定で修正が進む。"""
+    personal = tmp_path / "個人 設定.toml"
+    personal.symlink_to(tmp_path / "missing.toml")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("AGENT_RUNNER_CONFIG", str(personal))
+    request = tmp_path / "request.json"
+    request.write_text("{}")
+
+    def no_run(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("壊れた個人設定のまま担当を起動しようとした")
+
+    monkeypatch.setattr(mod, "run", no_run)
+    assert mod.main(["--phase", "implement", "--request", str(request), "--output-dir", str(tmp_path / "output")]) != 0
+
+
 PROGRAM = """
 import json, pathlib, sys
 request = json.load(sys.stdin)

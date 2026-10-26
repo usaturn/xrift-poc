@@ -13,7 +13,7 @@ from typing import NoReturn, cast, get_args
 
 from tools.agent_runner import runner
 from tools.agent_runner.adapters import load_adapter
-from tools.agent_runner.config import ConfigError, check_depth, load_config, resolve_config_path
+from tools.agent_runner.config import ConfigError, check_depth, load_config, select_personal_config
 from tools.agent_runner.hooks import run_after_run
 from tools.agent_runner.models import BatchResult, Config, Runtime
 from tools.agent_runner.runner import RunnerError, run_workflow
@@ -194,11 +194,7 @@ def main(argv: list[str] | None = None) -> int:
         arguments = _parse(argv)
         check_depth()
         template = arguments.template or _ROOT / ".devcontainer/agent-runner.toml"
-        personal = arguments.config
-        if personal is None:
-            candidate = resolve_config_path()
-            if candidate.exists() or candidate.is_symlink():
-                personal = candidate
+        personal = select_personal_config(arguments.config)
         is_run = arguments.command == "run"
         config = load_config(
             template,

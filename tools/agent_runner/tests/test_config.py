@@ -129,6 +129,29 @@ def test_diversity_constraint_checks_fallback_candidates(template: Path, tmp_pat
         load_config(template, personal)
 
 
+def test_broken_personal_config_is_read_instead_of_ignored(
+    monkeypatch: pytest.MonkeyPatch, template: Path, tmp_path: Path
+) -> None:
+    """選択または読み込みでリンク切れを無視すると、個人設定の担当・後処理を黙って失う。"""
+    from tools.agent_runner import select_personal_config
+    from tools.agent_runner.cli import main
+
+    home = tmp_path / "個人 設定"
+    personal = home / ".config/agent-runner/config.toml"
+    personal.parent.mkdir(parents=True)
+    personal.symlink_to(home / "missing.toml")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("AGENT_RUNNER_CONFIG", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.delenv("AGENT_RUNNER_DEPTH", raising=False)
+
+    selected = select_personal_config()
+    assert selected == personal
+    with pytest.raises(ConfigError):
+        load_config(template, selected)
+    assert main(["--template", str(template), "check"]) != 0
+
+
 def test_explicit_personal_path_wins_over_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """AGENT_RUNNER_CONFIG が効かないと、指定した設定の代わりに利用者の個人設定（後処理を含む）で黙って動く。"""
     monkeypatch.setenv("HOME", str(tmp_path))

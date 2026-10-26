@@ -84,6 +84,24 @@ def test_check_personal_config_overrides_template(tmp_path: Path) -> None:
     assert payload["self"] is False
 
 
+def test_broken_personal_config_never_falls_back_to_template(tmp_path: Path) -> None:
+    """壊れた個人設定リンクを無視すると、指定した担当やafter_runを失ったまま実装が進む。"""
+    personal = tmp_path / "個人 設定.toml"
+    personal.symlink_to(tmp_path / "missing.toml")
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "check", "--template", str(template(tmp_path, SELF))],
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "HOME": str(tmp_path),
+            "AGENT_RUNNER_CONFIG": str(personal),
+            "XDG_CONFIG_HOME": str(tmp_path),
+        },
+    )
+    assert result.returncode != 0, result.stdout
+
+
 # --- 担当ファイルの照合 -------------------------------------------------------------------------------------------
 
 SPEC = importlib.util.spec_from_file_location("issue_implement_task", SCRIPT)

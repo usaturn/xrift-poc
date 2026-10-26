@@ -32,8 +32,8 @@ from tools.agent_runner import (  # noqa: E402
     RunnerError,
     Workflow,
     load_config,
-    resolve_config_path,
     run_workflow,
+    select_personal_config,
 )
 from tools.agent_runner.adapters import Adapter, load_adapter  # noqa: E402
 from tools.agent_runner.config import validate_config  # noqa: E402
@@ -551,10 +551,7 @@ def main(argv: list[str] | None = None, *, adapter_loader: Callable[[str], Adapt
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--assign", help="fix-checkの担当agent_idかself。fallbackは設定のまま")
     args = parser.parse_args(arguments)
-    personal = args.config
-    if personal is None:
-        candidate = resolve_config_path()
-        personal = candidate if candidate.exists() else None
+    personal = select_personal_config(args.config)
     try:
         config = load_config(
             args.template, personal, assignments={"fix-check": [args.assign]} if args.assign else None, workflow="fix"

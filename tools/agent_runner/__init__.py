@@ -1,6 +1,12 @@
 """Noninteractive agent runner: configuration and adapter interface foundation."""
 
-from tools.agent_runner.config import ConfigError, check_depth, load_config, resolve_config_path
+from tools.agent_runner.config import (
+    ConfigError,
+    check_depth,
+    load_config,
+    resolve_config_path,
+    select_personal_config,
+)
 from tools.agent_runner.models import (
     Agent,
     Assignment,
@@ -39,4 +45,5 @@ __all__ = [
     "read_only_assignments",
     "resolve_config_path",
     "run_workflow",
+    "select_personal_config",
 ]

@@ -49,8 +49,8 @@ from tools.agent_runner import (  # noqa: E402
     Workflow,
     load_config,
     read_only_assignments,
-    resolve_config_path,
     run_workflow,
+    select_personal_config,
 )
 from tools.agent_runner.adapters import Adapter, load_adapter  # noqa: E402
 from tools.agent_runner.hooks import run_after_run  # noqa: E402
@@ -692,10 +692,7 @@ def parse_assign(entries: Sequence[str]) -> dict[str, list[str]]:
 
 def personal_config(config: Path | None) -> Path | None:
     """明示した設定、無ければ既存の個人設定（無ければ雛形だけ）。"""
-    if config is not None:
-        return config
-    candidate = resolve_config_path()
-    return candidate if candidate.exists() else None
+    return select_personal_config(config)
 
 
 def load_review_config(run: RunRecord) -> Config:
