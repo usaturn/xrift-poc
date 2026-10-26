@@ -103,6 +103,8 @@ class Attempt(Record):
     effects: list[Effect] = Field(default_factory=list[Effect])
     closing: bool = False
     closed: bool = False
+    # 成功した子が消えた後、利用者の続行指示と不在・外部状態の照合を通して保存した理由。旧stateには無い。
+    absent_child_reason: str | None = None
     # 受領前に子が消えたattemptをabandonで閉じた理由。
     abandon_reason: str | None = None
     # 止まったattemptをretryで閉じた理由。同じ工程で次に結果を残すattemptへ作業を引き継ぐ。

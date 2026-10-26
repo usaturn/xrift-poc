@@ -35,7 +35,7 @@ queue init --input <方針JSONの絶対パス>
 | `launch` | `queue launch --run <run>`。起動予定を保存して子を起動する。中断前に保存した `prepared` / `pane_created` は、所有を確認して未実行の操作から続ける。新しいpaneのシェルの準備の前の起動の拒否は、helperが同じpaneでやり直す |
 | `submit` | `queue submit --run <run>`。起動を照合し、未送信と確認できた依頼だけを送る |
 | `wait` | `queue wait --run <run> --max-seconds 600`。helperが子のイベントの待機と照合を約30秒おきに繰り返し、`next` が `wait` 以外になる、`status` か `next` が変わる、照合が失敗する、上限に達する、のどれかで返す。待機のスクリプトを書かない。起動の仕方は「ランタイムごとの違い」。`status` が `stalled` なら、ack済みの子が結果を残さずにturnを終えている（バックグラウンドの処理を待っている場合もある）。利用者へ一度知らせて待機を続ける |
-| `advance` | `queue advance --run <run>`。終了を再確認し、所有paneを閉じて次の工程へ移る |
+| `advance` | `queue advance --run <run>`。終了を再確認し、通常は所有paneを閉じて次の工程へ移る。子の消失から続行した場合は、残ったpaneに触れない |
 | `update_main` | 工程の境界で親main checkoutが最新のorigin/mainより古い。下の「main checkoutの更新」に従って更新し、`queue reconcile` で照合し直す。`launch`・`advance` の拒否でも返る |
 | `resume` | 保存した停止位置を利用者へ報告する。続行指示があるときに `queue resume --run <run> --continue` |
 | `decision` / `inspect` | 理由・子・残存資源を報告する。成否不明の操作を再送しない |
@@ -79,6 +79,14 @@ ack済みの子が止まり、利用者の続行指示があって原因を取�
 `--after followup` は持ち越しの調査後、片付けの前で止める。未実施のcleanupを保存し、再開はそこから始める。片付け後に止める場合だけ `--after cleanup` を使う。試運転は最初のcleanup後に止まる。利用者が子のblockedを解消した後は、事実を `resume --continue --reason <理由>` に記録できる。失敗した子を自動再起動する機能ではない。
 
 監視上限後に子が正常終了した場合も、続行指示と確認理由を同じ `resume --continue --reason` に渡す。helperが今回の終了結果・子の停止・外部状態を再照合できた時だけ解除する。実行中の子の監視上限をこの操作で延長することはできない。
+
+成功の結果を報告した後、`advance` がcloseの意図を保存する前に子のpaneが消えた、または子のagentだけが終了してshellが残った場合も、既定では `blocked`・`inspect` で止まる。子と残した作業を調べ、**利用者の続行指示があるときだけ** `queue resume --run <run> --continue --reason <調査した事実>` を使う。helperが次をすべて照合できれば、同じrunで次の工程へ進める。
+
+- ack済みの今回の結果が `success` で、`finalized`・`background_stopped` が真。
+- agent名の `get` が構造化 `agent_not_found`。paneは構造化 `pane_not_found` か、保存したterminalのまま残り、同じkindのagentが居ない。名前が消えた同じkindのagentはidle・doneでも不在と数えない。照会の失敗・terminalの変化も続行の根拠にしない。
+- 通常の `advance` と同じ版・マージ/Issueのclose/loop・投稿・資源・main checkoutの照合が通る。判断待ちや次工程を妨げる資源も残っていない。
+
+成功した照合の理由は今回のattemptに保存される。以後も `reconcile`・`advance` は子の不在と外部状態を確認し直す。返った `next` が `advance` なら進め、片付け後の `update_main` なら更新の手順の後に照合し直す。この経路では残ったshellや別kindのagentのpaneは閉じない。理由が無い、または照合できない場合は止まり、`retry`・子の再起動・状態の直接編集で回避しない。
 
 新しいpaneが30秒たってもシェルの入力待ちにならず起動の拒否が続いたときは、「子のpane <ID> がシェルの入力待ちになりません」の停止で止まる。startは実行されておらず、attemptは `pane_created` のまま残る。paneを調べ（入力や別のコマンドが残っていないか）、利用者の続行指示があれば確かめたことを `resume --continue --reason` に渡して解除し、`launch` で同じpaneから起動し直す。paneは増えない。
 

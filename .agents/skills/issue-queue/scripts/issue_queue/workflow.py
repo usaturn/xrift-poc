@@ -348,10 +348,70 @@ class Workflow:
         """attemptのマーカーを持つPRが（どの状態でも）あるか。"""
         return any(attempt.marker in (p.get("body") or "") for p in self.ext.pages("pulls?state=all&per_page=100"))
 
+    def require_absent_child(self, attempt: Attempt) -> None:
+        """成功した子の消失から進めるときは、不在を毎回確かめる。idle・doneや呼び出し元も例外にしない。"""
+        if self.named_agent(attempt) is not None:
+            raise QueueError("子のagentがまだ存在します。消失後の続行はできません")
+        pane = self.ext.pane(attempt.pane_id) if attempt.pane_id else None
+        if pane is not None and (
+            pane.get("terminal_id") != attempt.pane_terminal_id or pane.get("agent") == self.run.policy.agent_kind
+        ):
+            raise QueueError("子のpaneのterminalが変わったか、同じkindのagentが居ます。続行できません")
+
+    def resume_absent_success(self, attempt: Attempt, caller: Identity, reason: str) -> None:
+        """closeの意図の前に消えた成功の子を、通常と同じ完了照合を通したときだけ続行する。"""
+        self.require_absent_child(attempt)
+        previous = self.run.stopped_reason
+        if previous and not previous.startswith(("監視上限", "子がblocked")):
+            raise QueueError("停止原因が未解消です。子の結果と判断待ちを確認してください")
+        old_reason, old_paused = attempt.absent_child_reason, self.run.paused
+        accepted = False
+        try:
+            attempt.absent_child_reason = reason
+            self.run.stopped_reason = None
+            self.run.paused = False
+            status, action, detail = self.observe()
+            if (status, action) not in {("ok", "advance"), ("ok", "update_main")}:
+                raise QueueError(detail, next_action=action)
+            accepted = True
+        finally:
+            # CLIは拒否した操作も保存する。失敗した照合の仮の許可・停止解除を残さない。
+            if not accepted:
+                attempt.absent_child_reason = old_reason
+                self.run.stopped_reason = previous
+                self.run.paused = old_paused
+        if caller != self.run.owner:
+            self.run.event("owner_transferred", previous=self.run.owner.model_dump(), current=caller.model_dump())
+            self.run.owner = caller
+        if previous:
+            self.run.event("stop_resolved", previous=previous, reason=reason)
+        self.run.stop_after = None
+        self.run.event("child_absence_confirmed", attempt=attempt.id, reason=reason, by=caller.model_dump())
+        self.run.event("continue")
+        self.save()
+
     def resume(self, *, proceed: bool, reason: str | None = None) -> None:
         caller = self.ext.caller()
         if caller != self.run.owner:
             self.check_takeover(caller)
+        attempt = self.run.current()
+        if (
+            proceed
+            and reason
+            and reason.strip()
+            and attempt
+            and attempt.acknowledged
+            and not attempt.closing
+            and attempt.result
+            and attempt.result.outcome == "success"
+            and attempt.result.finalized
+            and attempt.result.background_stopped
+        ):
+            pane = self.ext.pane(attempt.pane_id) if attempt.pane_id else None
+            if pane is None or pane.get("agent") != self.run.policy.agent_kind or not pane.get("agent_session"):
+                self.resume_absent_success(attempt, caller, reason)
+                return
+        if caller != self.run.owner:
             # 保存値以外に子・GitHub・worktreeも取得できた時だけownerを移す。
             self.observe()
             self.run.event("owner_transferred", previous=self.run.owner.model_dump(), current=caller.model_dump())
@@ -561,9 +621,13 @@ class Workflow:
         # 置き換え中のファイルの読み取りの失敗で照合を止めない。
         if attempt.phase != "cleanup" and self.ext.version() != attempt.version:
             raise QueueError("工程の途中でスキル・helper・mainの版が変わりました。境界で照合してください")
-        pane = self.ext.pane(attempt.pane_id)
+        recovered = attempt.absent_child_reason is not None
+        if recovered:
+            self.require_absent_child(attempt)
+        # 復旧したattemptのpaneは他者が使っている可能性がある。子の不在と工程の完了を照合し、paneは触らない。
+        pane = None if recovered else self.ext.pane(attempt.pane_id)
         unreported = attempt.acknowledged and attempt.result is None
-        if pane is None and not attempt.closing:
+        if pane is None and not attempt.closing and not recovered:
             if unreported:
                 return "blocked", "inspect", UNREPORTED_PANE_MISSING
             return "blocked", "inspect", "子のpaneが見つかりません。再起動せず調査してください"
@@ -608,7 +672,7 @@ class Workflow:
             self.run.stopped_reason = "子の依頼が正常終了していません: " + result.summary
             return "blocked", "inspect", self.run.stopped_reason
         if pane is None:
-            if not attempt.closing:
+            if not attempt.closing and not recovered:
                 raise QueueError("所有paneが終了確認前に消えました")
         elif pane["agent_status"] not in {"idle", "done"}:
             return "waiting", "wait", "結果は保存済みですが子の終了処理を待っています"
@@ -655,7 +719,7 @@ class Workflow:
         assert attempt is not None and attempt.pane_id
         attempt.closing = True
         self.save()
-        if self.ext.pane(attempt.pane_id) is not None:
+        if attempt.absent_child_reason is None and self.ext.pane(attempt.pane_id) is not None:
             self.ext.herdr("pane", "close", attempt.pane_id)
         attempt.closed = True
         self.run.event("advanced", issue=attempt.issue, phase=attempt.phase)
