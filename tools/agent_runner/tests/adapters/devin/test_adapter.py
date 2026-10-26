@@ -46,6 +46,14 @@ def _collect(context: AdapterContext, stdout: str, *, export: dict[str, object] 
     return ADAPTER.collect(context, out, err)
 
 
+def test_collect_duplicate_answer_is_not_success(context: AdapterContext) -> None:
+    """重複キーの回答を採用すると指摘が黙って消え、後続フェンスでも成功に救済される。"""
+    text = '説明\n```json\n{"findings":[{"id":"消える指摘"}],"findings":[]}\n```\n```json\n{"findings":[]}\n```'
+    outcome = _collect(context, text, export=_export(message=text))
+    assert outcome.receipt is not None and outcome.receipt.status == "response_failed"
+    assert outcome.receipt.payload is None
+
+
 def test_prepare_appends_agent_args(context: AdapterContext) -> None:
     """設定の model・args が devin の argv に渡らないと、CLI の既定で黙って動く。"""
     context.agent.model = "model-sentinel"

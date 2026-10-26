@@ -60,6 +60,20 @@ def _rollout(home: Path, thread_id: str, records: list[dict[str, object]]) -> No
     (session_dir / f"rollout-2026-10-06T00-00-00-{thread_id}.jsonl").write_text(body, encoding="utf-8")
 
 
+def test_collect_duplicate_answer_is_not_success(tmp_path: Path) -> None:
+    """重複キーの回答やその内側の object を採用すると、外側の指摘が黙って消える。"""
+    stdout = _stdout_events(
+        tmp_path,
+        {
+            "type": "item.completed",
+            "item": {"type": "agent_message", "text": '説明\n{"findings":[{"id":"消える指摘"}],"findings":[]}\n完了'},
+        },
+    )
+    outcome = ADAPTER.collect(_context(tmp_path), stdout, _write(tmp_path / "stderr.log", ""))
+    assert outcome.state == "response_failed"
+    assert outcome.receipt is None
+
+
 def test_prepare_write_role_uses_workspace_write_effort_and_args(tmp_path: Path) -> None:
     """読み取りの役割を read-only の sandbox で起動しない・設定の model・effort・args が渡らないと黙って動く。"""
     read_only = ADAPTER.prepare(_context(tmp_path / "r", effort="high", args=("--flag", "v"))).argv

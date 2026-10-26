@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import cast
 
 from tools.agent_runner.adapters import AdapterContext, AdapterOutcome, Capabilities, LaunchSpec
+from tools.agent_runner.adapters.strict_json import decode
 from tools.agent_runner.models import Identity, Payload, Receipt, ReceiptStatus, Request, ResultShape
 
 _AUTH = re.compile(
@@ -50,9 +51,12 @@ def _json_object(text: str) -> dict[str, object] | None:
         if not candidate:
             continue
         try:
-            value: object = json.loads(candidate)
-        except ValueError:
+            value = decode(candidate)
+        except json.JSONDecodeError:
             continue
+        except ValueError:
+            # An invalid answer must not be rescued by a later fenced object.
+            return None
         if isinstance(value, dict):
             return cast(dict[str, object], value)
     return None

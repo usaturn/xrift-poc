@@ -62,6 +62,14 @@ def _collect(context: AdapterContext, lines: Iterable[str | dict[str, object]], 
     return ADAPTER.collect(context, _write_stdout(context, lines), _write_stderr(context, stderr))
 
 
+def test_collect_duplicate_answer_is_not_success(context: AdapterContext) -> None:
+    """重複キーの回答を採用すると指摘が黙って消え、後続フェンスでも成功に救済される。"""
+    text = '説明\n```json\n{"findings":[{"id":"消える指摘"}],"findings":[]}\n```\n```json\n{"findings":[]}\n```'
+    outcome = _collect(context, [_session(), _agent_end([_assistant(text)]), {"type": "agent_settled"}])
+    assert outcome.receipt is not None and outcome.receipt.status == "response_failed"
+    assert outcome.receipt.payload is None
+
+
 def test_prepare_maps_skill_sources_and_args(context: AdapterContext) -> None:
     """設定の値や skill の読み込み元が渡らないと既定で黙って動き、渡していない読み込み元を版として記録する。"""
     context.agent.provider = "provider-sentinel"

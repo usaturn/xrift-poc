@@ -48,6 +48,22 @@ def _stdout_events(tmp_path: Path, *events: dict[str, object]) -> Path:
     return _write(tmp_path / "stdout.log", "".join(json.dumps(e) + "\n" for e in events))
 
 
+def test_collect_duplicate_answer_is_not_success(tmp_path: Path) -> None:
+    """重複キーの回答やその内側の object を採用すると、外側の指摘が黙って消える。"""
+    stdout = _stdout_events(
+        tmp_path,
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": '説明\n{"findings":[{"id":"消える指摘"}],"findings":[]}\n完了',
+        },
+    )
+    outcome = ADAPTER.collect(_context(tmp_path), stdout, _write(tmp_path / "stderr.log", ""))
+    assert outcome.state == "response_failed"
+    assert outcome.receipt is None
+
+
 def test_prepare_write_role_forces_and_effort_uses_bracket(tmp_path: Path) -> None:
     """設定の model・effort・args が cursor の argv に渡らないと、CLI の既定で黙って動く。"""
     spec = ADAPTER.prepare(_context(tmp_path, writes=True, effort="high", args=("--flag",)))
