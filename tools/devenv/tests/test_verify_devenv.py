@@ -23,7 +23,6 @@ def make_minimal_parent_fixture(
         "scripts/ci",
         "tools/devenv/tests",
         "tools/devenv_migration/tests",
-        "tools/review_triage/tests",
         "tools/agent_runner/tests",
         "tools/test_support/tests",
         ".agents",
@@ -93,7 +92,7 @@ def test_runner_scopes_conftest_fixtures_to_their_directory(tmp_path: Path) -> N
         "    assert request.node.nodeid.startswith('tools/agent_runner/tests/'), request.node.nodeid\n"
     )
     (root / "tools/agent_runner/tests/test_inside.py").write_text("def test_inside() -> None:\n    pass\n")
-    (root / "tools/review_triage/tests/test_outside.py").write_text("def test_outside() -> None:\n    pass\n")
+    (root / "tools/test_support/tests/test_outside.py").write_text("def test_outside() -> None:\n    pass\n")
     result = run_runner(root, env=env, cwd=root)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "2 passed" in result.stdout

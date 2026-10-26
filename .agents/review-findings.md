@@ -40,7 +40,7 @@ reviews/<owner>/<repo>/#<PR>-<ブランチ>/
 ```
 
 - 保存先のパスは、短く書くとき `findings/<model>-<HEAD 先頭 12 文字>.json`、`verified/<HEAD 先頭 12 文字>.json`、`verified/<修正後 HEAD 先頭 12 文字>.fix-check.json`、`verified/<修正後 HEAD 先頭 12 文字>.statement-candidates.json`、`verified/<HEAD 先頭 12 文字>.planning.json` と書く。
-- 直下には `<model>.md` 以外のファイルを置かない。旧 PR 修正ループの成果物の監視（`tools/herdr_pr_review/artifacts.py`。#571 で削除）と `tools/review_triage` は直下の `*.md` だけを読むので、`findings/`・`verified/`・`runs/` はその動きを変えない（`review_triage` はディレクトリを読み飛ばした項目として数える）。保存前の検査（`<model>.md` の fingerprint）もファイル単位なので、`runs/` が増えても保存先の変化とはみなさない。新しい PR 修正ループは、自分の記録（ロック・run・サイクル）を `loop/` の下に置く（形式は `.agents/skills/pr-review-fix-loop/references/records.md`）。
+- 直下には `<model>.md` 以外のファイルを置かない。旧 PR 修正ループの成果物の監視（`tools/herdr_pr_review/artifacts.py`。#571 で削除）は直下の `*.md` だけを読むので、`findings/`・`verified/`・`runs/` はその動きを変えない。保存前の検査（`<model>.md` の fingerprint）もファイル単位なので、`runs/` が増えても保存先の変化とはみなさない。新しい PR 修正ループは、自分の記録（ロック・run・サイクル）を `loop/` の下に置く（形式は `.agents/skills/pr-review-fix-loop/references/records.md`）。
 - 候補一覧はサイクルごとに別のファイルになる（HEAD が名前に入る）。レビューファイルは今までどおり上書きする。
 - PR 修正ループも、通常の pr-review と同じ `reviews/<owner>/<repo>/#<PR>-<ブランチ>/` を使う。
 

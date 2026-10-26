@@ -805,7 +805,7 @@ commandcode の 2 つのランチャを `setup_pi_commandcode_goat.zsh` が同�
 
 ### API トークン
 
-`OPENCODE_API_KEY`、`DEEPINFRA_TOKEN`、`COMMANDCODE_API_KEY`、`TYPESAFE_API_KEY` は
+`OPENCODE_API_KEY`、`DEEPINFRA_TOKEN`、`COMMANDCODE_API_KEY` は
 永続化せず、必要なときに手動で export する。
 
 - `OPENCODE_API_KEY` は `pigo`・`pigod` の実行には不要である。bind mount した
@@ -821,10 +821,6 @@ commandcode の 2 つのランチャを `setup_pi_commandcode_goat.zsh` が同�
   使うシェルで export しておく必要がある。未設定のまま実行すると
   ランチャがエラーメッセージを出して終了する。キーは
   `https://commandcode.ai/settings/keys` で作成する
-- `TYPESAFE_API_KEY` は `tools/review_triage` の Jev（TypeSafe System One）呼び出しだけが
-  読む。未設定でも Dev Container の起動と `./scripts/ci/verify-devenv.sh` は成功し、
-  client は通信せずに `no_key` を返す。キーの取得（waitlist・early access）は人間が行う。
-  取得手順と疎通確認は `tools/review_triage/access.rst` に書いてある
 
 ### Plannotator のブラウザーレビュー
 
