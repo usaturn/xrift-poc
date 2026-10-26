@@ -32,8 +32,8 @@ from tools.agent_runner import (  # noqa: E402
     RunnerError,
     Workflow,
     load_config,
-    resolve_config_path,
     run_workflow,
+    select_personal_config,
 )
 from tools.agent_runner.adapters import Adapter, load_adapter  # noqa: E402
 from tools.agent_runner.config import validate_config  # noqa: E402
@@ -92,10 +92,7 @@ def project(config: Config) -> Config:
 
 
 def personal_config(config: Path | None) -> Path | None:
-    if config is not None:
-        return config
-    candidate = resolve_config_path()
-    return candidate if candidate.exists() else None
+    return select_personal_config(config)
 
 
 def load(template: Path, config: Path | None, implement: str | None) -> Config:

@@ -46,6 +46,14 @@ def resolve_config_path() -> Path:
     return Path.home() / ".config/agent-runner/config.toml"
 
 
+def select_personal_config(config: Path | None = None) -> Path | None:
+    """Keep explicit paths and auto-detected entries, including broken symlinks, for loading."""
+    if config is not None:
+        return config
+    candidate = resolve_config_path()
+    return candidate if candidate.exists() or candidate.is_symlink() else None
+
+
 def check_depth() -> None:
     """Fail closed for nested or malformed depth; the runner sets child depth to 1."""
     depth = os.environ.get("AGENT_RUNNER_DEPTH", "")

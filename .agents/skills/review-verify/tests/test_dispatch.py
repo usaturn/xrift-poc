@@ -37,6 +37,25 @@ def dispatch() -> Any:
     return module
 
 
+def test_broken_personal_config_never_falls_back_to_template(
+    dispatch: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """壊れた個人設定リンクを無視すると、個人設定と違う担当で修正確認が進む。"""
+    personal = tmp_path / "個人 設定.toml"
+    personal.symlink_to(tmp_path / "missing.toml")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("AGENT_RUNNER_CONFIG", str(personal))
+    request = tmp_path / "request.json"
+    request.write_text("{}")
+
+    def no_dispatch(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("壊れた個人設定のまま担当を起動しようとした")
+
+    monkeypatch.setattr(dispatch, "dispatch", no_dispatch)
+    assert dispatch.main(["--request", str(request), "--output-dir", str(tmp_path / "output")]) != 0
+
+
 @pytest.fixture
 def verification_input(tmp_path: Path) -> dict[str, Any]:
     root = tmp_path / "repo"

@@ -264,6 +264,8 @@ project_doc_fallback_filenames = ["CLAUDE.md"]
 `XDG_CONFIG_HOME/agent-runner/config.toml`、`~/.config/agent-runner/config.toml` の順。
 導入処理は後二者の場所に設定が無いときだけ
 `.devcontainer/agent-runner.toml` をコピーする。既存設定は更新しない。
+個人設定が無い場合は雛形だけで動く。壊れたリンクやディレクトリを指すリンクは、
+設定が無いとは扱わず、CLI・各スキルの入口とも読み込みエラーで止まる。
 雛形に定義された agent・role・workflow は、雛形のファイルで確認する。
 
 設定は雛形 < 個人設定 < `--assign role=agent1,agent2` の順で上書きする。

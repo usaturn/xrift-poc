@@ -26,6 +26,27 @@ def read(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def test_broken_personal_config_never_falls_back_to_template(tmp_path: Path) -> None:
+    """壊れた個人設定リンクを無視すると、利用者の割り当てやafter_runを失ったままレビューが進む。"""
+    import os
+
+    personal = tmp_path / "個人 設定.toml"
+    personal.symlink_to(tmp_path / "missing.toml")
+    script = Path(__file__).resolve().parents[1] / "scripts/loop.py"
+    result = subprocess.run(
+        [sys.executable, str(script), "check-options"],
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "HOME": str(tmp_path),
+            "AGENT_RUNNER_CONFIG": str(personal),
+            "XDG_CONFIG_HOME": str(tmp_path),
+        },
+    )
+    assert result.returncode != 0, result.stdout
+
+
 # --- 結果の検査 ---------------------------------------------------------------------------------------------------
 
 

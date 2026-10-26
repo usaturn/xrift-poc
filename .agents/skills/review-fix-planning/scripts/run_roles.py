@@ -31,8 +31,8 @@ from tools.agent_runner import (  # noqa: E402
     Workflow,
     load_config,
     read_only_assignments,
-    resolve_config_path,
     run_workflow,
+    select_personal_config,
 )
 from tools.agent_runner.adapters import Adapter, load_adapter  # noqa: E402
 from tools.agent_runner.config import validate_config  # noqa: E402
@@ -470,10 +470,7 @@ def main(argv: list[str] | None = None) -> int:
             ):
                 raise RoleInputError("invalid role assignment")
             assignments[role] = [agent]
-        personal = args.config
-        if personal is None:
-            candidate = resolve_config_path()
-            personal = candidate if candidate.exists() else None
+        personal = select_personal_config(args.config)
         config = load_config(args.template, personal, assignments=assignments or None, workflow="fix")
         batch = run(
             config,
