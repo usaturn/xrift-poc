@@ -116,7 +116,7 @@ xrift check --build
 
 zsh の `update` を実行します。XRift CLI と Context7 CLI（`ctx7`）は固定した版なので、`update` では更新しません。`ctx7` の更新の手順は [.devcontainer/README.md](.devcontainer/README.md) の「Context7 CLI（ctx7）」にあります。
 
-CI（`.github/workflows/ci.yml`）は、pi（`@earendil-works/pi-coding-agent`）を確かめた版に固定して入れています。`update` で Dev Container の pi が新しくなったら、`pi --version` で版を確かめ、`ci.yml` の pi の版も同じ版に変えて、PR で検証を通します。
+CI（`.github/workflows/ci.yml`）と Dev Container は、`.devcontainer/install_beforehand.bash` の `Installing pi` にある `PI_VERSION` で指定した pi（`@earendil-works/pi-coding-agent`）を入れます。版はこの定数だけで管理し、CI も同じ値を読みます。`update` の `pi update` で新しい版を試したら、`pi --version` で版を確かめ、採用する版に `PI_VERSION` を変えます。Rebuild Container するか `npm install -g --ignore-scripts @earendil-works/pi-coding-agent@<採用する版>` で入れ直し、`pi --version` が定数と一致することを確かめ、PR で検証を通します。
 
 ### XRift CLI の更新
 
