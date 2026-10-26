@@ -23,7 +23,7 @@ queue() { uv run --project "$PARENT/tools/devenv" --locked python "$SCRIPT" "$@"
 queue init --input <方針JSONの絶対パス>
 ```
 
-方針JSONと結果の形式は [references/protocol.md](references/protocol.md) を読む。`init` が返す `run_dir` を報告し、以降はその絶対パスを `--run` に渡す。記録は親main checkoutの `tmp/agents/issue-queue.*/state.json` にあり、worktreeの削除後も残る。未完了runがあれば新規作成せず再開する。
+方針JSONと結果の形式は [references/protocol.md](references/protocol.md) を読む。`init` が返す `run_dir` を報告し、以降はその絶対パスを `--run` に渡す。出力は次の判断に使う要約（`status`・`next`・`reason`・今のattemptなど）で、runの全体は `--full` を付けるか `state.json` で読む。記録は親main checkoutの `tmp/agents/issue-queue.*/state.json` にあり、worktreeの削除後も残る。未完了runがあれば新規作成せず再開する。
 
 ## 進行
 
@@ -32,14 +32,16 @@ queue init --input <方針JSONの絶対パス>
 
 | next | 操作 |
 |---|---|
-| `launch` | `queue launch --run <run>`。起動予定を保存して子を起動する。中断前に保存した `prepared` / `pane_created` は、所有を確認して未実行の操作から続ける |
+| `launch` | `queue launch --run <run>`。起動予定を保存して子を起動する。中断前に保存した `prepared` / `pane_created` は、所有を確認して未実行の操作から続ける。新しいpaneのシェルの準備の前の起動の拒否は、helperが同じpaneでやり直す |
 | `submit` | `queue submit --run <run>`。起動を照合し、未送信と確認できた依頼だけを送る |
-| `wait` | `queue wait --run <run>`。最長30秒のイベント待機の後で現在状態を再取得する。idleで即戻る場合はランタイムの待機を挟み、外部状態は60秒以内を目安に再確認する。`status` が `stalled` なら、ack済みの子が結果を残さずにturnを終えている（バックグラウンドの処理を待っている場合もある）。利用者へ一度知らせて待機を続ける |
+| `wait` | `queue wait --run <run> --max-seconds 600`。helperが子のイベントの待機と照合を約30秒おきに繰り返し、`next` が `wait` 以外になる、`status` か `next` が変わる、照合が失敗する、上限に達する、のどれかで返す。待機のスクリプトを書かない。起動の仕方は「ランタイムごとの違い」。`status` が `stalled` なら、ack済みの子が結果を残さずにturnを終えている（バックグラウンドの処理を待っている場合もある）。利用者へ一度知らせて待機を続ける |
 | `advance` | `queue advance --run <run>`。終了を再確認し、所有paneを閉じて次の工程へ移る |
 | `update_main` | 工程の境界で親main checkoutが最新のorigin/mainより古い。下の「main checkoutの更新」に従って更新し、`queue reconcile` で照合し直す。`launch`・`advance` の拒否でも返る |
 | `resume` | 保存した停止位置を利用者へ報告する。続行指示があるときに `queue resume --run <run> --continue` |
 | `decision` / `inspect` | 理由・子・残存資源を報告する。成否不明の操作を再送しない |
 | `none` | 完了（`complete`）または終了（`ended`）を報告する。runの記録は残す |
+
+どのコマンドでも `status` が `busy`（終了コード3、`next: wait`）なら、別のqueue操作（子の `ack`・`report`・`publish` など）がロックを持っていて、コマンドを何も実行していない。停止ではないので利用者へ報告しない。`queue wait` で待ち（照合のロックは helper がやり直す）、返った `next` に従う。記録のコマンド（`decision`・`queue`・`stop` など）は同じ引数でやり直す。
 
 `issue-to-pr --merge → review-carry-over-followup → repo-cleanup-after-merge` の3工程を直列に行う。スキルの内部記録とロックは、そのスキルのhelperに管理させる。外側の司令塔は子の承認・質問に答えず、マージ・投稿・削除の条件を緩めない。片付けの子に頼む整理は、今回のPRとIssueのために作られた資源だけを対象にし、別のセッションの作業を消さない。
 
@@ -78,6 +80,8 @@ ack済みの子が止まり、利用者の続行指示があって原因を取�
 
 監視上限後に子が正常終了した場合も、続行指示と確認理由を同じ `resume --continue --reason` に渡す。helperが今回の終了結果・子の停止・外部状態を再照合できた時だけ解除する。実行中の子の監視上限をこの操作で延長することはできない。
 
+新しいpaneが30秒たってもシェルの入力待ちにならず起動の拒否が続いたときは、「子のpane <ID> がシェルの入力待ちになりません」の停止で止まる。startは実行されておらず、attemptは `pane_created` のまま残る。paneを調べ（入力や別のコマンドが残っていないか）、利用者の続行指示があれば確かめたことを `resume --continue --reason` に渡して解除し、`launch` で同じpaneから起動し直す。paneは増えない。
+
 ## 判断と報告
 
 追加Issueは終了結果を読んで優先順位を決め、`queue queue --run <run> --issues <全順序> --reason <理由>` で未着手部分だけを変更する。初期方針が `enqueue` のときだけ、持ち越し結果にある同repositoryのIssueを追加できる。`propose` のときは候補を報告する。
@@ -91,5 +95,7 @@ helperは、実装・片付けの工程の起動の前と片付けの工程の�
 ## ランタイムごとの違い
 
 本体は `.agents/skills/issue-queue`、Claude Codeは `.claude/skills/issue-queue` の相対リンクから読む。司令塔はどのランタイムでも同じCLIを使い、Herdrのnative sessionで識別する。子は明示した `claude`・`codex`・`pi` のkindとargvで起動する。Codexのように起動直後はnative sessionが無いkindも、一意のagent名・kind・pane・terminalを照合して依頼を1回だけ送り、子の最初の `ack` でsessionを確定する。別モデルや別ランタイムへ暗黙に切り替えない。
+
+`queue wait --max-seconds 600` は最長で約10分かかる。Claude CodeはBashの `run_in_background: true` で起動し（foregroundの上限を超えうる）、終了コード付きの完了通知で戻る。piはバックグラウンドの実行が無いので、bashツールのforegroundで実行して戻るまで待つ。どちらも戻るたびに `monitoring-long-tasks` の確認（子の画面など）をしてから、返った `next` に従う。ほかのランタイムは `.agents/monitoring-runtimes.md` の待ち方で同じコマンドを使う。
 
 helperは利用者のargvを順序どおり渡し、加えるのはCodexの `--no-daemon` だけである。Codexの共有app-server daemonは、daemonを起動したpaneの環境でツールとフックを動かすので、子の `ack` とHerdrへのnative sessionの報告が別のpaneを指す。Codexの子では、共有のapp-serverへ接続する `--remote` を受け付けない。共有daemonは他の会話も使うので止めない。

@@ -65,8 +65,9 @@ class QueueEnv:
         return file
 
     def call(self, *args: str, pane_id: str = "w1:p1", code: int = 0) -> dict[str, Any]:
+        # 既定の出力は要約なので、runの全体を読む試験のために--fullを付ける。
         result = subprocess.run(
-            [sys.executable, str(CLI), *args],
+            [sys.executable, str(CLI), *args, "--full"],
             cwd=self.root,
             env={**self.env, "HERDR_PANE_ID": pane_id},
             capture_output=True,
@@ -254,7 +255,7 @@ def make_queue_env(base: Path) -> QueueEnv:
 
 
 FAKE_CLI = r"""
-import json, os, sys
+import json, os, re, sys
 from pathlib import Path
 file = Path(os.environ["QUEUE_FAKE_DATA"])
 data = json.loads(file.read_text())
@@ -321,6 +322,9 @@ if tool == "herdr":
             Path(str(file) + ".waiting").touch()
             import time
             time.sleep(data["wait_seconds"])
+            # 待機の間に別のプロセス（子のpublishなど）が書いた記録を消さないよう、読み直してから書く。
+            data = json.loads(file.read_text())
+            data["calls"].append([tool, *args])
         emit({"result": {"state": "done"}})
     if args[:2] == ["pane", "close"]:
         data["panes"].pop(args[2], None)
@@ -343,6 +347,15 @@ if tool == "gh":
             if parent_number is None:
                 error(message="gh: No parent issue found (HTTP 404)")
             emit(data["issues"][str(parent_number)])
+        single = re.fullmatch(r"repos/usaturn/xrift-poc/issues/(comments/)?(\d+)", endpoint)
+        if single and "--method" not in args:
+            # 1件の読み取り。Issueは番号、コメントはidで引く。
+            if single.group(1):
+                found = next((c for c in data["comments"] if str(c["id"]) == single.group(2)), None)
+            else:
+                found = data["issues"].get(single.group(2))
+            if found is None: error(message="gh: Not Found (HTTP 404)")
+            emit(found)
         if "--method" in args:
             assert args[args.index("--method") + 1] == "POST"
             body = json.loads(Path(args[args.index("--input") + 1]).read_text())

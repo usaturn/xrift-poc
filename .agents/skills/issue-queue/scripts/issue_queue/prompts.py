@@ -80,6 +80,7 @@ SDD workspaceは親main checkoutのtmp/agentsに置き、worktree内に.superpow
 {{"key":"候補ごとの一意名","kind":"issue または comment","target":nullまたは同repoのIssue/PR番号,
 "title":nullまたはIssueタイトル,"body":"検査済みの本文"}}。
 同じkeyの再実行は照合だけを行う。unknownを新しいkeyで再送してはいけない。
+queueの出力は要約です。投稿のURLは出力の `attempt.effects` にあります。全体が要るときは `--full` を付けます。
 外部投稿の権限は既存スキルの範囲のまま。ユーザーの承認/質問に代わりに答えない。
 cleanupは既存スキルのゲートを全て維持し、remote branch・reviews・tmp/agentsを保持する。
 cleanupで整理するのは今回のPRとIssueのために作られたbranch・worktree・残骸（pr-reviewの残骸とrefs/pr-review/<PR番号>を含む）だけ。

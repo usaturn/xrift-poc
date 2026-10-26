@@ -66,6 +66,15 @@ def outdated_message(inventory: dict[str, Any]) -> str:
     )
 
 
+def start_refused(pane_id: str) -> str:
+    """新しいpaneがシェルの入力待ちにならず、agent startの拒否が上限まで続いた停止の理由の書き出し。
+
+    attemptはpane_created（startは実行されていない）のまま残る。resume --continueは、今のattemptのpaneの
+    この書き出しの停止だけを解除し、次のlaunchが同じpaneから起動し直す。
+    """
+    return f"子のpane {pane_id} がシェルの入力待ちになりません"
+
+
 def ended_message(reason: str) -> str:
     return f"終了したrunです（{reason}）。新しいrunはinitで作ってください"
 
@@ -374,6 +383,14 @@ class Workflow:
                     and not (attempt and attempt.result and attempt.result.outcome != "success")
                 ):
                     self.run.stopped_reason = None
+                elif (
+                    attempt
+                    and attempt.launch == "pane_created"
+                    and attempt.pane_id
+                    and previous.startswith(start_refused(attempt.pane_id))
+                ):
+                    # startは実行されていない。利用者がpaneを調べた後、同じpaneから起動し直す。
+                    self.run.stopped_reason = None
                 else:
                     raise QueueError("停止原因が未解消です。子の結果と判断待ちを確認してください")
                 self.run.event("stop_resolved", previous=previous, reason=reason)
@@ -407,7 +424,7 @@ class Workflow:
             raise QueueError("未解放のclaimがあります")
         # 確認時のHEADのまま残るopen PRだけを保持として通す。
         retained = {(d.pr, d.pr_head) for d in self.run.decisions if d.category == "retain" and d.pr is not None}
-        unconfirmed = [p["number"] for p in inventory["open_prs"] if (p["number"], p["head"]["sha"]) not in retained]
+        unconfirmed = [p["number"] for p in inventory["open_prs"] if (p["number"], p["head_sha"]) not in retained]
         if unconfirmed:
             raise QueueError(
                 f"未確認または確認後に更新されたopen PRがあります。処理対象と競合を確認してください: {unconfirmed}"

@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import time
+from typing import Any
 from uuid import uuid4
 
-from .external import agent_args, identity
+from .external import CommandError, agent_args, herdr_error_code, identity
 from .models import Attempt
 from .prompts import child_prompt
 from .publishing import inherited_effects
 from .storage import QueueError
-from .workflow import Workflow
+from .workflow import Workflow, start_refused
+
+# 新しいpaneのシェルの準備を待つ上限と間隔。上限はHerdrのagent startの準備の待機の既定と同じ。
+START_REFUSAL_SECONDS = 30
+START_REFUSAL_INTERVAL = 1
 
 
 def launch(work: Workflow) -> None:
@@ -63,31 +69,71 @@ def launch(work: Workflow) -> None:
         attempt.pane_terminal_id = pane["terminal_id"]
         attempt.launch = "pane_created"
         work.save()
-    assert attempt.pane_id is not None
-    pane = work.ext.pane(attempt.pane_id)
-    if not pane or pane["terminal_id"] != attempt.pane_terminal_id or pane.get("agent") or pane.get("agent_session"):
-        raise QueueError("保存したpaneが未使用であることを確認できません")
-    if attempt.launch_args is None:
-        raise QueueError("保存した起動予定に起動引数がありません")
-    attempt.launch = "starting"
-    work.save()
-    agent = work.ext.herdr(
-        "agent",
-        "start",
-        attempt.agent_name,
-        "--kind",
-        run.policy.agent_kind,
-        "--pane",
-        attempt.pane_id,
-        "--timeout",
-        "30000",
-        "--",
-        *attempt.launch_args,
-    )["agent"]
+    agent = start_agent(work, attempt)
     work.started(attempt, agent)
     attempt.launch = "started"
     work.save()
     submit(work)
+
+
+def start_agent(work: Workflow, attempt: Attempt) -> dict[str, Any]:
+    """保存したpaneでagent startを送り、起動したagentを返す。
+
+    新しいpaneのシェルの準備の前のstartは、Herdrが構造化エラーagent_pane_busyで拒否する（startは実行されない）。
+    名前の子が居ないことも確かめてからpane_createdへ戻し、同じpaneの照合からやり直す。timeout・JSONでない応答・
+    別のcodeは成否不明なので、startingのまま送出する。上限を超えたら停止を保存し、paneを増やさずに止まる。
+    """
+    run = work.run
+    assert attempt.pane_id is not None
+    if attempt.launch_args is None:
+        raise QueueError("保存した起動予定に起動引数がありません")
+    deadline = time.monotonic() + START_REFUSAL_SECONDS
+    refused = 0
+    while True:
+        pane = work.ext.pane(attempt.pane_id)
+        if (
+            not pane
+            or pane["terminal_id"] != attempt.pane_terminal_id
+            or pane.get("agent")
+            or pane.get("agent_session")
+        ):
+            raise QueueError("保存したpaneが未使用であることを確認できません")
+        attempt.launch = "starting"
+        work.save()
+        try:
+            agent = work.ext.herdr(
+                "agent",
+                "start",
+                attempt.agent_name,
+                "--kind",
+                run.policy.agent_kind,
+                "--pane",
+                attempt.pane_id,
+                "--timeout",
+                "30000",
+                "--",
+                *attempt.launch_args,
+            )["agent"]
+        except CommandError as error:
+            if herdr_error_code(error.stderr) != "agent_pane_busy" or work.named_agent(attempt) is not None:
+                if refused:
+                    run.event("start_refused", attempt=attempt.id, pane=attempt.pane_id, count=refused)
+                raise
+            refused += 1
+            attempt.launch = "pane_created"
+            work.save()
+            if time.monotonic() >= deadline:
+                run.event("start_refused", attempt=attempt.id, pane=attempt.pane_id, count=refused)
+                run.stopped_reason = (
+                    f"{start_refused(attempt.pane_id)}（{START_REFUSAL_SECONDS}秒の間にstartを{refused}回拒否されました）。"
+                    "paneを調べてからresume --continue --reasonで解除すると、launchで同じpaneから起動し直せます"
+                )
+                raise QueueError(run.stopped_reason) from error
+            time.sleep(START_REFUSAL_INTERVAL)
+            continue
+        if refused:
+            run.event("start_refused", attempt=attempt.id, pane=attempt.pane_id, count=refused)
+        return agent
 
 
 def submit(work: Workflow) -> None:
