@@ -143,12 +143,13 @@ def test_broken_personal_config_is_read_instead_of_ignored(
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv("AGENT_RUNNER_CONFIG", raising=False)
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.delenv("AGENT_RUNNER_DEPTH", raising=False)
 
     selected = select_personal_config()
     assert selected == personal
     with pytest.raises(ConfigError):
         load_config(template, selected)
-    assert main(["check", "--template", str(template)]) != 0
+    assert main(["--template", str(template), "check"]) != 0
 
 
 def test_explicit_personal_path_wins_over_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
