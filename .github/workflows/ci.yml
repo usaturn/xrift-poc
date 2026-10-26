@@ -42,15 +42,17 @@ jobs:
           test "$("$RUNNER_TEMP/bubblewrap/bin/bwrap" --version)" = "bubblewrap ${BUBBLEWRAP_VERSION}"
           # agent-runner は担当の PATH を /bin:/usr/bin に限定する。
           sudo install -m 0755 "$RUNNER_TEMP/bubblewrap/bin/bwrap" /usr/bin/bwrap
-      # pi の起動スクリプトのテストは実物の pi を使う。pi は node 上で動く（1.1.0 は node >=22.19.0）。Dev Container と同じ Node.js 24 を使う。
+      # pi の起動スクリプトのテストは実物の pi を使う。Dev Container と同じ Node.js 24 を使う。
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
-      # CI は確かめた版に固定する。Dev Container の pi を更新したら合わせる。
-      # install_beforehand.bash と同じく --ignore-scripts で入れる。
+      # Dev Container と同じ固定版を install_beforehand.bash の定数から読み、--ignore-scripts で入れる。
       - run: |
-          npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.1.0
+          version="$(sed -n 's/^readonly PI_VERSION="\([^"]*\)"$/\1/p' .devcontainer/install_beforehand.bash)"
+          test -n "$version"
+          npm install -g --ignore-scripts "@earendil-works/pi-coding-agent@${version}"
           pi --version
+          test "$(pi --version)" = "$version"
       # bubblewrap は非特権 user namespace を使う。ubuntu-latest は AppArmor で制限しているため解除する。
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       # 固定版が、runner の隔離と同じ形の overlay と -try の bind を受け付けることを、正式な検証の前に確かめる。

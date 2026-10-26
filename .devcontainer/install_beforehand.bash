@@ -260,12 +260,14 @@ if ! install_devin_cli; then
 fi
 
 step "Installing pi"
+# CI もこの定数を読む。更新は README の手順で検証してから行う。
+readonly PI_VERSION="1.4.0"
 # ~/.pi は devcontainer.json で bind mount している。ホスト側に存在しない場合は
 # Docker が root 所有で作成するため、以降の pi install が書き込めるよう所有権を直す。
 if ! ensure_user_writable_dir "${HOME}/.pi"; then
     fail "Failed to prepare writable directory: ${HOME}/.pi."
 fi
-if ! npm install -g --ignore-scripts @earendil-works/pi-coding-agent; then
+if ! npm install -g --ignore-scripts "@earendil-works/pi-coding-agent@${PI_VERSION}"; then
     fail "pi installation failed."
 fi
 
