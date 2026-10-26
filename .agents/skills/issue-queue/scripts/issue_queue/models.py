@@ -75,6 +75,9 @@ class Effect(Record):
     marker: str
     state: Literal["intent", "confirmed"] = "intent"
     url: str | None = None
+    # POSTの応答の番号（Issueはnumber、コメントはid）。照合はこの1件を読む。応答が失われたら一覧の照合で埋める。
+    # 旧helperの記録には無い。
+    remote_id: int | None = None
     created_at: str = Field(default_factory=now)
     # retryで前のattemptから写した投稿の記録なら、投稿したattemptのID。このattemptの投稿ではない。
     inherited_from: str | None = None

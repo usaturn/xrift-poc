@@ -203,6 +203,10 @@ class External:
             )
         )
 
+    def get(self, endpoint: str) -> dict[str, Any]:
+        """同repositoryの1件（Issue・コメントなど）を読む。"""
+        return object_json(command(["gh", "api", f"repos/{REPOSITORY}/{endpoint}"]))
+
     def pages(self, endpoint: str) -> list[dict[str, Any]]:
         pages = json.loads(command(["gh", "api", "--paginate", "--slurp", f"repos/{REPOSITORY}/{endpoint}"]))
         if not isinstance(pages, list):

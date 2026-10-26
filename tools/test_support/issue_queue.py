@@ -254,7 +254,7 @@ def make_queue_env(base: Path) -> QueueEnv:
 
 
 FAKE_CLI = r"""
-import json, os, sys
+import json, os, re, sys
 from pathlib import Path
 file = Path(os.environ["QUEUE_FAKE_DATA"])
 data = json.loads(file.read_text())
@@ -343,6 +343,15 @@ if tool == "gh":
             if parent_number is None:
                 error(message="gh: No parent issue found (HTTP 404)")
             emit(data["issues"][str(parent_number)])
+        single = re.fullmatch(r"repos/usaturn/xrift-poc/issues/(comments/)?(\d+)", endpoint)
+        if single and "--method" not in args:
+            # 1件の読み取り。Issueは番号、コメントはidで引く。
+            if single.group(1):
+                found = next((c for c in data["comments"] if str(c["id"]) == single.group(2)), None)
+            else:
+                found = data["issues"].get(single.group(2))
+            if found is None: error(message="gh: Not Found (HTTP 404)")
+            emit(found)
         if "--method" in args:
             assert args[args.index("--method") + 1] == "POST"
             body = json.loads(Path(args[args.index("--input") + 1]).read_text())

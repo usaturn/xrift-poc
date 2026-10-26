@@ -4,17 +4,22 @@ from __future__ import annotations
 
 import json
 import re
-from typing import TYPE_CHECKING, Literal
+import time
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 from pydantic import Field
 
-from .external import REPOSITORY, command
+from .external import REPOSITORY, command, object_json
 from .models import Attempt, Effect, Record, Run
 from .storage import QueueError
 
 if TYPE_CHECKING:
     from .workflow import Workflow
+
+# 投稿の1件の読み取りが失敗したときの読み直しの回数と間隔。GETだけで、POSTはしない。
+READ_ATTEMPTS = 3
+READ_INTERVAL = 2
 
 
 class Publication(Record):
@@ -38,20 +43,45 @@ def inherited_effects(run: Run, attempt: Attempt) -> list[Effect]:
     return list(effects.values())
 
 
+def read_effect(work: Workflow, effect: Effect) -> dict[str, Any]:
+    """POSTの応答の番号の1件を読む。作成の直後に読めなければ、間を置いて読み直す（POSTはしない）。"""
+    endpoint = f"issues/{effect.remote_id}" if effect.kind == "issue" else f"issues/comments/{effect.remote_id}"
+    tries = 0
+    while True:
+        try:
+            return work.ext.get(endpoint)
+        except QueueError as error:
+            tries += 1
+            if tries >= READ_ATTEMPTS:
+                raise QueueError(f"投稿 {effect.key} を読み戻せません。再送しません（{error}）") from error
+            time.sleep(READ_INTERVAL)
+
+
 def reconcile_effects(work: Workflow, attempt: Attempt) -> None:
+    """投稿を読み戻して照合する。番号が分かれば1件を読み、応答が失われた投稿だけ一覧の全ページから探す。
+
+    一覧は作成の直後に新しい投稿を含まないことがある。見つからなくても再送しない。
+    """
     for effect in attempt.effects:
-        endpoint = (
-            "issues?state=all&per_page=100"
-            if effect.kind == "issue"
-            else f"issues/{effect.target}/comments?per_page=100"
-        )
-        objects = work.ext.pages(endpoint)
-        matches = [item for item in objects if effect.marker in (item.get("body") or "")]
-        if len(matches) != 1:
-            raise QueueError(f"投稿 {effect.key} の成否不明または重複です。再送しません")
-        item = matches[0]
+        if effect.remote_id is not None:
+            item = read_effect(work, effect)
+            if effect.marker not in (item.get("body") or ""):
+                raise QueueError(f"投稿 {effect.key} の読み戻しが一致しません")
+        else:
+            endpoint = (
+                "issues?state=all&per_page=100"
+                if effect.kind == "issue"
+                else f"issues/{effect.target}/comments?per_page=100"
+            )
+            objects = work.ext.pages(endpoint)
+            matches = [item for item in objects if effect.marker in (item.get("body") or "")]
+            if len(matches) != 1:
+                raise QueueError(f"投稿 {effect.key} の成否不明または重複です。再送しません")
+            item = matches[0]
         if item["body"] != effect.body or (effect.kind == "issue" and item.get("title") != effect.title):
             raise QueueError(f"投稿 {effect.key} の読み戻しが一致しません")
+        # 以後の照合（待機・retry・advance）は、この番号の1件を読む。
+        effect.remote_id = item["number"] if effect.kind == "issue" else item["id"]
         effect.url = item["html_url"]
         effect.state = "confirmed"
         work.save()
@@ -130,7 +160,18 @@ def publish(work: Workflow, attempt_id: str, request: Publication) -> None:
     file = work.path / f"post-{uuid4().hex}.json"
     file.write_text(json.dumps(payload, ensure_ascii=False))
     # 成功応答でも読み戻す。timeout後はintentを保持し、このPOSTへ戻らない。
-    command(["gh", "api", endpoint, "--method", "POST", "--input", str(file)])
+    response = command(["gh", "api", endpoint, "--method", "POST", "--input", str(file)])
+    # 応答の番号でその1件を読み戻す。応答を読めなければ止まり、同じkeyの再実行で一覧から照合する。
+    unreadable = f"投稿 {effect.key} の応答を確認できません。再送しません。同じkeyで照合し直してください"
+    try:
+        created = object_json(response)
+    except (QueueError, ValueError) as error:
+        raise QueueError(unreadable) from error
+    remote_id = created.get("number" if effect.kind == "issue" else "id")
+    if type(remote_id) is not int or remote_id < 1:
+        raise QueueError(unreadable)
+    effect.remote_id = remote_id
+    work.save()
     reconcile_effects(work, attempt)
 
 
