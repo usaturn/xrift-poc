@@ -62,7 +62,7 @@ helperは、resolveの後の実行ごとに、親の `reviews/<owner>/<repo>/#<P
 uv run --project "$TOPLEVEL/tools/devenv" --locked python "$RUN_HELPER" complete --state "$STATE_FILE"
 ```
 
-completeはrequestのbytes/hashとbinding、読んだ主要skillのhash、候補の固定項目とcoverageを検査する。同じv2 reviewer/provenance/timingを候補と本文の自動生成 `Review timing` に記録してから、既存helperのsave --findingsを呼ぶ。lock内でworktree commit、現在のPR head、destination fingerprint、候補schema/pairを検査し、両ファイルを保存する。候補コピー後に本文保存が失敗すれば既存のrollbackを使う。成功後だけhelperのcleanupを呼ぶ。
+completeはrequestのbytes/hashとbinding、読んだ主要skillのhash、候補の固定項目とcoverageを検査する。同じv2 reviewer/provenance/timingを候補と本文の自動生成 `Review timing` に記録してから、既存helperのsave --findingsを呼ぶ。lock内でworktree commit、現在のPR head、destination fingerprint、候補schema/pairと、本文の最後のReview historyの行のHEADがreviewed commitの先頭12文字以上であること（書く値は12文字のまま。PR修正ループも同じ関数 `review_findings.review_history_problem` で照合する）を検査し、両ファイルを保存する。合わなければ保存せずにfailedを返す。候補コピー後に本文保存が失敗すれば既存のrollbackを使う。成功後だけhelperのcleanupを呼ぶ。
 
 本文のReview timingを二重に手書きしない。全体予算・調査期限・phase内訳・委譲状態/省略理由・超過理由はReview coverageへ書き、自動生成の実測と区別する。timingはprepare開始からdraft確定までの実測UTC/経過秒数、waiting_secondsは未計測ならnull。save_seconds / cleanup_seconds / total_secondsは最終payloadの別計測であり、本文を保存後に追記しない。
 
