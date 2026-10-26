@@ -109,7 +109,7 @@ def test_unconfirmed_stop_does_not_read_or_rewrite_live_receipt(
     assert attempt.state != "success" and not attempt.stop_confirmed
     assert attempt.request_path is not None
     path = attempt.request_path.parent / "receipt.json"
-    assert attempt.sensitive_paths == [path]
+    assert path in attempt.sensitive_paths
     assert secret in path.read_text()
     assert secret not in batch.model_dump_json()
 

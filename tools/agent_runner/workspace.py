@@ -326,6 +326,7 @@ def checkout_isolation(
     artifact_dir: Path,
     writable_paths: Sequence[Path] = (),
     private_review_refs: bool = False,
+    scratch_dir: Path | None = None,
 ) -> CheckoutIsolation:
     """Protect registered checkouts from the agent while retaining detached Git worktree writes.
 
@@ -399,7 +400,12 @@ def checkout_isolation(
     explicit = dict(modes)
     for protected in (*checkouts, common):
         for ancestor in protected.parents:
-            if ancestor in modes or ancestor == ancestor.parent or ancestor.is_relative_to(common):
+            if (
+                ancestor in modes
+                or ancestor == ancestor.parent
+                or ancestor.is_relative_to(common)
+                or (scratch_dir is not None and ancestor == Path("/tmp"))
+            ):
                 continue
             enclosing = max((path for path in explicit if ancestor.is_relative_to(path)), key=_depth, default=None)
             modes[ancestor] = "rw-try" if enclosing is None or explicit[enclosing] == "rw" else "ro-try"
@@ -412,6 +418,8 @@ def checkout_isolation(
     }
     arguments = ["bwrap", "--unshare-pid", "--die-with-parent", "--bind", "/", "/"]
     arguments += ["--dev-bind", "/dev", "/dev", "--proc", "/proc"]
+    if scratch_dir is not None:
+        arguments += ["--bind", str(scratch_dir), "/tmp"]
     for path in sorted(modes, key=lambda path: (_depth(path), str(path))):
         for option in options[modes[path]]:
             arguments += [option, str(path)]
