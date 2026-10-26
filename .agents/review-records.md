@@ -828,7 +828,6 @@ gh api --paginate --slurp "repos/$PR_REPO/issues/$PR_NUMBER/comments" \
 | 旧 PR 修正ループ（#571 で削除）の `_preserve_review_history` | `## Review history` の見出しと 3 つの列を変えない。足す行と節（レビュアーの行、根拠の項目、Decided findings、`U-<n>` の ID）は、表の外に置く |
 | 旧 PR 修正ループ（#571 で削除）のレビュアー・planner の入力 | JSON のキーを足さない。根拠は `content` の本文に、判断の理由は `reason`・`decision_reason` の本文に書く |
 | 旧 PR 修正ループ（#571 で削除）の進捗コメント | 記録なしの投稿の規則を保ち、`upsert()` の呼び出し方を変えない |
-| `tools/review_triage` | `### U-<n>:` と `## Decided findings` の中の見出しは、「finding heading outside a finding section」として unparsed に数えられる。誤った判断にはならないが、unparsed の件数が増える。対応は別 Issue で扱う |
 | #483 の保存先 | 記録は、PR を `owner/name` と番号で、レビューをファイル名で識別し、ローカルのパスを含めない。`reviews/#<N>-…` と `reviews/<owner>-<repo>/#<N>-…` のどちらでも、同じ記録を使える |
 | 旧形式のコメント | 記録付きの投稿は、巡のマーカーを持たないコメントを編集しない。記録なしの投稿は、従来どおり自分のコメントを更新する。読む側は、記録の無いコメントとして扱う |
 | 移植 | `review_records.py` は標準ライブラリだけで書かれている。`agent_tmp.py` と同じく、スキルの外にある依存として扱う |

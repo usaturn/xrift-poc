@@ -6,7 +6,7 @@ if (($# != 0)); then
 fi
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 project="$root/tools/devenv"
-for required in "$project/pyproject.toml" "$project/uv.lock" "$root/tools/devenv/tests" "$root/tools/devenv_migration/tests" "$root/tools/review_triage/tests" "$root/tools/agent_runner/tests" "$root/tools/test_support/tests" "$root/.agents"; do
+for required in "$project/pyproject.toml" "$project/uv.lock" "$root/tools/devenv/tests" "$root/tools/devenv_migration/tests" "$root/tools/agent_runner/tests" "$root/tools/test_support/tests" "$root/.agents"; do
     if [[ ! -e "$required" ]]; then
         printf 'missing: %s\n' "$required" >&2
         exit 66
@@ -14,7 +14,7 @@ for required in "$project/pyproject.toml" "$project/uv.lock" "$root/tools/devenv
 done
 cd -- "$root"
 uv sync --project "$project" --locked
-uv run --project "$project" --no-sync ruff check --config "$project/pyproject.toml" tools/devenv tools/devenv_migration tools/review_triage tools/agent_runner tools/test_support .agents scripts/write_shell_block.py
-uv run --project "$project" --no-sync ruff format --check --config "$project/pyproject.toml" tools/devenv tools/devenv_migration tools/review_triage tools/agent_runner tools/test_support .agents scripts/write_shell_block.py
+uv run --project "$project" --no-sync ruff check --config "$project/pyproject.toml" tools/devenv tools/devenv_migration tools/agent_runner tools/test_support .agents scripts/write_shell_block.py
+uv run --project "$project" --no-sync ruff format --check --config "$project/pyproject.toml" tools/devenv tools/devenv_migration tools/agent_runner tools/test_support .agents scripts/write_shell_block.py
 uv run --project "$project" --no-sync pyright --project "$project/pyproject.toml"
-uv run --project "$project" --no-sync pytest -c "$project/pyproject.toml" --rootdir "$root" tools/devenv/tests tools/devenv_migration/tests tools/review_triage/tests tools/agent_runner/tests tools/test_support/tests .agents
+uv run --project "$project" --no-sync pytest -c "$project/pyproject.toml" --rootdir "$root" tools/devenv/tests tools/devenv_migration/tests tools/agent_runner/tests tools/test_support/tests .agents

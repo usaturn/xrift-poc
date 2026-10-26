@@ -19,7 +19,7 @@ xrift-poc/
 ├── .claude/ .pi/ .cursor/   # 各エージェントの設定（スキルは .agents/skills へのリンク）
 ├── .github/workflows/ # CI（verify-devenv.sh の実行）
 ├── scripts/           # 検証の入口（ci/verify-devenv.sh）・XRift スキルの導入・pi のセットアップ
-├── tools/             # devenv（検証用の project）・agent_runner・review_triage・test_support など
+├── tools/             # devenv（検証用の project）・agent_runner・test_support など
 ├── items/             # Git 管理対象外。各アイテムの作業場所
 └── worlds/            # Git 管理対象外。各ワールドの作業場所
 ```

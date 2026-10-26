@@ -11,14 +11,14 @@ package = false
 dev = ["pytest", "ruff", "pyright", "pyyaml", "types-pyyaml", "playwright"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "../devenv_migration/tests", "../../.agents", "../review_triage/tests", "../agent_runner/tests", "../test_support/tests"]
+testpaths = ["tests", "../devenv_migration/tests", "../../.agents", "../agent_runner/tests", "../test_support/tests"]
 addopts = ["--import-mode=importlib"]
 pythonpath = ["../.."]
 
 [tool.pyright]
 pythonVersion = "3.14"
 typeCheckingMode = "strict"
-include = [".", "../devenv_migration", "../../.agents", "../review_triage", "../agent_runner", "../test_support", "../../scripts/write_shell_block.py"]
+include = [".", "../devenv_migration", "../../.agents", "../agent_runner", "../test_support", "../../scripts/write_shell_block.py"]
 extraPaths = ["../.."]
 exclude = ["**/.venv", "../../.agents/skills/*/evals/fixtures", "**/__pycache__", "**/.git", "**/.pytest_cache", "**/.ruff_cache"]
 

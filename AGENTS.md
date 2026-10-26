@@ -131,7 +131,7 @@ xrift-poc は、XRift のワールドとアイテムを作るための開発環�
 
 ### 親の検証
 
-- worktree の root で、`route_target.py` が `env` と判定することを確かめてから、`./scripts/ci/verify-devenv.sh` を引数なしで実行する。`tools/devenv` project を使い、`scripts`・`tools/devenv`・`tools/devenv_migration`・`tools/review_triage`・`tools/agent_runner`・`tools/test_support`・`.agents` の lint・型検査・テストを実行する
+- worktree の root で、`route_target.py` が `env` と判定することを確かめてから、`./scripts/ci/verify-devenv.sh` を引数なしで実行する。`tools/devenv` project を使い、`scripts`・`tools/devenv`・`tools/devenv_migration`・`tools/agent_runner`・`tools/test_support`・`.agents` の lint・型検査・テストを実行する
 - 開発中に関係する Python のパスだけを静的チェックするときは、同じ root で次の形を使う。例の `.agents/skills/issue-queue` を対象ファイルまたはディレクトリのパスに置き換える。ruff の `--config` と Pyright の `--project` は、`verify-devenv.sh` と同じ `tools/devenv/pyproject.toml` を指定するために省略しない
 
 ```bash
@@ -145,7 +145,7 @@ uv run --project tools/devenv --no-sync pyright --project tools/devenv/pyproject
 
 ```bash
 uv sync --project tools/devenv --locked
-uv run --project tools/devenv --no-sync pytest -c tools/devenv/pyproject.toml --rootdir . tools/devenv/tests tools/devenv_migration/tests tools/review_triage/tests tools/agent_runner/tests tools/test_support/tests .agents --collect-only -q
+uv run --project tools/devenv --no-sync pytest -c tools/devenv/pyproject.toml --rootdir . tools/devenv/tests tools/devenv_migration/tests tools/agent_runner/tests tools/test_support/tests .agents --collect-only -q
 ```
 
 - テストのファイルやディレクトリを指定して実行するときも、同じ root で `-c tools/devenv/pyproject.toml --rootdir .` を付ける。`--rootdir .` が無いと rootdir が `tools/devenv` になり、conftest の fixture が別のディレクトリのテストにも効き、テストのファイルを並べると別の conftest の同名の fixture を受け取る

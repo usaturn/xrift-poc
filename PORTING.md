@@ -12,7 +12,7 @@
 |---|---|
 | `.devcontainer/` | Dev Container の定義、初期化（`initialize.bash`・`install_beforehand.bash`）、シェルの設定（`zshrc.txt`・`starship.toml`）、Herdr、pi のランチャー、`agent-runner` の設定、クリーンアップ、bash のテスト |
 | `scripts/` | 検証の入口（`ci/verify-devenv.sh`）、pi のセットアップ、Claude Code のオンボーディングの補助 |
-| `tools/` | `devenv`（検証用の project）、`devenv_migration`（Dev Container のテスト。名前は移植元とそろえた）、`agent_runner`、`review_triage`、`test_support` |
+| `tools/` | `devenv`（検証用の project）、`devenv_migration`（Dev Container のテスト。名前は移植元とそろえた）、`agent_runner`、`test_support` |
 | `.agents/` | 共通スキル 14 個、補助スクリプト、レビューの記録の形式 |
 | `.claude/`・`.pi/`・`.cursor/rules/`・`.mcp.json`・`.github/workflows/ci.yml` | 各エージェントの設定と CI |
 
@@ -25,6 +25,7 @@
 | `tools/devenv_migration/tests/test_application_checkout.py`、`test_cutover_contract.py`、`tools/devenv_migration/evidence/` | MaatLog の `public/` と cutover の記録 |
 | ポート 8000 | MaatLog の sphinx-autobuild 用 |
 | DeepSeek Harness（DSH）の runtime・導入・ランチャー・設定・専用テスト | 当初移植したが #123 で撤去した。移植元の DSH 専用変更は今後取り込まない。Pi の DeepSeek と共通の runner 機能は対象外 |
+| `tools/review_triage` と専用テスト・API キーの手順 | 当初移植したが #118 で撤去した。現行の手順から使われておらず、利用手順の新設は対象外とした。今後の取り込みからも外す。以下に残るパス・識別子は移植当時の記録で、現在は存在しない |
 | `opencode.json` | OpenCode はセットアップで導入していない。設定ファイルだけ置くと導入済みと誤解される |
 | `.codex/.gitkeep` | 空のプレースホルダーで、設定の実体が無い |
 | `scripts/add_pi_skills_setting.py` | 共有している `~/.pi/agent/settings.json` に、このリポジトリのスキルを追加してしまう。セットアップからも呼ばれていない |
@@ -65,7 +66,7 @@
 - `repo-cleanup-after-merge` は、worktree を削除する前に、Git で無視したファイルも確かめる。`items/`・`worlds/` に中身がある worktree や、依存・キャッシュ以外の無視したファイルがある worktree は削除しない（`git worktree remove` は無視したファイルも消すため。最終レビューの指摘 I-1）
 - `project_link` の管理ブロック（制作物の `.git/info/exclude`）は、制作物のすべての worktree にある、実在するリンクから作り直す
 - `issue-to-pr` は、`gh` の応答と、大文字小文字を区別せずに照合する
-- `review_triage` は親のリポジトリだけを対象にする
+- 移植当時の `review_triage` は親のリポジトリだけを対象にした（#118 で撤去済み）
 - `finalize` はどのリポジトリでも CI を確かめる。CI の無い制作物のリポジトリでは止まる
 
 ## 改名した識別子と、残した目印
@@ -77,7 +78,7 @@
 | `MAATLOG_CLEANUP_*`、`maatlog_periodic_cleanup`、`~/.cache/maatlog` | `XRIFT_POC_CLEANUP_*`、`xrift_poc_periodic_cleanup`、`~/.cache/xrift-poc` に改名 |
 | `~/.local/share/maatlog/dsh-model-env.mjs`、プラグイン ID `maatlog-dsh-model-env` | 移植時は `~/.local/share/xrift-poc/`、`xrift-poc-dsh-model-env` に改名。#123 でコードと導入を撤去した（共有データは変更しない） |
 | `/tmp` の接頭辞 `maatlog-pr-loop-`・`maatlog-agent-runner-`・`maatlog-pr-review-scratch-` | `xrift-poc-` に改名。`cleanup-workspace.bash` と配置の検査も合わせた |
-| `maatlog-devenv`（project 名）、`maatlog-review-triage/1`（User-Agent） | `xrift-poc-devenv`、`xrift-poc-review-triage/1` に改名 |
+| `maatlog-devenv`（project 名）、`maatlog-review-triage/1`（User-Agent） | `xrift-poc-devenv`、`xrift-poc-review-triage/1` に改名。User-Agent を使う PoC は #118 で撤去済み |
 | `~/.dsh/cordis.patch.yml` の `# BEGIN maatlog managed provider config` | 移植時は共有ファイルへの重複追記を避けるため残した。#123 で mount と追記処理を撤去したが、ホストの共有データと目印は変更しない |
 | コードやコメント中の `#番号` | 変えていない |
 
