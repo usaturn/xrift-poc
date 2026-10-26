@@ -43,9 +43,38 @@ Herdr の復元手順は `.devcontainer/docs/herdr-session-cwd-restore.md` を�
 
 | ポート | 用途 |
 |---|---|
-| 5173 | XRift のプレビュー（Vite）。`npm run dev -- --host 0.0.0.0` |
-| 5174〜5179 | 複数のプロジェクトを同時に動かすときの Vite（`--port 5174` など） |
+| 5173 | XRift のプレビュー（Vite）。`npm run dev -- --host 0.0.0.0`。`forwardPorts` に明示 |
+| 5174〜5179 | 複数のプロジェクトを同時に動かすときの Vite（`--port 5174 --strictPort` など）。全ポートを `forwardPorts` に明示 |
 | 3000 | `xrift login` のコールバック（CLI が `localhost:3000/callback` に固定している）。`requireLocalPort` により、ホスト側で使われていると転送が失敗する。使っているプロセスを止めてからやり直す |
+| 19432〜19441 | Pi / Superpowers の Plannotator レビュー。空きポートを使う。全ポートを `forwardPorts` に明示 |
+
+`forwardPorts` はコンテナからホストへ転送するポート、`portsAttributes` は転送されたポートのラベルなどの設定です。ラベルだけでは転送を保証しません（[Dev Container 仕様](https://containers.dev/implementors/json_reference/#general-properties)）。プレビューのホスト側ポートが使用中なら別のポートへ転送されることがあるため、VS Code の「ポート」の転送先を確認します。
+
+### 追加プレビューの転送とホスト確認
+
+設定ファイルを編集しただけで、既存の接続も直ったとは扱いません。現在のコンテナで追加分が見えない場合は、VS Code の「ポート」→「ポートの転送」で、使うコンテナ側ポート（5174 など）を追加します。新しい設定を使うには、利用者が `Dev Containers: Rebuild Container` を実行してください。エージェントはホストの再作成を代行しません。
+
+転送を追加した後、または再作成した後は、次の順でワールドとアイテムの両方を確認します。
+
+1. コンテナでターミナルを2つ開きます。`<world>` と `<item>` は、親の main checkout の下にある実際の制作物名へ置き換えます。
+
+   ```bash
+   # ターミナル1: ワールド
+   cd "$XRIFT_POC_ROOT/worlds/<world>"
+   npm run dev -- --host 0.0.0.0 --port 5173 --strictPort
+   ```
+
+   ```bash
+   # ターミナル2: アイテム
+   cd "$XRIFT_POC_ROOT/items/<item>"
+   npm run dev -- --host 0.0.0.0 --port 5174 --strictPort
+   ```
+
+   `--strictPort` は、コンテナ側で指定ポートが使用中のときに別ポートへ移るのを防ぎます。起動に失敗したら先にその原因を確認し、両サーバーが起動した状態を保ちます。
+2. VS Code の「ポート」で、コンテナ側の 5173 と 5174、およびそれぞれのホスト側の転送先を確認します。行が無ければ手動で転送を追加します。
+3. 両サーバーを起動したまま、ホストのブラウザで実際の転送先 URL を開き、ワールドとアイテムの描画を確認します。同じポートへ転送されていれば `http://localhost:5173` と `http://localhost:5174` です。コンテナ内 HTTP 200 や Playwright の描画だけでは、ホストから表示できたことにはしません。
+4. [Issue #59](https://github.com/usaturn/xrift-poc/issues/59) に、手動転送か再作成後か、両制作物の実ディレクトリ、実際の起動コマンドとポート、VS Code に表示されたコンテナ側／ホスト側ポート、両 URL と表示結果を記録します。未確認の結果は成功と書きません。
+5. ホスト確認が終わってから、各ターミナルで `Ctrl+C` を押して確認用サーバーを止めます。
 
 ## XRift の導入と作業ディレクトリ
 

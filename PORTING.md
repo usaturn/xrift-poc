@@ -49,7 +49,7 @@
 
 - `items/`・`worlds/` をセットアップで用意し、`.gitignore` の `/items/`・`/worlds/` で無視する
 - XRift CLI（`@xrift/cli@0.25.0`）と XRift 公式スキル（`WebXR-JP/xrift-skills@41d6504`、`skills@1.7.2`）をセットアップで導入する
-- `~/.xrift` の bind mount、ポート 5173・3000 の転送（5174〜5179 は `portsAttributes` のラベルだけで、開発サーバーが起動したときに VS Code が検出して転送する）
+- `~/.xrift` の bind mount、プレビュー用 5173〜5179 とログイン用 3000 の明示転送（#59 で追加分も `forwardPorts` に指定。`portsAttributes` のラベルや VS Code の自動検出だけに頼らない）
 - 操作先の判定（`.agents/scripts/route_target.py`）と、制作物へのスキルのリンク（`.agents/scripts/project_link.py`・`xrift-link`）
 - `cod` に `-c 'project_root_markers=[".devcontainer"]'` を加えた
 - `~/.zshrc` の設定を管理ブロックにし、再実行で重複しないようにした
@@ -364,7 +364,7 @@ XRift CLI 0.25.0 で、親の main checkout の `worlds/issue-8-preview` と `it
 - `npm run dev -- --host 0.0.0.0 --port 5173 --strictPort`（ワールド）と同じコマンドの `--port 5174`（アイテム）で起動し、コンテナ内から両方の HTTP 200 を確認した。
 - Python Playwright / Chromium で両方の 1280×800 の canvas とスクリーンショットを確認した。ワールドは街並み・茶色の壁・緑の床・操作説明、アイテムは灰色の床・青い八面体・黒い台座を描画し、`pageerror` は両方0件だった。
 - 確認用サーバーは終了し、5173・5174 のポートが解放されたことを確かめた。その後、利用者がホストで確認し、ワールド（5173）は OK、アイテム（5174）は NG と報告した。5174 が Dev Containers で転送されていないためで、描画の成功をホストからの表示の成功とは扱っていない。
-- `devcontainer.json` の `forwardPorts` に5173はあるが、5174〜5179は無い。`portsAttributes` のラベルだけでは転送は保証されない。現在のコンテナでは VS Code の「ポート」→「ポートの転送」で5174を追加できるが、追加後のホスト表示は未確認。恒久対応は #59 に分けた。
+- 当時の `devcontainer.json` の `forwardPorts` には5173があるが、5174〜5179は無かった。`portsAttributes` のラベルだけでは転送は保証されない。当時のコンテナでは VS Code の「ポート」→「ポートの転送」で5174を追加できたが、追加後のホスト表示は未確認だった。恒久対応は #59 に分けた（現在の設定は下の「Issue #59 の追加プレビューポート」を参照）。
 
 ### Cursor CLI・Grok Build の読み込み
 
@@ -392,3 +392,11 @@ Issue #60 の対応として、2026-10-26 に既存の確認結果から次の�
 - missing はモデル応答と read イベントなしによる観測であり、内部カタログの dump を得たものではない。内部探索の原因は断定しない。read 成功イベントも本文の生バイト・ハッシュまでは照合していない。新しい版でこれらの条件が変わったかは未再検証であり、今回の案内を新版での成功確認として扱わない。
 
 リンク作成・削除の処理は変更せず、README・AGENTS・`xrift-link` の案内をこの対応範囲に揃えた。制作物や既存の指示・スキル・設定は変更していない。
+
+## Issue #59 の追加プレビューポート
+
+Issue #59 の対応として、5174〜5179 も `forwardPorts` に追加した。5173、ログインの 3000 と `requireLocalPort`、Plannotator の 19432〜19441 は保持している。撤去済みの DSH は戻していない。追加分のラベルだけで転送されるとは案内しない。
+
+既存の接続は設定の編集だけで修復されたとは扱わない。手動転送と、利用者による再作成後の確認は [.devcontainer/README.md の手順](.devcontainer/README.md#追加プレビューの転送とホスト確認) に揃えた。ワールドとアイテムを同時に起動し、実ディレクトリ・起動コマンド・VS Code のコンテナ側／ホスト側ポート・両 URL の結果を Issue #59 に記録する。
+
+今回、ホストでの Dev Container 再作成・手動転送・ブラウザ表示は実施していない。上の 2026-10-18 の結果を修正後の成功として扱わず、コンテナ内の検証とも区別する。

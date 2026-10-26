@@ -60,12 +60,13 @@
 	// Features to add to the dev container. More info: https://containers.dev/features.
 	// "features": {},
 
-	// 5173: XRift のプレビュー（Vite）。複数のプロジェクトは 5174 以降を使う。
+	// 5173-5179: XRift のプレビュー（Vite）。複数のプロジェクトは 5174-5179 を使う。
+	// portsAttributes のラベルだけに頼らず、追加分も明示転送する。
 	// 3000: xrift login のコールバック（CLI が localhost:3000/callback に固定している）。
 	//       ホスト側で使われていたら別のポートへ振り替えずに失敗させる（requireLocalPort）。
 	// 19432-19441: Pi / Superpowers の Plannotator レビュー用。空きポートを選ぶ。
 	"forwardPorts": [
-		5173, 3000,
+		5173, 5174, 5175, 5176, 5177, 5178, 5179, 3000,
 		19432, 19433, 19434, 19435, 19436, 19437, 19438, 19439, 19440, 19441
 	],
 	"portsAttributes": {
