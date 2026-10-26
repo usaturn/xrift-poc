@@ -5,12 +5,13 @@ import json
 import subprocess
 import sys
 import threading
+import uuid
 from collections.abc import Callable, Generator, Iterable
 from pathlib import Path
 
 import pytest
 
-from tools.agent_runner import environ, workspace
+from tools.agent_runner import environ, process, runner, workspace
 from tools.agent_runner.adapters import AdapterContext, AdapterOutcome, Capabilities, LaunchSpec
 from tools.agent_runner.config import ConfigError
 from tools.agent_runner.models import (
@@ -107,6 +108,20 @@ if options.get('marker'):
     pathlib.Path(options['marker']).write_text('ready')
     time.sleep(0.3)
 token = os.environ.get('SERVICE_TOKEN', 'no-token')
+scratch_root = os.environ.get('TMPDIR')
+if options.get('scratch_probe') and scratch_root:
+    scratch = pathlib.Path(scratch_root)
+    (scratch / 'same.txt').write_text(request['agent_id'] + ':' + token)
+    direct = pathlib.Path('/tmp') / options['scratch_probe']
+    direct.write_text(request['agent_id'] + ':' + token)
+    nested = scratch / 'nested'
+    nested.mkdir()
+    (nested / 'output.log').write_text(token)
+    (nested / 'external-link').symlink_to(options['external_file'])
+    (nested / 'external-directory').symlink_to(pathlib.Path(options['external_file']).parent)
+    os.mkfifo(nested / 'pipe')
+    if options.get('scratch_unreadable'):
+        (scratch / 'same.txt').chmod(0)
 _export_file = pathlib.Path(sys.argv[1]).parent.joinpath('export.json')
 if options.get('export_link'):
     _export_file.symlink_to(options['export_link'])
@@ -118,7 +133,7 @@ payload = options.get('payload', {'prompt': request['prompt'], 'depth': os.envir
     'ambient': os.environ.get('UNCONFIGURED_SECRET'), 'git': os.environ.get('GIT_DIR'),
     'probes': probes, 'other_commit': other_commit, 'own_commit': own_commit,
     'temporary_worktree': temporary_worktree, 'lock_written': lock_written,
-    'review_ref_written': review_ref_written, 'replaced': replaced})
+    'review_ref_written': review_ref_written, 'replaced': replaced, 'scratch_root': scratch_root})
 receipt = {key: request[key] for key in ('schema_version', 'run_id', 'request_id', 'agent_id', 'role')}
 receipt.update(status='success', payload=payload)
 if not options.get('missing'):
@@ -144,6 +159,11 @@ class FakeAdapter:
         self.diagnosis = diagnosis
 
     def prepare(self, context: AdapterContext) -> LaunchSpec:
+        options = self.options.get(context.request.agent_id, {})
+        scratch = context.receipt_path.parent / "tmp"
+        if options.get("scratch_probe") and scratch.is_dir():
+            # Cross-mount hardlinks cannot be created after bubblewrap starts.
+            (scratch / "hardlink").hardlink_to(str(options["external_file"]))
         return LaunchSpec(
             argv=(*context.agent.command, str(context.receipt_path)),
             stdin=json.dumps(
@@ -518,6 +538,183 @@ def test_only_allowlisted_environment_and_redacted_results(
     payload = environment.results[0].attempts[0].payload
     assert isinstance(payload, dict)
     assert payload["depth"] == "1" and payload["ambient"] is None and payload["git"] is None
+
+
+def test_scratch_is_isolated_and_redacted_after_every_attempt(
+    repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """固定 /tmp 名の衝突と秘密の残存を防ぎ、整理がリンク先の他者のファイルを変更しない。"""
+    secret = "scratch-dummy-token"
+    external = tmp_path / "external.txt"
+    external.write_text(secret)
+    host_file = Path("/tmp") / f"runner-scratch-{uuid.uuid4().hex}"
+    cfg = configuration(["a", "b"], ["c"])
+    for agent in cfg.agents.values():
+        agent.env = ["SERVICE_TOKEN", "TMPDIR"]
+    monkeypatch.setattr(
+        environ,
+        "_literal",
+        environ.literal_environ()
+        | {
+            "SERVICE_TOKEN": secret,
+            "TMPDIR": str(tmp_path),
+        },
+    )
+    fake = FakeAdapter(
+        {
+            name: {
+                "scratch_probe": host_file.name,
+                "external_file": str(external),
+                "exit": int(name == "a"),
+            }
+            for name in cfg.agents
+        }
+    )
+    try:
+        batch = run_workflow(
+            cfg,
+            "audit",
+            "日本語の依頼\n二行目",
+            repository,
+            output_dir=tmp_path / "run with spaces",
+            adapter_loader=lambda _: fake,
+        )
+        assert batch.state == "success"
+        assert not host_file.exists()
+        attempts = [item for result in batch.results for item in result.attempts]
+        roots: list[Path] = []
+        for item in attempts:
+            assert item.stop_confirmed and not item.sensitive_paths
+            assert isinstance(item.payload, dict)
+            value = item.payload["scratch_root"]
+            assert isinstance(value, str)
+            root = Path(value)
+            assert root != tmp_path and item.request_path is not None
+            assert root.is_relative_to(item.request_path.parent)
+            roots.append(root)
+            assert (root / "same.txt").read_text().startswith(item.agent_id + ":")
+            assert (root / host_file.name).read_text().startswith(item.agent_id + ":")
+            assert secret not in (root / "same.txt").read_text()
+            assert secret not in (root / "nested/output.log").read_text()
+            assert secret not in (root / "hardlink").read_text()
+            assert not (root / "nested/external-link").is_symlink()
+            assert not (root / "nested/external-directory").is_symlink()
+            assert not (root / "nested/pipe").exists()
+        assert len(roots) == len(set(roots)) and len(roots) > len(batch.results)
+        assert external.read_text() == secret
+    finally:
+        host_file.unlink(missing_ok=True)
+
+
+def test_unconfirmed_stop_keeps_scratch_unread_and_reports_it(
+    repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """停止未確認の一時ファイルを伏せ字・削除したり報告から落とすと、実行中の担当と秘密を見失う。"""
+    original = runner.execute
+
+    async def unconfirmed(*args: object, **kwargs: object) -> process.ProcessResult:
+        result = await original(*args, **kwargs)  # type: ignore[arg-type]
+        return process.ProcessResult(result.state, result.exit_code, False, result.elapsed_seconds)
+
+    external = tmp_path / "external.txt"
+    external.write_text("fixture")
+    host_file = Path("/tmp") / f"runner-scratch-{uuid.uuid4().hex}"
+    monkeypatch.setattr(runner, "execute", unconfirmed)
+    try:
+        batch = run_workflow(
+            configuration(),
+            "audit",
+            "prompt",
+            repository,
+            output_dir=tmp_path / "run",
+            adapter_loader=lambda _: FakeAdapter(
+                {
+                    "a": {
+                        "scratch_probe": host_file.name,
+                        "external_file": str(external),
+                    }
+                }
+            ),
+        )
+        item = batch.results[0].attempts[0]
+        assert item.request_path is not None
+        root = item.request_path.parent / "tmp"
+        assert root in item.sensitive_paths and root.is_dir()
+        assert (root / "nested/external-link").is_symlink() and (root / "nested/pipe").exists()
+        assert item.state != "success" and item.payload is None
+    finally:
+        host_file.unlink(missing_ok=True)
+
+
+def test_unreadable_scratch_is_reported_instead_of_success(repository: Path, tmp_path: Path) -> None:
+    """伏せ字に失敗した一時ファイルを成功として返すと、秘密のある保持領域が通常回収される。"""
+    external = tmp_path / "external.txt"
+    external.write_text("fixture")
+    host_file = Path("/tmp") / f"runner-scratch-{uuid.uuid4().hex}"
+    try:
+        batch = run_workflow(
+            configuration(),
+            "audit",
+            "prompt",
+            repository,
+            output_dir=tmp_path / "run",
+            adapter_loader=lambda _: FakeAdapter(
+                {
+                    "a": {
+                        "scratch_probe": host_file.name,
+                        "external_file": str(external),
+                        "scratch_unreadable": True,
+                    }
+                }
+            ),
+        )
+        item = batch.results[0].attempts[0]
+        assert item.request_path is not None
+        path = item.request_path.parent / "tmp/same.txt"
+        assert path in item.sensitive_paths and item.state != "success"
+        assert not host_file.exists()
+    finally:
+        host_file.unlink(missing_ok=True)
+        # 読めないまま残すと、runner の担当がこのテストを実行したとき、外側の runner の試行が失敗になる
+        for unreadable in (tmp_path / "run").rglob("same.txt"):
+            unreadable.chmod(0o600)
+
+
+def test_replaced_scratch_root_does_not_redact_external_files(
+    repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """tmp 自体がリンクに置き換わったとき、伏せ字処理が他者のファイルを黙って変更しない。"""
+    target = tmp_path / "external-directory"
+    target.mkdir()
+    secret = "external-fixture-token"
+    marker = target / "original.txt"
+    marker.write_text(secret)
+    monkeypatch.setattr(environ, "_literal", environ.literal_environ() | {"SERVICE_TOKEN": secret})
+    original = runner.execute
+
+    async def replaced(*args: object, **kwargs: object) -> process.ProcessResult:
+        result = await original(*args, **kwargs)  # type: ignore[arg-type]
+        output = kwargs["stdout_path"]
+        assert isinstance(output, Path)
+        root = output.parent / "tmp"
+        root.rename(output.parent / "tmp-original")
+        root.symlink_to(target)
+        return result
+
+    monkeypatch.setattr(runner, "execute", replaced)
+    batch = run_workflow(
+        configuration(),
+        "audit",
+        "prompt",
+        repository,
+        output_dir=tmp_path / "run",
+        adapter_loader=lambda _: FakeAdapter(),
+    )
+    item = batch.results[0].attempts[0]
+    assert item.request_path is not None
+    root = item.request_path.parent / "tmp"
+    assert marker.read_text() == secret
+    assert root in item.sensitive_paths and root.is_symlink() and item.state != "success"
 
 
 def test_diagnosis_is_redacted_before_it_is_cut(

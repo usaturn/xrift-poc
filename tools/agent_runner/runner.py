@@ -36,6 +36,7 @@ from tools.agent_runner.models import (
 )
 from tools.agent_runner.process import execute, redact_file
 from tools.agent_runner.receipts import read_receipt
+from tools.agent_runner.scratch import settle_scratch
 from tools.agent_runner.workspace import (
     WorkspaceError,
     audit_checkouts,
@@ -265,6 +266,9 @@ def run_workflow(
             artifact_dir = output_dir.absolute()
             # mkdir without exist_ok rejects existing directories AND dangling links.
             artifact_dir.mkdir(mode=0o700)
+        # The private /tmp hides symlinked or ".." parents of the given spelling;
+        # every path handed to the agent derives from the one the namespace mounts.
+        artifact_dir = artifact_dir.resolve(strict=True)
     except OSError:
         raise RunnerError("output_io") from None
     run_id = uuid.uuid4().hex
@@ -304,6 +308,7 @@ def run_workflow(
             return finished("unsupported")
         directory = artifact_dir / request_id / f"attempt-{number}"
         work_dir = directory / "worktree"
+        scratch_dir = directory / "tmp"
         stdout_path, stderr_path = directory / "stdout.log", directory / "stderr.log"
         request_path = directory / "request.json"
         prep_stdout, prep_stderr = directory / "worktree.stdout.log", directory / "worktree.stderr.log"
@@ -334,10 +339,12 @@ def run_workflow(
             if remaining <= 0:
                 return finished("timed_out")
             paths.update(stdout_path=stdout_path, stderr_path=stderr_path)
+            scratch_dir.mkdir(mode=0o700)
             instructions = (
                 f"Work in this worktree only: {work_dir}. Do not modify other checkouts.\n"
                 f"writes={role.writes}: {'changes are permitted here' if role.writes else 'do not modify files'}. "
                 "This is an instruction, not a sandbox.\n"
+                f"Temporary files: use TMPDIR={scratch_dir}. The private /tmp maps to the same directory.\n"
             )
             if exceptions:
                 instructions += EXCEPTIONS_HEADING + "\n" + "".join(f"- {item}\n" for item in exceptions)
@@ -368,8 +375,9 @@ def run_workflow(
             if not spec.argv or any(argument == prompt or request.prompt in argument for argument in spec.argv):
                 return finished("launch_failed")
             env["AGENT_RUNNER_DEPTH"] = "1"
+            env["TMPDIR"] = str(scratch_dir)
             isolation = checkout_isolation(
-                repository, before, work_dir, directory, writable_paths, private_review_refs
+                repository, before, work_dir, directory, writable_paths, private_review_refs, scratch_dir
             )
             safe_spec = LaunchSpec((*isolation.argv, "--", *spec.argv), spec.stdin)
         except Exception:
@@ -393,6 +401,7 @@ def run_workflow(
         export_path = context.receipt_path.parent / "export.json" if agent.runtime == "devin" else None
         export_unsafe = False
         if process.stop_confirmed:
+            sensitive_paths.extend(settle_scratch(scratch_dir, tuple(secrets)))
             # Devin leaves an ATIF export next to the receipt; inherited values can
             # be repeated in the final answer, history, and tool arguments. Redact
             # it like the receipt, before any collection reads it.
@@ -412,7 +421,7 @@ def run_workflow(
             # A live writer may hold a FIFO or replace the receipt. Never read or
             # rewrite its files before independent stop evidence is available.
             state, identity, payload, diagnosis = "response_failed", Identity(), None, None
-            sensitive_paths.append(context.receipt_path)
+            sensitive_paths.extend((context.receipt_path, scratch_dir))
             if export_path is not None:
                 sensitive_paths.append(export_path)
         if process.state in {"timed_out", "launch_failed"}:

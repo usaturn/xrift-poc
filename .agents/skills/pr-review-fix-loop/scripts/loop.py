@@ -1014,11 +1014,7 @@ def verify_reviewer(result: Result, *, pr: PrRef, head: str, review_dir: Path) -
     cleanup = payload.get("cleanup")
     entry.cleanup = cleanup if isinstance(cleanup, str) else None
     # 失敗した結果でも、pr-review が残したパス（worktree・draft・session など）は報告する
-    retained = payload.get("retained_paths")
-    if isinstance(retained, dict):
-        retained = list(cast(dict[str, object], retained).values())
-    if isinstance(retained, list):
-        entry.retained_paths = sorted({str(item) for item in cast(list[object], retained) if isinstance(item, str)})
+    entry.retained_paths = _payload_retained(payload)
     if payload.get("status") != "success":
         return reject(
             "payload", f"pr-review の結果が success ではない（{payload.get('status')}: {payload.get('reason')}）"
@@ -1106,13 +1102,50 @@ def _registered_worktrees(root: Path) -> list[Path]:
     return [Path(field.removeprefix("worktree ")) for field in listing.split("\x00") if field.startswith("worktree ")]
 
 
+def _payload_retained(payload: Mapping[str, Any]) -> list[str]:
+    """pr-review が payload の retained_paths（helper の dict か list）で残すと報告した値。"""
+    retained = payload.get("retained_paths")
+    if isinstance(retained, dict):
+        retained = list(cast(dict[str, object], retained).values())
+    if not isinstance(retained, list):
+        return []
+    return sorted({item for item in cast(list[object], retained) if isinstance(item, str)})
+
+
+def _declared_inside(batch: BatchResult, owned: Path) -> dict[str, Path]:
+    """停止を確認した試行の pr-review が残すと報告した、出力領域の中に実在するパス（報告の値 → 解決したパス）。
+
+    pr-review の session は試行の TMPDIR（出力領域の中）に作られる。loop はこれを所有しないので回収しない。
+    停止を確認できない試行の payload は読まない。絶対パスでない値（pr_ref の ref 名など）・出力領域の外・
+    実在しないパスは、回収で消えないので除く。調べられないパスは残す側に倒す。
+    """
+    declared: dict[str, Path] = {}
+    for item in batch.results:
+        for attempt in item.attempts:
+            if not attempt.stop_confirmed or not isinstance(attempt.payload, dict):
+                continue
+            for value in _payload_retained(cast(dict[str, Any], attempt.payload)):
+                path = Path(value)
+                if not path.is_absolute() or not (location := path.resolve()).is_relative_to(owned):
+                    continue
+                try:
+                    path.lstat()
+                except FileNotFoundError, NotADirectoryError:
+                    continue
+                except OSError:
+                    pass
+                declared[value] = location
+    return declared
+
+
 def cleanup_output(
     tool_root: Path, resource: Resource, batch: BatchResult | None, *, force: bool = False, reason: str | None = None
 ) -> list[str]:
     """記録した出力ディレクトリの資源だけを回収する。残したパスを返し、resource.state を更新する。
 
     停止を確認できない（force でない）ときは何も消さない。worktree は対象の checkout から外す
-    （force のときだけ --force）。秘密が残りうる sensitive_paths は消さずに残して報告する。
+    （force のときだけ --force）。秘密が残りうる sensitive_paths と、pr-review が残すと報告した出力領域の中の
+    パス（その中の worktree と、そのパスを含む worktree を含む）は、消さずに残して報告する。
     """
     parent = Path(resource.path)
     if not parent.name.startswith(TMP_PREFIX) or parent.is_symlink():
@@ -1147,14 +1180,24 @@ def cleanup_output(
         return [str(parent)]
     retained: list[str] = []
     owned = parent.resolve()
+    declared = _declared_inside(batch, owned) if batch is not None else {}
     for worktree in _registered_worktrees(tool_root):
-        if not worktree.resolve().is_relative_to(owned):
+        location = worktree.resolve()
+        if not location.is_relative_to(owned):
+            continue
+        if any(location.is_relative_to(path) for path in declared.values()):
+            # pr-review が残すと報告した session の中の worktree。declared として報告する
+            continue
+        if any(path.is_relative_to(location) for path in declared.values()):
+            # 外すと、中にある pr-review が残すと報告したパスも消える
+            retained.append(str(worktree))
             continue
         try:
             git_output(tool_root, "worktree", "remove", *(["--force"] if force else []), str(worktree))
         except LoopError:
             retained.append(str(worktree))
     if batch is not None:
+        retained += list(declared)
         retained += [
             str(path) for item in batch.results for attempt in item.attempts for path in attempt.sensitive_paths
         ]
@@ -1164,7 +1207,7 @@ def cleanup_output(
         reason = reason or "runner の結果が無く、秘密が残りうるファイルを判別できない"
     if retained:
         resource.state = "retained"
-        resource.reason = reason or "外せない worktree か、秘密が残りうるファイルがある"
+        resource.reason = reason or "外せない worktree、pr-review が残すと報告したパスか、秘密が残りうるファイルがある"
         return retained
     shutil.rmtree(parent)
     resource.state = "removed"
