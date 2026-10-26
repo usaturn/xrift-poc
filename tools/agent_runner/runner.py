@@ -266,6 +266,9 @@ def run_workflow(
             artifact_dir = output_dir.absolute()
             # mkdir without exist_ok rejects existing directories AND dangling links.
             artifact_dir.mkdir(mode=0o700)
+        # The private /tmp hides symlinked or ".." parents of the given spelling;
+        # every path handed to the agent derives from the one the namespace mounts.
+        artifact_dir = artifact_dir.resolve(strict=True)
     except OSError:
         raise RunnerError("output_io") from None
     run_id = uuid.uuid4().hex
