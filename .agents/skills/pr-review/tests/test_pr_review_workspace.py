@@ -460,6 +460,12 @@ def test_strict_cleanup_refuses_state_changed_after_successful_reap_check(
 FINDINGS_MARKDOWN = """- 対象: PR #4 / head {head12} / 2026-10-05
 - レビュアー: gpt-5.6-sol（ランタイム: codex）
 
+## Review history
+
+| Reviewed at (UTC) | HEAD | Mode |
+|---|---|---|
+| 2026-10-05T00:00:00Z | `{head12}` | Initial |
+
 ## Medium
 
 ### M-1: 例の指摘【検証済み】

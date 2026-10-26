@@ -4,6 +4,7 @@ import argparse
 import importlib.util
 import json
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,7 @@ assert SPEC is not None and SPEC.loader is not None
 review_run = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(review_run)
 REPOSITORY = "example/syncer"
+LOOP_SCRIPT = Path(__file__).parents[2] / "pr-review-fix-loop" / "scripts" / "loop.py"
 
 
 def git(root: Path, *args: str) -> str:
@@ -292,6 +294,78 @@ def test_complete_reports_saved_but_uncleaned_result_as_failure(
     assert Path(completed["review_file"]).is_file()
     assert Path(completed["findings_file"]).is_file()
     assert Path(result["state_file"]).exists()
+
+
+# --- Review history の HEAD（保存と PR 修正ループの照合） ---------------------------------------------------------
+
+
+def load_loop() -> Any:
+    """PR 修正ループの helper。pydantic のモデルを解決できるよう、一意の名前で sys.modules に登録する。"""
+    spec = importlib.util.spec_from_file_location("pr_review_tests_loop", LOOP_SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def write_history_head(result: dict[str, Any], value: str) -> None:
+    """mark_reviewed が書いた Review history の行の HEAD を value にする。"""
+    draft = Path(result["draft"])
+    text = draft.read_text(encoding="utf-8")
+    row = f"| `{result['reviewed_head'][:12]}` | Initial |"
+    assert text.count(row) == 1
+    draft.write_text(text.replace(row, f"| `{value}` | Initial |"), encoding="utf-8")
+
+
+def test_complete_saves_a_longer_prefix_of_the_reviewed_head_that_the_loop_accepts(prepared: dict[str, Any]) -> None:
+    """complete と loop で Review history の HEAD の規則が違うと、complete が success を返したレビューを loop が
+    却下し、レビュアーは誤りを知らないまま試行を終える（#103。PR #102 では同じ commit の 13 桁で起きた）。"""
+    result = review_run.prepare(prepared["args"])
+    mark_reviewed(result)
+    head = result["reviewed_head"]
+    write_history_head(result, head[:13])
+
+    completed = review_run.complete(argparse.Namespace(state=result["state_file"]))
+    assert completed["status"] == "success", completed["reason"]
+
+    loop = load_loop()
+    attempt = Attempt(
+        agent_id="fixture-reviewer",
+        state="success",
+        identity=Identity(model="observed-model"),
+        exit_code=0,
+        elapsed_seconds=1.0,
+        stop_confirmed=True,
+        work_dir=prepared["caller"],
+        request_path=prepared["request_path"],
+        payload=completed,
+    )
+    runner_result = Result(
+        request_id="request-7",
+        role="inspect",
+        requested_agent="fixture-reviewer",
+        actual_agent="fixture-reviewer",
+        state="success",
+        attempts=[attempt],
+    )
+    pr = loop.PrRef(repository=REPOSITORY, number=7, url=f"https://github.com/{REPOSITORY}/pull/7")
+    entry = loop.verify_reviewer(runner_result, pr=pr, head=head, review_dir=Path(completed["review_file"]).parent)
+    assert entry.verdict == "accepted", entry.reason
+
+
+def test_complete_refuses_a_review_history_head_of_another_commit(prepared: dict[str, Any]) -> None:
+    """別の commit の HEAD を書いたレビューを complete が保存して success を返すと、loop が却下するまで
+    レビュアーは誤りを知らない（#103）。"""
+    result = review_run.prepare(prepared["args"])
+    mark_reviewed(result)
+    write_history_head(result, git(prepared["source"], "rev-parse", "main")[:12])
+
+    completed = review_run.complete(argparse.Namespace(state=result["state_file"]))
+
+    assert completed["status"] == "failed"
+    assert "Review history" in completed["reason"]
+    assert completed["review_file"] is None
 
 
 def run_records(parent: Path) -> list[Path]:

@@ -1492,6 +1492,10 @@ _TARGET_HEAD = re.compile(r"- 対象\s*[:：].*?head\s+`?(?P<head>[0-9a-f]{12})`
 _HEX12 = re.compile(r"[0-9a-f]{12}")
 _ID_HEADING = re.compile(r"### [A-Z]+-[0-9]+\b")
 _SUMMARY_ROW = re.compile(r"\|\s*(Critical|High|Medium|Low|Info)\s*\|\s*([0-9]+)\s*\|")
+_REVIEW_HISTORY_HEADING = "## Review history"
+# 書く規則は 12 文字。12 文字以上の先頭部分なら、同じ commit のレビューとして読む
+_REVIEW_HISTORY_HEAD = re.compile(r"[0-9a-f]{12,64}")
+_TABLE_SEPARATOR = re.compile(r":?-+:?")
 # 指摘を意図して数えない節（判断済み・解消済み・前回の未再検証）
 _EXCLUDED_SECTIONS = ("## Decided findings", "## Resolved findings", "## Pending previous findings")
 
@@ -1693,6 +1697,51 @@ def check_pair(markdown: str, candidates: Mapping[str, Any]) -> None:
         if finding_id not in parsed.unverified:
             problems.add("unverified_candidates", f"{finding_id} is in the JSON but not in the Markdown")
     problems.raise_if_any()
+
+
+def _last_review_history_head(markdown: str) -> str | None:
+    """``## Review history`` の表の最後のデータ行の HEAD の列。行が無ければ None。コードブロックの中は読まない。"""
+    last: str | None = None
+    column: int | None = None
+    in_section = in_fence = False
+    for line in markdown.splitlines():
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if line.startswith(("# ", "## ")):
+            in_section = line.strip() == _REVIEW_HISTORY_HEADING
+            column = None
+            continue
+        row = line.strip()
+        if not in_section or not row.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in row.strip("|").split("|")]
+        if column is None:
+            column = cells.index("HEAD") if "HEAD" in cells else -1
+            continue
+        if all(_TABLE_SEPARATOR.fullmatch(cell) for cell in cells):
+            continue
+        last = cells[column].strip("`").strip() if 0 <= column < len(cells) else ""
+    return last
+
+
+def review_history_problem(markdown: str, reviewed_head: str) -> str | None:
+    """最後の Review history の行が reviewed_head のレビューでなければ、その理由を返す。
+
+    pr-review の保存と PR 修正ループの照合は、どちらもこの関数で判定する（片方だけが通す形を作らない）。
+    前の行は削除・並べ替えないので、最後の行だけを見る。
+    """
+    head = _last_review_history_head(markdown)
+    if head is None:
+        return f"Review history has no row; append this review's row with HEAD {reviewed_head[:12]}"
+    if _REVIEW_HISTORY_HEAD.fullmatch(head) is None or not reviewed_head.startswith(head):
+        return (
+            f"the last Review history row has HEAD {head!r}, which is not the reviewed commit;"
+            f" write its first 12 characters {reviewed_head[:12]}"
+        )
+    return None
 
 
 # --- 条件を述べる文書の候補 ---------------------------------------------------------------------------------------
