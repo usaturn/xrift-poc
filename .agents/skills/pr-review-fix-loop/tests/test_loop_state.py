@@ -197,6 +197,25 @@ def test_no_fix_needed_needs_a_merged_finalize_result_at_the_same_head(
     assert run["result"]["merged"] is True
 
 
+def test_merged_pr_at_another_head_does_not_complete_the_cycle(loop: Any, env: Any, kit: Any, tmp_path: Path) -> None:
+    """mergedだけで完了すると、別HEADのマージをこのサイクルの検証済み完了として記録する。"""
+    env.start()
+    head = env.gh.head()
+    reuse_or_run(loop, env)
+    env.gh.post_record(kit.round_record(1, head, "no_fix_needed", []))
+    result = kit.finalize_result(tmp_path / "final.json", "no_fix_needed", merged=True)
+    moved = env.push("別のHEADのマージ")
+    env.gh.merge()
+    assert env.gh.head() == moved != head
+
+    with pytest.raises(loop.LoopError):
+        loop.cycle_end(env.run_dirs[-1], github=env.github, finalize_result=result)
+
+    run_dir = env.run_dirs[-1]
+    assert json.loads((run_dir / "run.json").read_text(encoding="utf-8"))["result"] is None
+    assert json.loads((run_dir / "cycle-1.json").read_text(encoding="utf-8"))["state"] == "planning"
+
+
 def test_finalize_stopped_ends_the_run_as_stopped_and_not_merged(
     loop: Any, env: Any, kit: Any, tmp_path: Path
 ) -> None:

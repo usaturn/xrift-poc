@@ -115,6 +115,28 @@ def broken(result: Result, case: str, tmp_path: Path) -> Result:
     payload: dict[str, Any] = dict(cast(dict[str, Any], attempt.payload))
     if case == "payload_failed":
         payload["status"] = "failed"
+    elif case == "payload_repository":
+        payload["repository"] = "another/repository"
+    elif case == "payload_pr_number":
+        payload["pr_number"] += 1
+    elif case == "payload_pr_head":
+        payload["pr_head"] = "0" * 40
+    elif case == "payload_reviewed_head":
+        payload["reviewed_head"] = "0" * 40
+    elif case in ("candidates_pr", "candidates_head"):
+        path = Path(payload["findings_file"])
+        document = read(path)
+        if case == "candidates_pr":
+            document["pr"]["number"] += 1
+        else:
+            document["reviewed_head"] = "0" * 40
+        path.write_text(json.dumps(document), encoding="utf-8")
+    elif case == "markdown_head":
+        path = Path(payload["review_file"])
+        markdown = path.read_text(encoding="utf-8")
+        path.write_text(
+            markdown.replace(f"| `{payload['reviewed_head'][:12]}` |", f"| `{'0' * 12}` |"), encoding="utf-8"
+        )
     elif case == "review_outside_dir":
         # 別のレビューディレクトリへ保存された成果。名前は元のままにして、場所だけが違う形にする
         outside = tmp_path / "elsewhere" / Path(payload["review_file"]).name
@@ -134,6 +156,14 @@ def broken(result: Result, case: str, tmp_path: Path) -> Result:
         # レビューディレクトリの外に保存した成果を受け付けると、計画はレビューディレクトリだけを読むので、
         # そのレビュアーの指摘が黙って抜ける
         "review_outside_dir",
+        # 下流の判断記録は元payload/候補一覧/本文を再照合しない。別PR/HEADの受け付けはここで防ぐ。
+        "payload_repository",
+        "payload_pr_number",
+        "payload_pr_head",
+        "payload_reviewed_head",
+        "candidates_pr",
+        "candidates_head",
+        "markdown_head",
     ],
 )
 def test_verify_reviewer_rejects_each_broken_condition(loop: Any, env: Any, tmp_path: Path, case: str) -> None:
@@ -207,6 +237,28 @@ def test_review_with_no_accepted_reviewer_stops_before_planning(loop: Any, env: 
         loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
 
     assert read(run_dir / "cycle-1.json")["state"] == "reviewing"
+
+
+@pytest.mark.parametrize("phase", ["initial", "rerun"])
+def test_head_movement_before_review_does_not_reach_planning(loop: Any, env: Any, phase: str) -> None:
+    """開始後や再実行前のHEAD移動を見逃すと、古いHEADのレビューを現在の計画へ渡す。"""
+    run_dir = Path(env.start()["run_dir"])
+    old_head = env.gh.head()
+    loop.cycle_begin(run_dir, github=env.github)
+    adapter = env.reviewers({"alpha": ["failed", "success"], "beta": "success"})
+    if phase == "rerun":
+        first = loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
+        assert "planning" not in first
+    launched = list(adapter.launched)
+    assert env.push("別のHEAD 日本語\n  空白を含む変更") != old_head
+
+    with pytest.raises(loop.LoopError):
+        loop.review(run_dir, github=env.github, adapter_loader=adapter, tmp_root=env.tmp_root)
+
+    cycle = read(run_dir / "cycle-1.json")
+    assert cycle["head"] == old_head and cycle["state"] == "reviewing"
+    assert read(run_dir / "run.json")["result"] is None
+    assert adapter.launched == launched
 
 
 def test_unconfirmed_stop_holds_the_lock_until_operator_recovery(
