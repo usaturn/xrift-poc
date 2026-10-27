@@ -11,6 +11,8 @@ from typing import Any
 
 import pytest
 
+from tools.test_support.repos import create_env_repo
+
 # Codex の中でもモデルを固定したテストが通るように、実行環境の CODEX_THREAD_ID を外す（#81）。
 pytest_plugins = ("tools.test_support.plugin",)
 pytestmark = pytest.mark.usefixtures("outside_codex")
@@ -115,35 +117,58 @@ def make_repo(path: Path, *, tracked_reviews: bool = True) -> str:
     return git(path, "rev-parse", "HEAD")
 
 
+# 親（usaturn/xrift-poc）の PR のレビューと同じ形のセッション: state version 7 で、target_root が親の main checkout
+CHECKOUT_REPOSITORY = "usaturn/xrift-poc"
+CHECKOUT_PR = 4
+CHECKOUT_BRANCH = "fix/herdr-session-cwd"
+
+
+def push_pr_head(work: Path) -> str:
+    """work の HEAD を PR の head（ブランチと refs/pull/<N>/head）として origin に push し、その SHA を返す。"""
+    git(work, "push", "-q", "origin", f"HEAD:refs/heads/{CHECKOUT_BRANCH}", f"HEAD:refs/pull/{CHECKOUT_PR}/head")
+    return git(work, "rev-parse", "HEAD")
+
+
+def make_pr_origin(tmp_path: Path, parent: Path, *, submodule_source: Path | None = None) -> tuple[Path, Path, str]:
+    """親の main を置いた bare の origin に PR の head を作り、(origin, 作業用の clone, head) を返す。"""
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "--bare", "-q", "-b", "main", str(origin)], check=True, capture_output=True)
+    git(parent, "push", "-q", str(origin), "HEAD:refs/heads/main")
+    work = tmp_path / "pr-work"
+    subprocess.run(["git", "clone", "-q", str(origin), str(work)], check=True, capture_output=True)
+    git(work, "config", "user.name", "Test User")
+    git(work, "config", "user.email", "test@example.com")
+    git(work, "switch", "-q", "-c", CHECKOUT_BRANCH)
+    (work / "change.txt").write_text("change\n", encoding="utf-8")
+    git(work, "add", "change.txt")
+    if submodule_source is not None:
+        git(work, "-c", "protocol.file.allow=always", "submodule", "add", str(submodule_source), "vendor")
+    git(work, "commit", "-m", "PR change")
+    return origin.resolve(), work, push_pr_head(work)
+
+
+def create_checkout(parent: Path, head: str, temp_root: Path, *, head_ref: str = CHECKOUT_BRANCH) -> dict[str, Any]:
+    target = target_json(
+        parent, head, repository=CHECKOUT_REPOSITORY, number=CHECKOUT_PR, head_ref=head_ref, target_root=parent
+    )
+    return workspace.create(argparse.Namespace(target=target, model_name=TARGET_MODEL, temp_root=str(temp_root)))
+
+
 def create_session(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     *,
     with_submodule: bool = False,
 ) -> dict[str, Any]:
-    codex_home = tmp_path / "codex"
-    write_rollout(codex_home, ["gpt-5.6-sol"])
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
-    monkeypatch.setenv("CODEX_THREAD_ID", THREAD_ID)
-    repo = tmp_path / "repo"
-    commit = make_repo(repo)
+    parent = create_env_repo(tmp_path / "env", copy_paths=()).root
+    submodule_source = None
     if with_submodule:
         submodule_source = tmp_path / "submodule-source"
         make_repo(submodule_source, tracked_reviews=False)
-        git(repo, "-c", "protocol.file.allow=always", "submodule", "add", str(submodule_source), "vendor")
-        git(repo, "commit", "-am", "add submodule")
-        commit = git(repo, "rev-parse", "HEAD")
-    result = workspace.create(
-        argparse.Namespace(
-            repo=str(repo),
-            pr_number=4,
-            commit=commit,
-            head_branch="fix/herdr-session-cwd",
-            model_name=None,
-            temp_root=str(tmp_path / "sessions"),
-        )
-    )
-    return {"result": result, "codex_home": codex_home, "repo": repo}
+    origin, work, head = make_pr_origin(tmp_path, parent, submodule_source=submodule_source)
+    redirect(monkeypatch, origin, CHECKOUT_REPOSITORY)
+    result = create_checkout(parent, head, tmp_path / "sessions")
+    return {"result": result, "repo": parent, "remote": origin, "work": work}
 
 
 @pytest.fixture
@@ -151,10 +176,22 @@ def created_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str
     return create_session(tmp_path, monkeypatch)
 
 
+def write_review(result: dict[str, Any], body: str = "") -> str:
+    """セッションの本文と候補一覧の対の下書きを書き、本文を返す。本文は M-1 の後ろに body を足したもの。"""
+    state = json.loads(Path(result["state_file"]).read_text(encoding="utf-8"))
+    commit = result["reviewed_head"]
+    text = FINDINGS_MARKDOWN.format(head12=commit[:12]) + body
+    document = findings_document(commit, pr={"repository": state["pr_repo"], "number": state["pr_number"]})
+    document["reviewer"]["review_file"] = result["review_file"]
+    Path(result["draft"]).write_text(text, encoding="utf-8")
+    Path(result["findings_draft"]).write_text(json.dumps(document), encoding="utf-8")
+    return text
+
+
 def saved_session(session: dict[str, Any], body: str = "review\n") -> dict[str, str]:
     result = session["result"]
-    Path(result["draft"]).write_text(body, encoding="utf-8")
-    return workspace.save(argparse.Namespace(state=result["state_file"]))
+    write_review(result, body)
+    return workspace.save(argparse.Namespace(state=result["state_file"], findings=True))
 
 
 def is_reapable(state_file: str | Path) -> bool:
@@ -168,26 +205,16 @@ def test_first_session_wins_same_destination(
     """保存先の指紋を照合しないと、同じ保存先への後のセッションの保存が、先のレビューを黙って上書きする。"""
     first = created_session["result"]
     repo = created_session["repo"]
-    commit = git(repo, "rev-parse", "HEAD")
-    second = workspace.create(
-        argparse.Namespace(
-            repo=str(repo),
-            pr_number=4,
-            commit=commit,
-            head_branch="fix/herdr-session-cwd",
-            model_name=None,
-            temp_root=str(Path(first["state_file"]).parents[1]),
-        )
-    )
-    Path(first["draft"]).write_text("first review\n", encoding="utf-8")
-    Path(second["draft"]).write_text("second review\n", encoding="utf-8")
+    second = create_checkout(repo, first["reviewed_head"], Path(first["state_file"]).parents[1])
+    first_text = write_review(first, "first review\n")
+    write_review(second, "second review\n")
 
-    workspace.save(argparse.Namespace(state=first["state_file"]))
+    workspace.save(argparse.Namespace(state=first["state_file"], findings=True))
     with pytest.raises(workspace.WorkspaceError):
-        workspace.save(argparse.Namespace(state=second["state_file"]))
+        workspace.save(argparse.Namespace(state=second["state_file"], findings=True))
 
     destination = repo / first["destination"]
-    assert destination.read_text(encoding="utf-8") == "first review\n"
+    assert destination.read_text(encoding="utf-8") == first_text
 
 
 def test_concurrent_save_keeps_the_first_review_and_losing_draft(
@@ -196,19 +223,9 @@ def test_concurrent_save_keeps_the_first_review_and_losing_draft(
     """保存の検査と書込みをロックしないと、両セッションが成功して先のレビューと draft を黙って失う。"""
     first = created_session["result"]
     repo = created_session["repo"]
-    second = workspace.create(
-        argparse.Namespace(
-            repo=str(repo),
-            pr_number=4,
-            commit=git(repo, "rev-parse", "HEAD"),
-            head_branch="fix/herdr-session-cwd",
-            model_name=None,
-            temp_root=str(Path(first["state_file"]).parents[1]),
-        )
-    )
-    first_body, second_body = "先のレビュー\n  保存する本文\n", "後のレビュー\n  未保存の本文\n"
-    Path(first["draft"]).write_text(first_body, encoding="utf-8")
-    Path(second["draft"]).write_text(second_body, encoding="utf-8")
+    second = create_checkout(repo, first["reviewed_head"], Path(first["state_file"]).parents[1])
+    first_body = write_review(first, "先のレビュー\n  保存する本文\n")
+    second_body = write_review(second, "後のレビュー\n  未保存の本文\n")
     first_checked, proceed, first_finished = (threading.Event() for _ in range(3))
     role = threading.local()
     original_verify, original_flock = workspace.verify_state, workspace.fcntl.flock
@@ -238,7 +255,7 @@ def test_concurrent_save_keeps_the_first_review_and_losing_draft(
         role.second = is_second
         try:
             try:
-                workspace.save(argparse.Namespace(state=result["state_file"]))
+                workspace.save(argparse.Namespace(state=result["state_file"], findings=True))
             except workspace.WorkspaceError:
                 return False
             workspace.cleanup(argparse.Namespace(state=result["state_file"]))
@@ -271,7 +288,7 @@ def test_cleanup_refuses_before_save(created_session: dict[str, Any]) -> None:
     result = created_session["result"]
     repo = created_session["repo"]
     session_dir = Path(result["state_file"]).parent
-    Path(result["draft"]).write_text("review\n", encoding="utf-8")
+    write_review(result, "review\n")
 
     with pytest.raises(workspace.WorkspaceError):
         workspace.cleanup(argparse.Namespace(state=result["state_file"]))
@@ -286,9 +303,10 @@ def test_cleanup_keeps_other_worktrees_and_main_checkout(tmp_path: Path, created
     """cleanup は毎回のレビューで走る。対象を取り違えると、他の worktree・main checkout・他のレビューを黙って消す。"""
     result = created_session["result"]
     repo = created_session["repo"]
+    readme = (repo / "README.md").read_text(encoding="utf-8")
     other = tmp_path / "unrelated-worktree"
     git(repo, "worktree", "add", "--detach", str(other), "HEAD")
-    other_review = repo / "reviews/#4-fix-herdr-session-cwd/gemini-3.6-flash.md"
+    other_review = repo / "reviews/usaturn/xrift-poc/#4-fix-herdr-session-cwd/gemini-3.6-flash.md"
     other_review.parent.mkdir(parents=True, exist_ok=True)
     other_review.write_text("gemini review\n", encoding="utf-8")
     saved_session(created_session)
@@ -297,7 +315,7 @@ def test_cleanup_keeps_other_worktrees_and_main_checkout(tmp_path: Path, created
 
     assert other.is_dir()
     assert str(other) in git(repo, "worktree", "list")
-    assert (repo / "README.md").read_text(encoding="utf-8") == "fixture\n"
+    assert (repo / "README.md").read_text(encoding="utf-8") == readme
     assert other_review.read_text(encoding="utf-8") == "gemini review\n"
 
 
@@ -396,28 +414,11 @@ def test_reap_check_rejects_ignored_or_flagged_files_inside_initialized_submodul
     problem: str,
 ) -> None:
     """submodule の中の無視ファイルと index の flag の付いた変更（別の検査）を、定期削除が黙って消す。"""
-    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
-    monkeypatch.delenv("CODEX_HOME", raising=False)
-    repo = tmp_path / "repo-with-submodule"
-    make_repo(repo, tracked_reviews=False)
-    submodule_source = tmp_path / "submodule-source"
-    make_repo(submodule_source, tracked_reviews=False)
-    git(repo, "-c", "protocol.file.allow=always", "submodule", "add", str(submodule_source), "vendor")
-    git(repo, "commit", "-am", "add submodule")
-    commit = git(repo, "rev-parse", "HEAD")
-    result = workspace.create(
-        argparse.Namespace(
-            repo=str(repo),
-            pr_number=4,
-            commit=commit,
-            head_branch="fix/submodule",
-            model_name="gpt-5.6-sol",
-            temp_root=str(tmp_path / "sessions"),
-        )
-    )
+    session = create_session(tmp_path, monkeypatch, with_submodule=True)
+    result = session["result"]
     worktree = Path(result["worktree"])
     git(worktree, "-c", "protocol.file.allow=always", "submodule", "update", "--init")
-    saved_session({"result": result})
+    saved_session(session)
     assert is_reapable(result["state_file"])
     submodule = worktree / "vendor"
     artifact = submodule / "ignored-build" / "result.bin"
@@ -475,22 +476,14 @@ def test_reap_check_rejects_files_inside_nested_uninitialized_submodule(
     make_repo(nested_source, tracked_reviews=False)
     session = create_session(tmp_path, monkeypatch, with_submodule=True)
     repo = session["repo"]
+    work = session["work"]
     submodule_source = tmp_path / "submodule-source"
     git(submodule_source, "-c", "protocol.file.allow=always", "submodule", "add", str(nested_source), "nested")
     git(submodule_source, "commit", "-am", "add nested submodule")
-    git(repo, "-c", "protocol.file.allow=always", "submodule", "update", "--remote", "vendor")
-    git(repo, "commit", "-am", "bump submodule")
+    git(work, "-c", "protocol.file.allow=always", "submodule", "update", "--remote", "vendor")
+    git(work, "commit", "-am", "bump submodule")
     workspace_root = tmp_path / "nested-sessions"
-    result = workspace.create(
-        argparse.Namespace(
-            repo=str(repo),
-            pr_number=4,
-            commit=git(repo, "rev-parse", "HEAD"),
-            head_branch="fix/nested-submodule",
-            model_name=None,
-            temp_root=str(workspace_root),
-        )
-    )
+    result = create_checkout(repo, push_pr_head(work), workspace_root, head_ref="fix/nested-submodule")
     worktree = Path(result["worktree"])
     git(worktree, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "vendor")
     saved_session({"result": result})
@@ -699,27 +692,27 @@ def test_target_update_reads_previous_review_and_cleanup_removes_clone(
 ) -> None:
     """2 回目のレビューに自分の前回のレビューを渡さないと、判断を引き継がない Initial のレビューを黙って作る。"""
     first = create_target_session(tmp_path, monkeypatch)
-    Path(first["result"]["draft"]).write_text("first\n", encoding="utf-8")
-    saved = workspace.save(argparse.Namespace(state=first["result"]["state_file"]))
+    first_text = write_review(first["result"], "first\n")
+    saved = workspace.save(argparse.Namespace(state=first["result"]["state_file"], findings=True))
     first_session = Path(first["result"]["state_file"]).parent
     cleaned = workspace.cleanup(argparse.Namespace(state=first["result"]["state_file"]))
 
     assert cleaned["pr_ref_status"] == "deleted"
     assert not first_session.exists()
-    assert Path(saved["destination"]).read_text(encoding="utf-8") == "first\n"
+    assert Path(saved["destination"]).read_text(encoding="utf-8") == first_text
 
     second = create_target_session(tmp_path, monkeypatch)
     previous = second["result"]["previous_review"]
     assert previous is not None
-    assert Path(previous).read_text(encoding="utf-8") == "first\n"
+    assert Path(previous).read_text(encoding="utf-8") == first_text
 
 
 def test_target_reap_check_rejects_extra_files_in_clone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """専用 clone の中の検査（別の条件）が外れると、セッションの repo/ に置かれたファイルを定期削除が黙って消す。"""
     session = create_target_session(tmp_path, monkeypatch)
     result = session["result"]
-    Path(result["draft"]).write_text("review\n", encoding="utf-8")
-    workspace.save(argparse.Namespace(state=result["state_file"]))
+    write_review(result, "review\n")
+    workspace.save(argparse.Namespace(state=result["state_file"], findings=True))
     assert is_reapable(result["state_file"])
     notes = Path(result["state_file"]).parent / "repo" / "notes.txt"
     notes.write_text("keep\n", encoding="utf-8")
@@ -761,7 +754,7 @@ def test_target_save_refuses_moved_live_head(
     """head が進んだのに保存すると古い head のレビューを最新として黙って残し、API の失敗を「変わっていない」と扱う。"""
     session = create_target_session(tmp_path, monkeypatch)
     result = session["result"]
-    Path(result["draft"]).write_text("review\n", encoding="utf-8")
+    write_review(result, "review\n")
 
     def live_head(_repository: str, _number: int) -> str:
         if failure == "api":
@@ -770,7 +763,7 @@ def test_target_save_refuses_moved_live_head(
 
     monkeypatch.setattr(workspace, "current_pr_head", live_head, raising=False)
     with pytest.raises(workspace.WorkspaceError):
-        workspace.save(argparse.Namespace(state=result["state_file"]))
+        workspace.save(argparse.Namespace(state=result["state_file"], findings=True))
     assert not (session["parent"] / result["destination"]).exists()
     assert Path(result["state_file"]).exists()
 

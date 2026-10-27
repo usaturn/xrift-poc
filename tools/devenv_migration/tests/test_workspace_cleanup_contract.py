@@ -88,25 +88,67 @@ def _init_repo(path: Path) -> None:
 
 def _create_helper_session(isolated_root: Path, tmp_path: Path) -> tuple[Path, Path, Path]:
     """helper で保存済みの pr-review のセッションを古くして作り、(repo, session_dir, state_file) を返す。"""
-    repo = tmp_path / "helper-main-repo"
-    _init_repo(repo)
-    commit = subprocess.run(
+    from tools.test_support.repos import create_env_repo
+
+    # 親（usaturn/xrift-poc）の PR のレビューと同じ形（state version 7、target_root が親の main checkout）。
+    # PR の head は親の HEAD とし、fetch を bare の origin へ向ける。掃除が別プロセスで実行する reap-check・
+    # cleanup --strict-reap はネットワークを使わない
+    repo = create_env_repo(tmp_path / "helper-env", copy_paths=()).root
+    head = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
     ).stdout.strip()
-    created = pr_review_workspace.create(
-        argparse.Namespace(
-            repo=str(repo),
-            pr_number=999,
-            commit=commit,
-            head_branch="feature/periodic-cleanup",
-            model_name="test-model",
-            temp_root=str(isolated_root),
+    origin = tmp_path / "helper-origin.git"
+    subprocess.run(["git", "init", "--bare", "-q", str(origin)], check=True)
+    subprocess.run(["git", "push", "-q", str(origin), "HEAD:refs/pull/999/head"], cwd=repo, check=True)
+    repository = "usaturn/xrift-poc"
+    clone_url = f"https://github.com/{repository}.git"
+    target: dict[str, object] = {
+        "parent_root": str(repo),
+        "target_root": str(repo),
+        "repository": repository,
+        "number": 999,
+        "head_ref": "feature/periodic-cleanup",
+        "head_sha": head,
+        "head_repository": repository,
+        "base_ref": "main",
+        "state": "open",
+        "clone_url": clone_url,
+    }
+    candidates: dict[str, object] = {
+        "schema": "review-findings/v1",
+        "kind": "candidates",
+        "source": "reviewer",
+        "pr": {"repository": repository, "number": 999},
+        "reviewed_head": head,
+        "base": head,
+        "reviewer": {"model": "test-model", "runtime": "codex", "review_file": "test-model.md"},
+        "skill": {"path": ".agents/skills/pr-review/SKILL.md", "sha256": "0" * 64},
+        "timing": {"started_at": "2026-10-05T01:00:00Z", "finished_at": "2026-10-05T01:30:00Z", "seconds": 1800},
+        "coverage": {"read": ["PR の差分全体"], "checks": [], "declined": []},
+        "findings": [],
+        "unverified_candidates": [],
+    }
+
+    def live_head(_repository: str, _number: int) -> str:
+        return head
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("GIT_CONFIG_COUNT", "1")
+        patch.setenv("GIT_CONFIG_KEY_0", f"url.{origin.resolve().as_uri()}.insteadOf")
+        patch.setenv("GIT_CONFIG_VALUE_0", clone_url)
+        patch.setattr(pr_review_workspace, "current_pr_head", live_head)
+        created = pr_review_workspace.create(
+            argparse.Namespace(target=json.dumps(target), model_name="test-model", temp_root=str(isolated_root))
         )
-    )
-    session_dir = Path(created["state_file"]).parent
-    state_file = Path(created["state_file"])
-    Path(created["draft"]).write_text("saved review draft\n", encoding="utf-8")
-    pr_review_workspace.save(argparse.Namespace(state=str(state_file)))
+        state_file = Path(created["state_file"])
+        Path(created["draft"]).write_text(
+            "## Review history\n\n| Reviewed at (UTC) | HEAD | Mode |\n|---|---|---|\n"
+            f"| 2026-10-05T00:00:00Z | `{head[:12]}` | Initial |\n\nsaved review draft\n",
+            encoding="utf-8",
+        )
+        Path(created["findings_draft"]).write_text(json.dumps(candidates), encoding="utf-8")
+        pr_review_workspace.save(argparse.Namespace(state=str(state_file), findings=True))
+    session_dir = state_file.parent
     _make_old(session_dir)
     return repo, session_dir, state_file
 
