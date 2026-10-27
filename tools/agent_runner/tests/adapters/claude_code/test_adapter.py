@@ -78,7 +78,8 @@ def test_collect_duplicate_answer_is_not_success(context: AdapterContext) -> Non
 
 
 def test_prepare_maps_effort_and_appends_agent_args(context: AdapterContext) -> None:
-    """設定の model・effort・args が claude の argv に渡らないと、CLI の既定のモデル・effort で黙って動く。"""
+    """依頼文や設定の値が落ちると、claude が既定のモデルや別の依頼で黙って作業する。"""
+    context.request.prompt = " \t日本語の依頼 '引用' $HOME; $(echo forbidden)\n二行目 & <>\n末尾 \t\n"
     context.agent.model = "model-sentinel"
     context.agent.effort = "effort-sentinel"
     context.agent.args = ["--arg-sentinel", "value-sentinel"]
@@ -86,6 +87,8 @@ def test_prepare_maps_effort_and_appends_agent_args(context: AdapterContext) -> 
     assert "model-sentinel" in spec.argv
     assert "effort-sentinel" in spec.argv
     assert spec.argv[-2:] == ("--arg-sentinel", "value-sentinel")
+    assert spec.stdin == context.request.prompt.encode()
+    assert all(context.request.prompt not in argument for argument in spec.argv)
 
 
 def test_collect_success_extracts_identity_and_json_payload(context: AdapterContext) -> None:
