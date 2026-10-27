@@ -55,12 +55,16 @@ def test_collect_duplicate_answer_is_not_success(context: AdapterContext) -> Non
 
 
 def test_prepare_appends_agent_args(context: AdapterContext) -> None:
-    """設定の model・args が devin の argv に渡らないと、CLI の既定で黙って動く。"""
+    """依頼文や設定の値が落ちると、devin が既定のモデルや別の依頼で黙って作業する。"""
+    context.request.prompt = " \t日本語の依頼 '引用' $HOME; $(echo forbidden)\n二行目 & <>\n末尾 \t\n"
     context.agent.model = "model-sentinel"
     context.agent.args = ["--arg-sentinel"]
     spec = ADAPTER.prepare(context)
     assert "model-sentinel" in spec.argv
     assert spec.argv[-1] == "--arg-sentinel"
+    prompt_file = Path(spec.argv[spec.argv.index("--prompt-file") + 1])
+    assert prompt_file.read_bytes() == context.request.prompt.encode()
+    assert all(context.request.prompt not in argument for argument in spec.argv)
 
 
 def test_collect_success_extracts_identity(context: AdapterContext) -> None:

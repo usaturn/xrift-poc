@@ -75,9 +75,17 @@ def test_collect_duplicate_answer_is_not_success(tmp_path: Path) -> None:
 
 
 def test_prepare_write_role_uses_workspace_write_effort_and_args(tmp_path: Path) -> None:
-    """読み取りの役割を read-only の sandbox で起動しない・設定の model・effort・args が渡らないと黙って動く。"""
-    read_only = ADAPTER.prepare(_context(tmp_path / "r", effort="high", args=("--flag", "v"))).argv
-    writable = ADAPTER.prepare(_context(tmp_path / "w", writes=True, effort="high", args=("--flag", "v"))).argv
+    """依頼や設定の欠落・読み取りsandboxの欠けで、codexが黙って別のモデルや範囲で作業する。"""
+    contexts = [
+        _context(tmp_path / "r", effort="high", args=("--flag", "v")),
+        _context(tmp_path / "w", writes=True, effort="high", args=("--flag", "v")),
+    ]
+    for context in contexts:
+        context.request.prompt = " \t日本語の依頼 '引用' $HOME; $(echo forbidden)\n二行目 & <>\n末尾 \t\n"
+        spec = ADAPTER.prepare(context)
+        assert spec.stdin.startswith(context.request.prompt.encode())
+        assert all(context.request.prompt not in argument for argument in spec.argv)
+    read_only, writable = (ADAPTER.prepare(context).argv for context in contexts)
     assert "read-only" in read_only
     assert "read-only" not in writable
     for argv in (read_only, writable):
