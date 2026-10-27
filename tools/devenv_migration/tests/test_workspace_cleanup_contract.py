@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -162,19 +163,24 @@ def test_installed_cleanup_launcher_reaps_saved_session_and_protects_unknown_fil
 
 
 def test_skips_copied_session_state(isolated_root: Path, tmp_path: Path) -> None:
-    """session.json の写しのディレクトリを、検証できたセッションとして消す（#101 の 5 章: #141 の判定まで残す）。"""
-    _, source_dir, state_file = _create_helper_session(isolated_root, tmp_path)
+    """写しの state を検証済みと読むと、日数を見ずに別の新しいセッションの worktree と写しの未保存の draft を消す。"""
+    # 元を新しくしておくと、元が先に並んでも片付かず、列挙順に依らず写しだけが helper の検査に進む。
+    # ディレクトリごとの写しは直下のエントリの照合を通るので、写しを止めるのは state の照合だけになる。
+    # helper の経路で保存済みのセッションを消す正常系は、launcher のテストが確かめる。
+    repo, source_dir, state_file = _create_helper_session(isolated_root, tmp_path)
+    draft = Path(json.loads(state_file.read_text(encoding="utf-8"))["draft"])
     copied_dir = isolated_root / "pr-review-999-copied00"
-    copied_dir.mkdir()
-    copied_state = copied_dir / "session.json"
-    copied_state.write_bytes(state_file.read_bytes())
+    shutil.copytree(source_dir, copied_dir, symlinks=True)
+    copied_draft = copied_dir / draft.relative_to(source_dir)
+    copied_draft.write_text("保存していない追記\n  2 行目: 指摘の補足 (draft)\n", encoding="utf-8")
     _make_old(copied_dir)
+    os.utime(source_dir)
 
     result = _run_cleanup(_env_for(isolated_root, tmp_path / "no-yarn-cache"))
 
     assert result.returncode == 0, result.stderr
-    assert copied_state.exists()
-    assert not source_dir.exists()
+    assert str(source_dir / "worktree") in _registered_worktrees(repo)
+    assert copied_draft.read_text(encoding="utf-8") == "保存していない追記\n  2 行目: 指摘の補足 (draft)\n"
 
 
 def test_keeps_helper_session_with_dirty_worktree(isolated_root: Path, tmp_path: Path) -> None:

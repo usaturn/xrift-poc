@@ -39,9 +39,9 @@ def test_updated_source_replaces_only_the_block(tmp_path: Path) -> None:
 
 
 def test_broken_markers_leave_the_file_unchanged(tmp_path: Path) -> None:
-    """目印の数・順序の検査が外れると、2 つのブロックの間にある利用者の設定を黙って消す。"""
+    """BEGIN の重複を数で検査しないと、最初の BEGIN から END までを置き換え、間の利用者の設定を黙って消す。"""
     source = write(tmp_path / "zshrc.txt", "x\n")
-    broken = f"{BEGIN}\nold\n{END}\n# 利用者の設定\n{BEGIN}\nold\n{END}\n"
+    broken = f'{BEGIN}\n# 利用者の設定\nexport PATH="$HOME/my tools/ビン:$PATH"\n{BEGIN}\nold\n{END}\n'
     target = write(tmp_path / ".zshrc", broken)
     assert run(source, target).returncode != 0
     assert target.read_text(encoding="utf-8") == broken
