@@ -169,11 +169,14 @@ def run_script(skill_shell: Any, case: Case, script: str, *, pr_number: int = PR
 def run_pin_and_cleanup(skill_shell: Any, case: Case) -> dict[str, str]:
     """固定のブロックの後に後片付けのブロックを同じシェルで実行し、表示した値を返す。
 
-    間で、固定のブロックが作った worktree の HEAD を ``WORKTREE_HEAD`` として表示する。
+    clone が消える前に、対象の Git root・調査 SHA の commit 解決と worktree の HEAD を採取する。
     """
     script = "\n".join(
         (
             skill_shell.block("pin the investigated commit"),
+            'printf \'TARGET_TOPLEVEL=%s\\n\' "$(git -C "$TARGET_ROOT" rev-parse --show-toplevel)"',
+            "printf 'TARGET_COMMIT=%s\\n' "
+            '"$(git -C "$TARGET_ROOT" rev-parse --verify "${INVESTIGATED_SHA}^{commit}")"',
             'printf \'WORKTREE_HEAD=%s\\n\' "$(git -C "$REPRO_ROOT/worktree" rev-parse HEAD)"',
             skill_shell.block("clean up the investigation"),
             "",
@@ -181,12 +184,13 @@ def run_pin_and_cleanup(skill_shell: Any, case: Case) -> dict[str, str]:
     )
     result = run_script(skill_shell, case, script)
     assert result.returncode == 0, result.stderr
+    observations = ("WORKTREE_HEAD", "TARGET_TOPLEVEL", "TARGET_COMMIT")
     values: dict[str, str] = {}
     for line in result.stdout.splitlines():
         name, _, value = line.partition("=")
-        if name in (*OUTPUTS, "WORKTREE_HEAD"):
+        if name in (*OUTPUTS, *observations):
             values[name] = value
-    assert sorted(values) == sorted((*OUTPUTS, "WORKTREE_HEAD")), result.stdout
+    assert sorted(values) == sorted((*OUTPUTS, *observations)), result.stdout
     return values
 
 
@@ -212,15 +216,20 @@ def test_pin_selects_the_default_branch_or_the_pr_head(
     """調べる commit やマージ先の判定を取り違えると誤った結論を公開し、後片付けが消しすぎると親の checkout を失う。"""
     case = make_case(tmp_path, product=product, merged_into=merged_into, state=state)
     parent_head = git(case.parent, "rev-parse", "HEAD")
+    parent_root = Path(git(case.parent, "rev-parse", "--show-toplevel"))
     values = run_pin_and_cleanup(skill_shell, case)
     expected = case.remote.main if investigated == "main" else case.remote.pr_head
     assert (values["DEFAULT_BRANCH"], values["INVESTIGATED_SHA"]) == ("main", expected)
     assert values["PR_HEAD_SHA"] == case.remote.pr_head
     assert values["MERGED_INTO_DEFAULT"] == in_default
     assert values["WORKTREE_HEAD"] == expected
+    assert values["TARGET_COMMIT"] == values["INVESTIGATED_SHA"] == expected
     if product:
         # target_root が null の PR は、REPRO_ROOT の下の一時 clone を調べる（親のリポジトリを調べない）
-        assert values["TARGET_ROOT"] == str(Path(values["REPRO_ROOT"]) / "repo")
+        target_root = Path(values["TARGET_ROOT"])
+        assert Path(values["REPRO_ROOT"]) in target_root.parents
+        assert target_root == Path(values["TARGET_TOPLEVEL"])
+        assert target_root != parent_root
     else:
         assert values["TARGET_ROOT"] == str(case.parent)
     # 後片付けは自分の作ったものだけを消す（親の checkout と TMPDIR は残る）
