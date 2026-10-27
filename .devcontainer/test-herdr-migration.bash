@@ -15,12 +15,6 @@ assert_contains() {
 assert_absent() {
     ! rg -q -i -- "$2" "$1" || fail "$1 must not contain $2"
 }
-extract_cc_launcher_unsets() {
-    sed -n '/^typeset -a cc_launcher_unsets=(/,/^)/p' "$1" \
-        | rg -o -- '-u [A-Z0-9_]+' \
-        | sort -u \
-        | sed 's/^-u //'
-}
 # zshrc テンプレートを隔離環境で実行する共通部。$@ で追加の VAR=value を渡せる。
 run_zshrc_code() {
     local test_home="$1"
@@ -32,7 +26,48 @@ run_zshrc_code() {
         ZSHRC_TEMPLATE="$ZSHRC_TEMPLATE" \
         "$@" /usr/bin/zsh -f -c "$zsh_code" </dev/null >/dev/null
 }
+# zshrc テンプレートを、stdin・stdout が擬似端末の状態で source する。herdrstart は端末のときだけ動く。
+# $@ で追加の VAR=value を渡せる。
+run_zshrc_in_tty() {
+    local test_home="$1"
+    shift
+    env -u TMUX -u HERDR_ENV -u HERDR_SOCKET_PATH \
+        HOME="$test_home" \
+        PATH="$test_home/bin:/usr/bin:/bin" \
+        ZSHRC_TEMPLATE="$ZSHRC_TEMPLATE" \
+        "$@" /usr/bin/python3 - /usr/bin/zsh -f -c 'source "$ZSHRC_TEMPLATE"' <<'PY'
+import os
+import subprocess
+import sys
+import threading
+
+master, slave = os.openpty()
+
+
+def drain():
+    # 読まないと、端末への出力が詰まったとき zsh が書き込みで止まる
+    try:
+        while os.read(master, 4096):
+            pass
+    except OSError:
+        pass
+
+
+reader = threading.Thread(target=drain, daemon=True)
+reader.start()
+try:
+    result = subprocess.run(
+        sys.argv[1:], stdin=slave, stdout=slave, stderr=subprocess.DEVNULL, timeout=60, check=False
+    )
+finally:
+    os.close(slave)
+reader.join(timeout=5)
+os.close(master)
+sys.exit(result.returncode)
+PY
+}
 # zshrc の source に要る starship と、status server --json に答える herdr のスタブを置く。
+# 引数なしの起動では、HERDR_TEST_LAUNCH_SNAPSHOT があれば、その時点の session.json を写す。
 make_stub_home() {
     local dir="$1"
     mkdir -p "$dir/bin"
@@ -41,6 +76,9 @@ make_stub_home() {
         'if [ "${1:-} ${2:-} ${3:-}" = "status server --json" ]; then' \
         '    printf "%s\n" "${HERDR_TEST_STATUS_JSON:-{\"running\":false\}}"' \
         '    exit "${HERDR_TEST_STATUS_RC:-0}"' \
+        'fi' \
+        'if [ "$#" -eq 0 ] && [ -n "${HERDR_TEST_LAUNCH_SNAPSHOT:-}" ]; then' \
+        '    cp "$HOME/.config/herdr/session.json" "$HERDR_TEST_LAUNCH_SNAPSHOT"' \
         'fi' \
         > "$dir/bin/herdr"
     chmod +x "$dir/bin/starship" "$dir/bin/herdr"
@@ -124,7 +162,7 @@ run_session_repair() {
         "$@"
 }
 
-# このテストが無いと、修復が worktree の pane の cwd・agent_session を書き換える、または herdr が稼働中か分からないときや未知の形式に書き込み、エージェントのセッションが別の場所で再開する・新しい状態を失う。
+# このテストが無いと、修復が worktree の pane の cwd・agent_session を書き換える、herdr が稼働中か分からないときや未知の形式に書き込む、または修復先がワークスペースのルート自身や進入できないディレクトリのときに書き込み、エージェントのセッションが別の場所で再開する・新しい状態を失う・以後の修復で直らない cwd が焼き付く。
 test_session_cwd_repair() {
     local test_home="${TEST_ROOT}/home-repair"
     local workspace_root="${TEST_ROOT}/workspaces"
@@ -154,9 +192,10 @@ assert workspace["unknown_workspace_field"] == "keep"
 assert data["unknown_top_level"] == {"keep": True}
 PY
 
-    # 稼働中・未知の形式・status の失敗・running キーの欠落では書かない
-    local status_case
-    for status_case in running_true unknown_version command_failure missing_running; do
+    # 稼働中・未知の形式・status の失敗・running キーの欠落、修復先がルート自身・進入できないディレクトリでは書かない
+    local status_case locked="${workspace_root}/locked"
+    for status_case in running_true unknown_version command_failure missing_running \
+        target_is_root target_not_enterable; do
         write_session_fixture "$session_file" "$workspace_root" "$workspace_dir" "$worktree_dir"
         if [ "$status_case" = unknown_version ]; then
             python3 - "$session_file" <<'PY'
@@ -189,10 +228,56 @@ PY
                 run_session_repair "$test_home" "$workspace_root" "$workspace_dir" \
                     HERDR_TEST_STATUS_JSON='{"status":"unknown"}'
                 ;;
+            target_is_root)
+                # fzf のキャンセルなどで herdrstart がルート自身を渡したとき
+                run_session_repair "$test_home" "$workspace_root" "$workspace_root" \
+                    HERDR_TEST_STATUS_JSON='{"running":false}'
+                ;;
+            target_not_enterable)
+                mkdir -p "$locked"
+                chmod 000 "$locked"
+                if [ -x "$locked" ]; then
+                    chmod 755 "$locked"
+                    fail 'precondition: chmod 000 must make the directory non-enterable (run as a non-root user)'
+                fi
+                run_session_repair "$test_home" "$workspace_root" "$locked" \
+                    HERDR_TEST_STATUS_JSON='{"running":false}'
+                chmod 755 "$locked"
+                ;;
         esac
         cmp -s "$session_file" "${session_file}.before" \
             || fail "$status_case must leave session unchanged"
     done
+}
+
+# このテストが無いと、herdrstart が herdr の起動の前に session.json を修復しなくなっても（修復が無くても herdr は起動する）、ワークスペースの外に保存された cwd のまま黙って復元が続く。
+test_herdrstart_repairs_session_before_launch() {
+    local test_home="${TEST_ROOT}/home-herdrstart"
+    local workspace_root="${TEST_ROOT}/workspaces-herdrstart"
+    # ルートの下のワークスペースは 1 つだけにする（herdr_select_workspace が fzf を使わずに選ぶ）
+    local workspace_dir="${workspace_root}/maatlog"
+    local session_file="${test_home}/.config/herdr/session.json"
+    local snapshot="${TEST_ROOT}/herdrstart-launch-session.json"
+    make_stub_home "$test_home"
+    write_session_fixture "$session_file" "$workspace_root" "$workspace_dir" "${workspace_dir}/.worktrees/feature"
+
+    run_zshrc_in_tty "$test_home" \
+        HERDR_WORKSPACE_ROOT="$workspace_root" \
+        HERDR_TEST_STATUS_JSON='{"running":false}' \
+        HERDR_TEST_LAUNCH_SNAPSHOT="$snapshot"
+    # 対照: herdrstart が herdr を起動した
+    [ -f "$snapshot" ] || fail 'herdrstart must launch herdr'
+    python3 - "$snapshot" "$workspace_dir" <<'PY'
+import json
+import sys
+
+snapshot, workspace_dir = sys.argv[1:]
+with open(snapshot, encoding="utf-8") as handle:
+    workspace = json.load(handle)["workspaces"][0]
+pane_cwd = workspace["tabs"][0]["panes"]["0"]["cwd"]
+assert workspace["identity_cwd"] == workspace_dir, workspace["identity_cwd"]
+assert pane_cwd == workspace_dir, pane_cwd
+PY
 }
 
 # このテストが無いと、修復が複数のワークスペースを同じ identity_cwd に収束させる・健全な兄弟の pane を今のワークスペースへ移し、別のプロジェクトのエージェントのセッションが今のリポジトリで再開する。
@@ -357,7 +442,7 @@ test_installer_keeps_an_existing_herdr_config() {
     [ "$(cat "$config")" = '# user config' ] || fail 'installer must keep an existing herdr config'
 }
 
-# このテストが無いと、ccdd・ccddg が共有の unset の一覧を使わなくなったときに、親シェルの Anthropic の API key・OAuth token などが DeepInfra 向けの子の claude へ黙って渡る。
+# このテストが無いと、cc_launcher_unsets から資格情報を外す・ccdd・ccddg が一覧を使わなくなる変更で、親シェルの Anthropic の API key・OAuth token や他のプロバイダの key が DeepInfra 向けの子の claude へ黙って渡る。
 test_cc_launcher_env_unsets() {
     local test_home="${TEST_ROOT}/home-cc-launcher"
     make_stub_home "$test_home"
@@ -370,17 +455,31 @@ test_cc_launcher_env_unsets() {
         > "$test_home/bin/claude"
     chmod +x "$test_home/bin/claude"
 
-    local -a unset_vars
-    mapfile -t unset_vars < <(extract_cc_launcher_unsets "$ZSHRC_TEMPLATE")
-    # 一覧が空だと、何も汚染しないまま下の確認が通る
-    [ "${#unset_vars[@]}" -gt 0 ] || fail 'cc_launcher_unsets must not be empty'
-
+    # 汚染する資格情報。cc_launcher_unsets から取り出すと、一覧から外した変数は汚染されず、外す変更を
+    # 検出できない。名前が資格情報の形であること（Claude Code が認証に読む ANTHROPIC_*・CLAUDE_CODE_* の
+    # API key・token・client key とその passphrase、ランチャーが使う他のプロバイダの API key）から独立に選ぶ。
+    # モデルのピン留め・プロバイダの切り替えは秘密ではないので含めない
+    local -a credentials=(
+        ANTHROPIC_API_KEY
+        ANTHROPIC_AUTH_TOKEN
+        ANTHROPIC_AWS_API_KEY
+        ANTHROPIC_FOUNDRY_API_KEY
+        ANTHROPIC_FOUNDRY_AUTH_TOKEN
+        ANTHROPIC_IDENTITY_TOKEN
+        CLAUDE_CODE_OAUTH_TOKEN
+        CLAUDE_CODE_OAUTH_REFRESH_TOKEN
+        CLAUDE_CODE_SESSION_ACCESS_TOKEN
+        CLAUDE_CODE_HFI_BEARER_TOKEN
+        CLAUDE_CODE_GATEWAY_TOKEN
+        CLAUDE_CODE_CLIENT_KEY
+        CLAUDE_CODE_CLIENT_KEY_PASSPHRASE
+        COMMANDCODE_API_KEY
+        OPENCODE_API_KEY
+        OPENCODE_GO_API_KEY
+    )
     local -a env_args=(DEEPINFRA_TOKEN=fake-di)
     local v
-    for v in "${unset_vars[@]}"; do
-        if [ "$v" = DEEPINFRA_TOKEN ]; then
-            continue
-        fi
+    for v in "${credentials[@]}"; do
         env_args+=("${v}=POLLUTED_${v}")
     done
 
@@ -400,6 +499,7 @@ test_cc_launcher_env_unsets() {
 
 test_installer_keeps_an_existing_herdr_config
 test_session_cwd_repair
+test_herdrstart_repairs_session_before_launch
 test_session_cwd_repair_multi_workspace
 test_cc_launcher_env_unsets
 printf 'PASS: herdr Dev Container migration\n'
