@@ -406,3 +406,20 @@ Issue #59 の対応として、5174〜5179 も `forwardPorts` に追加した。
 既存の接続は設定の編集だけで修復されたとは扱わない。手動転送と、利用者による再作成後の確認は [.devcontainer/README.md の手順](.devcontainer/README.md#追加プレビューの転送とホスト確認) に揃えた。ワールドとアイテムを同時に起動し、実ディレクトリ・起動コマンド・VS Code のコンテナ側／ホスト側ポート・両 URL の結果を Issue #59 に記録する。
 
 今回、ホストでの Dev Container 再作成・手動転送・ブラウザ表示は実施していない。上の 2026-10-18 の結果を修正後の成功として扱わず、コンテナ内の検証とも区別する。
+
+## Issue #200 の Pi サブエージェント起動ルール（2026-10-27）
+
+`.pi/APPEND_SYSTEM.md` と `.agents/monitoring-runtimes.md` に残っていた旧 `pi-subagents` 向けの一覧操作・同期フラグ・複数 Task の一律直列実行を、導入済み `@teelicht/pi-superagents 1.14.4` の同期ツールに合わせた。
+
+- 旧ルールは移植元の `e441043b08c71876321dd3659609e1c563193d2b`（2026-09-06）に由来する。当時のログは再確認していない。`pi-server` 不在という当時の障害説明を、現在の非同期非対応の理由には使わない。
+- 移植元では `4a457dff986a0a0e767743a467bf994b91e71e86`（2026-10-17）で同種の不整合を修正済み。今回は一括移植せず、導入済み package の `docs/parameters.md`・`docs/worktrees.md`・`docs/configuration.md` と実装・設定を確認した。CHANGELOG では非同期機能そのものが削除されており、旧障害の解消による再有効化ではない。
+- 単発は `agent/task`、並列は `tasks`。どちらも終了まで同期で待つ。`action`・`capabilities`・`async` は渡さない。同じ worktree は同時1 writer とし、並列 writer は有効な worktree 隔離と clean な親・Task の HEAD を必要とする。
+- 明示 opt-in、Superpowers のスキルが求めた委譲だけに使う範囲、子の再委譲禁止、調整役による ref・Issue・PR 管理、PR レビュー補助委譲の停止条件は維持した。issue-queue の Issue 間の直列運用は変更していない。
+
+### 確認した範囲と限界
+
+導入済み `SubagentParams` と Pi の `validateToolArguments` で、修正前の指示が要求する一覧操作・同期フラグは拒否され、修正後の指示に沿った単発と独立2 Task の入力（日本語・改行を含む `task`）は受理されることを比較した。これは手順から構成した呼び出しの比較であり、モデルが指示を読んで呼び出しを選ぶ挙動の観測ではない。
+
+導入済み `validatePreIsolatedTaskCwds` を使い、scratch repository の clean な別 worktree は受理され、同じ worktree の重複、親 checkout の流用、別 repository、dirty な親・Task、親 HEAD を含まない Task は拒否されることを実行で確認した。並列起動後の全件待機は実装の concurrent launch と join を読んだ確認である。
+
+この修正を行ったセッションには旧起動ルールも指示として適用されており、現行ツールに無い起動条件を迂回しなかった。実際の子の起動、モデルによる修正前後の指示比較、実モデルでの並列実行と worktree の自動片付けは未検証である。引数検証と隔離ガードの成功を、委譲全体の成功とは扱わない。進行中の #191 の再実行や既存セッションへの介入もしていない。
