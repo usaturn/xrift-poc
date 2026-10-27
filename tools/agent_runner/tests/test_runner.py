@@ -29,6 +29,7 @@ from tools.agent_runner.models import (
     Workflow,
 )
 from tools.agent_runner.runner import RunnerError, run_workflow
+from tools.test_support.repos import create_owned_worktree
 
 pytest_plugins = ("tools.test_support.plugin",)
 # Only fake agents are launched here; drop AGENT_RUNNER_DEPTH inside each test so a runner agent can run them
@@ -314,7 +315,7 @@ def test_request_preserves_scope_and_multiline_prompt(repository: Path, tmp_path
 
 def test_unavailable_registered_checkout_is_an_outside_change(repository: Path, tmp_path: Path) -> None:
     """監査できない登録済みの checkout が outside_changes から落ちると、呼び出し側が黙って受け入れる。"""
-    external = workspace.create_worktree(repository, "HEAD", tmp_path / "unavailable")
+    external = create_owned_worktree(repository, tmp_path, name="unavailable")
     gitfile = external / ".git"
     original = gitfile.read_bytes()
     gitfile.write_text(f"gitdir: {tmp_path / 'missing-gitdir'}\n")
@@ -399,7 +400,7 @@ def test_concurrent_dirty_checkout_change_keeps_warning_without_rejecting_agent(
     repository: Path, tmp_path: Path
 ) -> None:
     """別セッションの dirty な checkout の更新だけで担当を拒否すると、変更を取り込めず作業が止まる。"""
-    external = workspace.create_worktree(repository, "HEAD", tmp_path / "parallel checkout")
+    external = create_owned_worktree(repository, tmp_path, name="parallel checkout")
     dirty = external / "tracked.txt"
     dirty.write_text("already dirty")
     marker = tmp_path / "agent-ready"
@@ -430,7 +431,7 @@ def test_concurrent_dirty_checkout_change_keeps_warning_without_rejecting_agent(
 
 def test_agent_cannot_write_registered_checkouts_but_can_commit_own_worktree(repository: Path, tmp_path: Path) -> None:
     """担当の既存 checkout への書き込みを許すと、監査差を並行変更扱いにした後に無断変更を取り込む。"""
-    external = workspace.create_worktree(repository, "HEAD", tmp_path / "別セッション checkout\n2")
+    external = create_owned_worktree(repository, tmp_path, name="別セッション checkout\n2")
     external_gitdir = Path(
         subprocess.run(
             ["git", "-C", str(external), "rev-parse", "--path-format=absolute", "--git-dir"],
@@ -486,7 +487,7 @@ def test_allowed_storage_keeps_registered_checkout_inside_it_read_only(repositor
     (repository / ".git/info/exclude").write_text("/tmp/\n")
     storage = repository / "tmp/agents"
     storage.mkdir(parents=True)
-    nested = workspace.create_worktree(repository, "HEAD", storage / "別セッション checkout\n2")
+    nested = create_owned_worktree(repository, storage, name="別セッション checkout\n2")
     protected, scratch = nested / "tracked.txt", storage / "scratch.txt"
     batch = run_workflow(
         configuration(),
@@ -508,7 +509,7 @@ def test_agent_cannot_replace_registered_checkout_by_moving_its_parent(repositor
     """書ける祖先を移して同じパスに複製を置けると、他者の checkout を動かした無断変更を並行変更として取り込む。"""
     parent = tmp_path / "other session"
     parent.mkdir()
-    external = workspace.create_worktree(repository, "HEAD", parent / "checkout")
+    external = create_owned_worktree(repository, parent, name="checkout")
     inode = external.stat().st_ino
     batch = run_workflow(
         configuration(),

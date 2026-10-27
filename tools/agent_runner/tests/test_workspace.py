@@ -11,9 +11,9 @@ from tools.agent_runner.workspace import (
     WorkspaceError,
     blocking_checkout_audit,
     changed_checkouts,
-    create_worktree,
     snapshot_checkouts,
 )
+from tools.test_support.repos import create_owned_worktree
 
 
 def git(repository: Path, *args: str) -> str:
@@ -39,7 +39,7 @@ def repository(tmp_path: Path) -> Path:
 @pytest.mark.parametrize("symlink", [False, True])
 def test_audit_detects_existing_dirty_content_edits(repository: Path, tmp_path: Path, symlink: bool) -> None:
     """開始前からある未追跡ファイルやリンクの変更を見逃すと outside_changes に黙って出ない。"""
-    external = create_worktree(repository, "HEAD", tmp_path / "external checkout\nwith newline")
+    external = create_owned_worktree(repository, tmp_path, name="external checkout\nwith newline")
     path = external / "untracked.txt"
     if symlink:
         path.symlink_to("first-target")
@@ -65,7 +65,7 @@ def test_audit_detects_moved_head(repository: Path) -> None:
 
 def test_audit_reports_disappeared_checkout(repository: Path, tmp_path: Path) -> None:
     """担当が既存の checkout を移動・削除しても、変化なしとして黙って扱う。"""
-    external = create_worktree(repository, "HEAD", tmp_path / "external")
+    external = create_owned_worktree(repository, tmp_path, name="external")
     before = snapshot_checkouts(repository)
     external.rename(tmp_path / "moved")
     assert changed_checkouts(before) == [str(external)]
@@ -73,7 +73,7 @@ def test_audit_reports_disappeared_checkout(repository: Path, tmp_path: Path) ->
 
 def test_checkout_recovered_after_snapshot_still_warns(repository: Path, tmp_path: Path) -> None:
     """開始時に監査できなかった checkout が終了時に読めると、baseline が無いのに変化なしとして黙って扱う。"""
-    external = create_worktree(repository, "HEAD", tmp_path / "recovered")
+    external = create_owned_worktree(repository, tmp_path, name="recovered")
     gitfile = external / ".git"
     original = gitfile.read_bytes()
     gitfile.write_text(f"gitdir: {tmp_path / 'missing-gitdir'}\n")
