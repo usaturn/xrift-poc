@@ -56,9 +56,11 @@ alias devo="devin --model claude-opus-5-5-xhigh --permission-mode dangerous"
 
 # プロバイダ切替ランチャー（ccdd / ccddg）共通の env -u リスト。
 # 親シェルで export された主要な認証材料・プロバイダ切替・モデルピン留系の値が
-# 第三者プロバイダの子プロセスへ漏れるのを防ぐ。対象範囲の基準は
-# test-herdr-migration.bash の expected_unsets とする。関数側で代入する変数は
-# 代入が優先されるため、共有リストから外す必要はない。
+# 第三者プロバイダの子プロセスへ漏れるのを防ぐ。資格情報が子へ渡らないことは
+# test-herdr-migration.bash の test_cc_launcher_env_unsets が、この一覧から独立に選んだ
+# 資格情報の名前で確かめる。プロバイダ切替・モデルピン留系の値は秘密ではないので、
+# そのテストの対象外である。関数側で代入する変数は代入が優先されるため、共有リストから
+# 外す必要はない。
 typeset -a cc_launcher_unsets=(
     -u ANTHROPIC_AUTH_TOKEN
     -u ANTHROPIC_API_KEY
