@@ -4,6 +4,8 @@ import argparse
 import importlib.util
 import json
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -186,6 +188,82 @@ def test_first_session_wins_same_destination(
 
     destination = repo / first["destination"]
     assert destination.read_text(encoding="utf-8") == "first review\n"
+
+
+def test_concurrent_save_keeps_the_first_review_and_losing_draft(
+    created_session: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """保存の検査と書込みをロックしないと、両セッションが成功して先のレビューと draft を黙って失う。"""
+    first = created_session["result"]
+    repo = created_session["repo"]
+    second = workspace.create(
+        argparse.Namespace(
+            repo=str(repo),
+            pr_number=4,
+            commit=git(repo, "rev-parse", "HEAD"),
+            head_branch="fix/herdr-session-cwd",
+            model_name=None,
+            temp_root=str(Path(first["state_file"]).parents[1]),
+        )
+    )
+    first_body, second_body = "先のレビュー\n  保存する本文\n", "後のレビュー\n  未保存の本文\n"
+    Path(first["draft"]).write_text(first_body, encoding="utf-8")
+    Path(second["draft"]).write_text(second_body, encoding="utf-8")
+    first_checked, proceed, first_finished = (threading.Event() for _ in range(3))
+    role = threading.local()
+    original_verify, original_flock = workspace.verify_state, workspace.fcntl.flock
+
+    def verify(state: dict[str, Any], destination: Path) -> None:
+        original_verify(state, destination)
+        if state["draft"] == first["draft"]:
+            first_checked.set()
+            assert proceed.wait(10), "second saver never reached the lock or the destination check"
+        else:
+            # ロックが無い場合だけ、両検査を通してから first の保存・cleanup を先に終える。
+            proceed.set()
+            assert first_finished.wait(10), "first saver did not finish"
+
+    def flock(fd: int, operation: int) -> None:
+        if operation == workspace.fcntl.LOCK_EX and getattr(role, "second", False):
+            try:
+                original_flock(fd, operation | workspace.fcntl.LOCK_NB)
+            except BlockingIOError:
+                # 実ロックの競合を観測してから first を再開する。時間の長さでは推測しない。
+                proceed.set()
+                original_flock(fd, operation)
+        else:
+            original_flock(fd, operation)
+
+    def save_and_cleanup(result: dict[str, Any], *, is_second: bool) -> bool:
+        role.second = is_second
+        try:
+            try:
+                workspace.save(argparse.Namespace(state=result["state_file"]))
+            except workspace.WorkspaceError:
+                return False
+            workspace.cleanup(argparse.Namespace(state=result["state_file"]))
+            return True
+        finally:
+            if not is_second:
+                first_finished.set()
+
+    monkeypatch.setattr(workspace, "verify_state", verify)
+    monkeypatch.setattr(workspace.fcntl, "flock", flock)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        winner = executor.submit(save_and_cleanup, first, is_second=False)
+        try:
+            assert first_checked.wait(10), "first saver never checked the destination"
+            loser = executor.submit(save_and_cleanup, second, is_second=True)
+            assert winner.result(timeout=20)
+            assert not loser.result(timeout=20), "both saves succeeded and discarded the first review/draft"
+        finally:
+            proceed.set()
+            first_finished.set()
+
+    assert (repo / first["destination"]).read_text(encoding="utf-8") == first_body
+    assert not Path(first["state_file"]).parent.exists()
+    assert Path(second["draft"]).read_text(encoding="utf-8") == second_body
+    assert Path(second["worktree"]).is_dir()
 
 
 def test_cleanup_refuses_before_save(created_session: dict[str, Any]) -> None:
