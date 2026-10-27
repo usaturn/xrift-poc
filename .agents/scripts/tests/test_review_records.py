@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -368,6 +371,42 @@ def test_collect_records_reads_trusted_round_status_comments_only() -> None:
     ]
     records, _ = review_records.collect_records(comments)
     assert records == [(101, first), (202, second)]
+
+
+def test_cli_fold_rejects_comments_containing_only_another_pr_record() -> None:
+    """CLIが別PRだけの判断を成功として返すと、持ち越し調査やマージ判定で他のPRの状態を黙って使う。"""
+    record = round_one()
+    record["decisions"][0]["reason"] = "空白 と 日本語の理由。\n次の行も含める。"
+    expected_pr = dict(record["pr"])
+    command = [
+        sys.executable,
+        str(SCRIPT),
+        "fold",
+        "--repo",
+        expected_pr["repository"],
+        "--pr",
+        str(expected_pr["number"]),
+    ]
+    accepted = subprocess.run(
+        command,
+        input=json.dumps([[api_comment(101, status_body(record))]], ensure_ascii=False),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    state = json.loads(accepted.stdout)
+    assert state["pr"] == expected_pr
+    assert state["decisions"][0]["reason"] == record["decisions"][0]["reason"]
+
+    record["pr"]["number"] += 1
+    rejected = subprocess.run(
+        command,
+        input=json.dumps([[api_comment(101, status_body(record))]], ensure_ascii=False),
+        capture_output=True,
+        text=True,
+    )
+    assert rejected.returncode != 0
+    assert not rejected.stdout
 
 
 def test_collect_records_names_every_broken_comment() -> None:

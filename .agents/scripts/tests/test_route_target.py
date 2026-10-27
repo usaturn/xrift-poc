@@ -78,6 +78,22 @@ def test_product_origin_credentials_are_not_reported(env: EnvRepo) -> None:
     assert "s3cret" not in json.dumps(asdict(result))
 
 
+def test_product_ssh_host_alias_does_not_infer_a_github_repository(env: EnvRepo) -> None:
+    """SSHホスト別名からGitHubの操作先を推測すると、制作物を別repositoryへ黙って起票・pushする。"""
+    repository = "someone/my-world"
+    project = create_product(env.root, "worlds", "空白 と 日本語", origin_url=f"git@github.com:{repository}.git")
+    assert route_target.route(project, env.root).repository == repository
+
+    subprocess.run(
+        ["git", "-C", str(project), "remote", "set-url", "origin", f"git@github-personal:{repository}.git"],
+        check=True,
+    )
+    result = route_target.route(project, env.root)
+    assert result.kind == "product"
+    assert result.repository is None
+    assert result.project_root == str(project.resolve())
+
+
 # 別ホストの URL（github.com をユーザ情報に書いただけのもの）を GitHub と読まない。
 def test_product_origin_that_is_not_a_github_url_has_no_repository(env: EnvRepo) -> None:
     """別ホストの URL を GitHub と読むと、scan_before_push が制作物の push を通し、別ホストへ黙って送る。"""

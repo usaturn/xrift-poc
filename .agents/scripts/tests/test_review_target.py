@@ -311,14 +311,17 @@ def test_scan_context_accepts_descendant_and_uses_pr_base(tmp_path: Path) -> Non
     }
 
 
-@pytest.mark.parametrize("case", ["fork", "head-ref"])
+@pytest.mark.parametrize("case", ["fork", "head-ref", "closed"])
 def test_scan_context_rejects_changed_or_unpushable_pr(tmp_path: Path, case: str) -> None:
-    """fork の PR・head のブランチが変わった PR を通すと、PR から外れたブランチへ修正を黙って push する。"""
+    """fork・head変更・途中でclosedとなったPRを通すと、対象外のブランチへ修正を黙ってpushする。"""
     root, value, pr = scan_checkout(tmp_path)
+    target.scan_context(value, root, runner=gh_for(pr))
     if case == "fork":
         pr["head"]["repo"]["full_name"] = "someone/fork"
-    else:
+    elif case == "head-ref":
         pr["head"]["ref"] = "other"
+    else:
+        pr["state"] = "closed"
     gh = FakeGh({"repos/usaturn/xrift-sample-world/pulls/7": (http(200, pr), "")})
 
     with pytest.raises(target.TargetError) as excinfo:
