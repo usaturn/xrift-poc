@@ -72,6 +72,16 @@ class FakeAdapter:
         )
 
 
+class RecordingAdapter(FakeAdapter):
+    def __init__(self, *, read_only: bool = False) -> None:
+        self.capabilities = Capabilities(enforces_read_only=read_only)
+        self.prepared: list[str] = []
+
+    def prepare(self, context: AdapterContext) -> LaunchSpec:
+        self.prepared.append(context.request.agent_id)
+        return super().prepare(context)
+
+
 def config(self_review: str = "self", fix_check: str = "self") -> Config:
     """pi の担当を fake adapter で動かす。"""
     runtimes: dict[str, Runtime] = {"a": "pi", "b": "pi"}
@@ -223,6 +233,63 @@ def test_single_call_uses_both_review_roles_and_retains_self_instructions(
     receipt = mod.verifier.read_dispatch(batch.artifact_dir / "fix-check-receipt")
     assert len(receipt["batch"]["results"]) == 1
     assert receipt["batch"]["state"] == "self"
+
+
+@pytest.mark.parametrize(
+    ("role", "fallback"),
+    [
+        pytest.param("self-review", False, id="self-review-primary"),
+        pytest.param("fix-check", False, id="fix-check-primary"),
+        pytest.param("self-review", True, id="read-only-fallback"),
+    ],
+)
+def test_read_only_review_agent_is_rejected_before_reservation(
+    inputs: tuple[dict[str, Any], Path, dict[str, Any]],
+    tmp_path: Path,
+    parent: Path,
+    role: str,
+    fallback: bool,
+) -> None:
+    """readonly の一次・fallback 担当を予約後に拒否すると、実行できないレビューで戻せない 1 回枠を消費する。"""
+    selected = config()
+    selected.agents["b"].runtime = "codex"
+    selected.workflows["fix"].assignments[role] = Assignment(
+        agents=["a"] if fallback else ["b"], fallback=["b"] if fallback else []
+    )
+    read_only = RecordingAdapter(read_only=True)
+    writable = RecordingAdapter()
+
+    def adapters(runtime: str) -> FakeAdapter:
+        return read_only if runtime == "codex" else writable
+
+    before = json.loads(inputs[1].read_text())["activities"]
+    with pytest.raises(mod.RoleInputError):
+        try:
+            launch(inputs, tmp_path, selected, adapter_loader=adapters)
+        finally:
+            # 後段 runner の例外でも、先に消費した予約を見逃さない。
+            assert json.loads(inputs[1].read_text())["activities"] == before
+            assert not (tmp_path / "run").exists()
+            assert not read_only.prepared
+            assert not writable.prepared
+
+
+def test_writable_review_agent_reserves_and_runs(
+    inputs: tuple[dict[str, Any], Path, dict[str, Any]], tmp_path: Path, parent: Path
+) -> None:
+    """担当の能力を見ずに一律拒否すると、実行可能なレビューも予約・実行できず修正確認が進まなくなる。"""
+    selected = config("b")
+    selected.agents["b"].runtime = "codex"
+    adapter = RecordingAdapter()
+    before = json.loads(inputs[1].read_text())["activities"]
+
+    batch = launch(inputs, tmp_path, selected, adapter_loader=adapter)
+
+    assert len(json.loads(inputs[1].read_text())["activities"]) == len(before) + 1
+    review = next(result for result in batch.results if result.role == "self-review")
+    assert review.state == "success"
+    assert review.actual_agent == selected.workflows["fix"].assignments["self-review"].agents[0]
+    assert review.attempts and all(attempt.stop_confirmed for attempt in review.attempts)
 
 
 def test_verified_input_mismatch_never_consumes_the_only_review(inputs: Any, tmp_path: Path) -> None:
