@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create, verify, save and retire disposable PR-review worktrees."""
+"""Create, save and retire disposable PR-review worktrees for review_run.py; the CLI serves periodic cleanup."""
 
 from __future__ import annotations
 
@@ -40,8 +40,9 @@ MODEL_SOURCES = {MODEL_SOURCE_CODEX, MODEL_SOURCE_EXPLICIT}
 REVIEW_FINDINGS_SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "review_findings.py"
 # PR の解決と保存先の名前の規則。親リポジトリの .agents/scripts にある（Issue #483）
 REVIEW_TARGET_SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "review_target.py"
-STATE_VERSION_REPOSITORY = 6
-STATE_VERSION_TARGET = 7
+STATE_VERSION = 7
+# 撤去した create --repo（#119）が作った state。残っていても後片付けが消さないよう、名前を挙げて拒む
+REMOVED_STATE_VERSION = 6
 TARGET_KINDS = {"checkout", "clone"}
 
 
@@ -154,10 +155,8 @@ def review_directory_name(pr_number: int, head_branch: str) -> str:
     return cast(str, _target_call("review_directory_name", pr_number, head_branch))
 
 
-def reviews_prefix(repository: str | None) -> str:
-    """保存先の先頭。今の呼び方（loop）は reviews/、--target は reviews/<owner>/<repo>/（Issue #483）。"""
-    if repository is None:
-        return "reviews"
+def reviews_prefix(repository: str) -> str:
+    """保存先の先頭 reviews/<owner>/<repo>/（Issue #483）。"""
     return f"reviews/{_target_call('validate_repository', repository)}"
 
 
@@ -178,7 +177,7 @@ def review_artifact_paths(
     model_name: str,
     *,
     pr_number: int,
-    repository: str | None = None,
+    repository: str,
     review_commit: str | None = None,
 ) -> tuple[Path, str]:
     directory = review_directory_name(pr_number, head_branch)
@@ -193,7 +192,7 @@ def findings_artifact_paths(
     *,
     pr_number: int,
     commit: str,
-    repository: str | None = None,
+    repository: str,
     review_commit: str | None = None,
 ) -> tuple[Path, str]:
     """候補一覧の下書きと保存先。指定commitの候補も通常headと区別する。"""
@@ -367,11 +366,10 @@ def verify_state(state: dict[str, Any], destination: Path) -> None:
     require_destination_parent(destination)
     if destination_fingerprint(destination) != state["destination_fingerprint"]:
         raise WorkspaceError("review destination changed during PR review; stop without saving or cleanup")
-    if "pr_head" in state:
-        if git(Path(state["worktree"]), "rev-parse", "HEAD") != state["commit"]:
-            raise WorkspaceError("review worktree no longer matches the pinned commit")
-        if current_pr_head(state["pr_repo"], state["pr_number"]) != state["pr_head"]:
-            raise WorkspaceError("PR head changed during review; resolve again without saving")
+    if git(Path(state["worktree"]), "rev-parse", "HEAD") != state["commit"]:
+        raise WorkspaceError("review worktree no longer matches the pinned commit")
+    if current_pr_head(state["pr_repo"], state["pr_number"]) != state["pr_head"]:
+        raise WorkspaceError("PR head changed during review; resolve again without saving")
 
 
 @contextmanager
@@ -398,25 +396,6 @@ def write_json(path: Path, value: dict[str, Any]) -> None:
     except BaseException:
         Path(temporary).unlink(missing_ok=True)
         raise
-
-
-LEGACY_CREATE_ARGUMENTS = ("repo", "pr_number", "commit", "head_branch")
-
-
-def create(args: argparse.Namespace) -> dict[str, str | None]:
-    """--target（pr-review。親の reviews/<owner>/<repo>/ に保存）か、今の呼び方（loop。--repo の reviews/）。"""
-    target_value = getattr(args, "target", None)
-    legacy = {name: getattr(args, name, None) for name in LEGACY_CREATE_ARGUMENTS}
-    if target_value is not None:
-        if any(value is not None for value in legacy.values()):
-            raise WorkspaceError("--target cannot be combined with --repo, --pr-number, --commit, or --head-branch")
-        return create_from_target(args, str(target_value))
-    missing = [f"--{name.replace('_', '-')}" for name, value in legacy.items() if value is None]
-    if missing:
-        raise WorkspaceError(f"{', '.join(missing)} required without --target")
-    if getattr(args, "review_commit", None) is not None or getattr(args, "source_root", None) is not None:
-        raise WorkspaceError("--review-commit and --source-root require --target")
-    return create_from_repository(args)
 
 
 def new_session_dir(args: argparse.Namespace, pr_number: int) -> Path:
@@ -461,7 +440,7 @@ def session_output(state: Mapping[str, Any], findings_draft: Path, state_file: P
         "previous_review": state["previous_review"],
         "review_file": PurePosixPath(state["destination"]).name,
         "reviewed_head": state["commit"],
-        "pr_head": state.get("pr_head", state["commit"]),
+        "pr_head": state["pr_head"],
         "base_ref": state.get("base_ref"),
         "state_file": str(state_file.resolve(strict=True)),
         "worktree": state["worktree"],
@@ -484,15 +463,15 @@ def parse_target(value: str) -> dict[str, Any]:
     try:
         parsed: object = json.loads(value)
     except json.JSONDecodeError as error:
-        raise WorkspaceError(f"--target is not JSON: {error.msg}") from error
+        raise WorkspaceError(f"target is not JSON: {error.msg}") from error
     target = _json_object(parsed)
     if target is None:
-        raise WorkspaceError("--target must be the JSON object printed by review_target.py resolve")
+        raise WorkspaceError("target must be the JSON object printed by review_target.py resolve")
     target_root = target.get("target_root")
     if not isinstance(target.get("parent_root"), str) or (
         target_root is not None and not isinstance(target_root, str)
     ):
-        raise WorkspaceError("--target needs parent_root and target_root (null for a temporary clone)")
+        raise WorkspaceError("target needs parent_root and target_root (null for a temporary clone)")
     return target
 
 
@@ -505,10 +484,13 @@ def require_review_commit(source: Path, commit: str) -> None:
     raise WorkspaceError("review commit must identify a commit object")
 
 
-def create_from_target(args: argparse.Namespace, target_value: str) -> dict[str, str | None]:
-    """親のreviewsへ保存し、PR headと指定commitを別に固定する。"""
+def create(args: argparse.Namespace) -> dict[str, str | None]:
+    """review_target.py resolve の JSON（args.target）の PR のセッションを作る。
+
+    親のreviewsへ保存し、PR headと指定commitを別に固定する。
+    """
     model_name, model_source = resolve_runtime_model_name(getattr(args, "model_name", None))
-    target = parse_target(target_value)
+    target = parse_target(str(args.target))
     with target_errors() as review_target:
         clone = review_target.CloneTarget.from_json(target)
         parent = cast(Path, review_target.require_parent_root(Path(str(target["parent_root"]))))
@@ -564,7 +546,7 @@ def create_from_target(args: argparse.Namespace, target_value: str) -> dict[str,
         with review_save_lock(parent):
             fingerprint, previous = snapshot_existing_review(destination_path, backup_dir)
             state: dict[str, Any] = {
-                "version": STATE_VERSION_TARGET,
+                "version": STATE_VERSION,
                 "parent_root": str(parent),
                 "target_root": str(source.resolve(strict=True)),
                 "target_kind": "clone" if checkout is None else "checkout",
@@ -579,7 +561,6 @@ def create_from_target(args: argparse.Namespace, target_value: str) -> dict[str,
                 "pr_number": number,
                 "model_name": model_name,
                 "model_source": model_source,
-                "preserve_unowned_ref": False,
                 "draft": str(draft.resolve(strict=False)),
                 "previous_review": (str(previous.resolve(strict=True)) if previous is not None else None),
                 "destination": destination,
@@ -588,62 +569,6 @@ def create_from_target(args: argparse.Namespace, target_value: str) -> dict[str,
             write_json(state_file, state)
     except WorkspaceError as error:
         raise WorkspaceError(f"{error} (session kept for inspection: {session_dir})") from error
-    return session_output(state, findings_draft, state_file)
-
-
-def create_from_repository(args: argparse.Namespace) -> dict[str, str | None]:
-    """今の呼び方（PR 修正ループ）。--repo の checkout の reviews/ に保存する。"""
-    model_name, model_source = resolve_runtime_model_name(args.model_name)
-    review_directory_name(args.pr_number, args.head_branch)
-    repo = require_main_checkout(args.repo)
-    commit = str(git(repo, "rev-parse", "--verify", f"{args.commit}^{{commit}}"))
-    session_dir = new_session_dir(args, args.pr_number)
-    worktree = session_dir / "worktree"
-    backup_dir = session_dir / "review-backup"
-    backup_dir.mkdir()
-    draft, destination = review_artifact_paths(
-        backup_dir,
-        args.head_branch,
-        model_name,
-        pr_number=args.pr_number,
-    )
-    destination_path = safe_destination(repo, destination)
-    require_destination_parent(destination_path)
-    findings_draft, _findings_destination = findings_artifact_paths(
-        backup_dir,
-        args.head_branch,
-        model_name,
-        pr_number=args.pr_number,
-        commit=commit,
-    )
-
-    before = snapshot(repo)
-    add_detached_worktree(repo, worktree, commit)
-
-    require_created_worktree(worktree, commit)
-    if snapshot(repo) != before:
-        raise WorkspaceError("creating the review worktree changed the main working tree")
-
-    state_file = session_dir / "session.json"
-    with review_save_lock(repo):
-        fingerprint, previous = snapshot_existing_review(destination_path, backup_dir)
-        state: dict[str, Any] = {
-            "version": STATE_VERSION_REPOSITORY,
-            "main_root": str(repo),
-            "worktree": str(worktree.resolve(strict=True)),
-            "backup_dir": str(backup_dir.resolve(strict=True)),
-            "commit": commit,
-            "head_branch": args.head_branch,
-            "pr_number": args.pr_number,
-            "model_name": model_name,
-            "model_source": model_source,
-            "preserve_unowned_ref": bool(getattr(args, "preserve_unowned_ref", False)),
-            "draft": str(draft.resolve(strict=False)),
-            "previous_review": (str(previous.resolve(strict=True)) if previous is not None else None),
-            "destination": destination,
-            "destination_fingerprint": fingerprint,
-        }
-        write_json(state_file, state)
     return session_output(state, findings_draft, state_file)
 
 
@@ -665,32 +590,30 @@ def load_state(state_value: str) -> tuple[Path, dict[str, Any]]:
         "worktree",
     }
     version = state.get("version")
-    if version == STATE_VERSION_REPOSITORY:
-        required |= {"main_root"}
-    elif version == STATE_VERSION_TARGET:
-        required |= {"parent_root", "target_root", "target_kind", "pr_repo"}
-    else:
+    if version == REMOVED_STATE_VERSION:
+        raise WorkspaceError(
+            "PR-review session state version 6 (made by the removed create --repo) is no longer supported;"
+            " the session is kept: check that its review is saved, then remove it by hand"
+        )
+    if version != STATE_VERSION:
         raise WorkspaceError("invalid PR-review session state")
+    required |= {"parent_root", "target_root", "target_kind", "pr_repo", "pr_head"}
     if not required.issubset(state) or state.get("model_source") not in MODEL_SOURCES:
         raise WorkspaceError("invalid PR-review session state")
-    if "pr_head" in state:
-        if re.fullmatch(r"[0-9a-f]{40}", str(state["pr_head"])) is None:
-            raise WorkspaceError("invalid pinned PR head")
-        artifact_model(state["model_name"], state.get("review_commit"))
-        if state.get("review_commit") is not None and state["review_commit"] != state["commit"]:
-            raise WorkspaceError("review commit does not match the pinned commit")
+    if re.fullmatch(r"[0-9a-f]{40}", str(state["pr_head"])) is None:
+        raise WorkspaceError("invalid pinned PR head")
+    artifact_model(state["model_name"], state.get("review_commit"))
+    if state.get("review_commit") is not None and state["review_commit"] != state["commit"]:
+        raise WorkspaceError("review commit does not match the pinned commit")
     if state_file.name != "session.json":
         raise WorkspaceError("invalid PR-review session state")
     session_dir = state_file.parent
     if not session_dir.name.startswith("pr-review-"):
         raise WorkspaceError("session state is outside a PR-review session directory")
 
-    if version == STATE_VERSION_REPOSITORY:
-        repo = require_main_checkout(str(state.get("main_root", "")))
-    else:
-        with target_errors() as review_target:
-            repo = cast(Path, review_target.require_parent_root(Path(str(state["parent_root"]))))
-        require_session_target(state, session_dir)
+    with target_errors() as review_target:
+        repo = cast(Path, review_target.require_parent_root(Path(str(state["parent_root"]))))
+    require_session_target(state, session_dir)
     backup_dir = Path(str(state.get("backup_dir", ""))).resolve(strict=True)
     worktree = Path(str(state.get("worktree", ""))).resolve(strict=True)
     if backup_dir != (session_dir / "review-backup").resolve(strict=True):
@@ -724,22 +647,13 @@ def require_session_target(state: Mapping[str, Any], session_dir: Path) -> None:
 
 
 def session_target(state: Mapping[str, Any]) -> Path:
-    """worktree と pinned ref を持つリポジトリ（version 6 は main_root、7 は target_root）。"""
-    value = state["main_root"] if state["version"] == STATE_VERSION_REPOSITORY else state["target_root"]
-    return Path(str(value)).resolve(strict=True)
+    """worktree と pinned ref を持つリポジトリ（target_root）。"""
+    return Path(str(state["target_root"])).resolve(strict=True)
 
 
-def session_repository(state: Mapping[str, Any]) -> str | None:
-    """保存先の reviews/<owner>/<repo>/ の owner/repo（version 6 は None）。"""
-    return str(state["pr_repo"]) if state["version"] == STATE_VERSION_TARGET else None
-
-
-def verify(args: argparse.Namespace) -> dict[str, str]:
-    repo, state = load_state(args.state)
-    destination = safe_destination(repo, state["destination"], repository=session_repository(state))
-    with review_save_lock(repo):
-        verify_state(state, destination)
-    return {"main_root": str(repo), "status": "unchanged"}
+def session_repository(state: Mapping[str, Any]) -> str:
+    """保存先の reviews/<owner>/<repo>/ の owner/repo。"""
+    return str(state["pr_repo"])
 
 
 def is_within(path: Path, directory: Path) -> bool:
@@ -751,7 +665,7 @@ def is_within(path: Path, directory: Path) -> bool:
 
 
 def require_repository_layout(repo: Path, relative: PurePosixPath, repository: str, *, length: int) -> None:
-    """--target の保存先は reviews/<owner>/<repo>/#<PR>-<branch>/... に限る。
+    """保存先は reviews/<owner>/<repo>/#<PR>-<branch>/... に限る。
 
     reviews から下の既存の階層が symlink なら、別のリポジトリの保存先と混ざりうるので拒否する。
     """
@@ -764,7 +678,7 @@ def require_repository_layout(repo: Path, relative: PurePosixPath, repository: s
             raise WorkspaceError(f"review destination component is a symlink: {component}")
 
 
-def safe_destination(repo: Path, destination_value: str, *, repository: str | None = None) -> Path:
+def safe_destination(repo: Path, destination_value: str, *, repository: str) -> Path:
     relative = PurePosixPath(destination_value)
     if relative.is_absolute() or len(relative.parts) < 3:
         raise WorkspaceError("destination must be below reviews/<directory>/")
@@ -772,8 +686,7 @@ def safe_destination(repo: Path, destination_value: str, *, repository: str | No
         raise WorkspaceError("destination must be a normalized path below reviews/")
     if relative.suffix != ".md":
         raise WorkspaceError("review destination must end in .md")
-    if repository is not None:
-        require_repository_layout(repo, relative, repository, length=5)
+    require_repository_layout(repo, relative, repository, length=5)
 
     destination = repo / Path(*relative.parts)
     resolved_destination = destination.resolve(strict=False)
@@ -783,21 +696,17 @@ def safe_destination(repo: Path, destination_value: str, *, repository: str | No
     return destination
 
 
-def safe_findings_destination(repo: Path, destination_value: str, *, repository: str | None = None) -> Path:
-    """候補一覧の保存先。reviews/<directory>/findings/<name>.json だけを許す。
-
-    --target のセッションでは reviews/<owner>/<repo>/<directory>/findings/<name>.json だけを許す。
-    """
+def safe_findings_destination(repo: Path, destination_value: str, *, repository: str) -> Path:
+    """候補一覧の保存先。reviews/<owner>/<repo>/<directory>/findings/<name>.json だけを許す。"""
     relative = PurePosixPath(destination_value)
-    offset = 0 if repository is None else 2
-    if relative.is_absolute() or len(relative.parts) != 4 + offset:
-        raise WorkspaceError("findings destination must be reviews/<directory>/findings/<name>.json")
-    if relative.parts[0] != "reviews" or relative.parts[2 + offset] != "findings":
-        raise WorkspaceError("findings destination must be reviews/<directory>/findings/<name>.json")
+    layout = "findings destination must be reviews/<owner>/<repo>/<directory>/findings/<name>.json"
+    if relative.is_absolute() or len(relative.parts) != 6:
+        raise WorkspaceError(layout)
+    if relative.parts[0] != "reviews" or relative.parts[4] != "findings":
+        raise WorkspaceError(layout)
     if any(part in {"", ".", ".."} for part in relative.parts) or relative.suffix != ".json":
         raise WorkspaceError("findings destination must be a normalized .json path below reviews/")
-    if repository is not None:
-        require_repository_layout(repo, relative, repository, length=6)
+    require_repository_layout(repo, relative, repository, length=6)
     destination = repo / Path(*relative.parts)
     if not is_within(destination.resolve(strict=False), repo / "reviews"):
         raise WorkspaceError("findings destination escapes the main repository reviews/ directory")
@@ -812,9 +721,7 @@ def load_review_findings() -> ModuleType:
 def check_findings_draft(findings_draft: Path, draft: Path, state: Mapping[str, Any], model_name: str) -> None:
     """候補一覧の下書きを検査し、レビューの下書きと突き合わせる。問題があれば何も保存させない。"""
     if not findings_draft.is_file():
-        raise WorkspaceError(
-            f"findings draft is missing: {findings_draft}; write it, or save without --findings and say so"
-        )
+        raise WorkspaceError(f"findings draft is missing: {findings_draft}")
     review_findings = load_review_findings()
     try:
         value = review_findings.validate_document(json.loads(findings_draft.read_text(encoding="utf-8")))
@@ -826,7 +733,7 @@ def check_findings_draft(findings_draft: Path, draft: Path, state: Mapping[str, 
             raise WorkspaceError("findings draft PR number does not match the pinned review")
         if value["reviewer"]["review_file"] != f"{artifact_model(model_name, state.get('review_commit'))}.md":
             raise WorkspaceError("findings draft review_file does not match the pinned review file")
-        if session_repository(state) is not None and value["pr"]["repository"] != session_repository(state):
+        if value["pr"]["repository"] != session_repository(state):
             raise WorkspaceError("findings draft repository does not match the pinned review")
         markdown = draft.read_text(encoding="utf-8")
         review_findings.check_pair(markdown, value)
@@ -858,6 +765,10 @@ def atomic_copy(source: Path, destination: Path) -> None:
 
 
 def save(args: argparse.Namespace) -> dict[str, str]:
+    """候補一覧を検査し、本文と両方を保存する。
+
+    review_run.py が渡す findings=True は読まない（#119 で候補一覧なしの保存を撤去した）。
+    """
     repo, state = load_state(args.state)
 
     with review_save_lock(repo):
@@ -898,15 +809,6 @@ def save(args: argparse.Namespace) -> dict[str, str]:
             review_commit=state.get("review_commit"),
         )
         findings_destination = safe_findings_destination(repo, findings_value, repository=repository)
-        if not getattr(args, "findings", False):
-            atomic_copy(draft, destination)
-            saved = {"backup": str(draft), "destination": str(destination)}
-            # 同じ HEAD の古い候補一覧は、新しいレビューファイルと食い違うので残さない（review-verify に読ませない）
-            if destination_fingerprint(findings_destination)["kind"] == "file":
-                findings_destination.unlink()
-                saved["removed_stale_findings"] = str(findings_destination)
-            return saved
-
         check_findings_draft(findings_draft, draft, state, runtime_model)
         previous = destination_fingerprint(findings_destination)
         if previous["kind"] not in {"missing", "file"}:
@@ -1030,7 +932,7 @@ def _validate_reapable_session(state_value: str) -> tuple[Path, dict[str, Any]]:
             raise WorkspaceError("session paths do not match the pinned state")
         repository = session_repository(state)
         expected_entries = {"session.json", "review-backup", "worktree"}
-        if state["version"] == STATE_VERSION_TARGET and state["target_kind"] == "clone":
+        if state["target_kind"] == "clone":
             expected_entries.add("repo")
             clone_dir = session_dir / "repo"
             _require_directory(clone_dir, "session clone")
@@ -1055,7 +957,7 @@ def _validate_reapable_session(state_value: str) -> tuple[Path, dict[str, Any]]:
         allowed_backup = {expected_draft.name}
         if state["previous_review"]:
             allowed_backup.add("previous-review.md")
-        # 候補一覧の下書きは、保存しなかった場合（--findings なしの保存）も捨ててよい
+        # 候補一覧の下書きは無くてもよい（#119 の前に --findings なしで保存したセッションには無い）
         findings_draft, _findings_destination = findings_artifact_paths(
             backup_dir,
             state["head_branch"],
@@ -1199,14 +1101,7 @@ def cleanup(args: argparse.Namespace) -> dict[str, str]:
         target = session_target(state)
         require_session_worktree(worktree, target)
         pr_ref = pinned_review_ref(state["pr_number"])
-        preserve_unowned_ref = bool(state.get("preserve_unowned_ref", False)) or bool(
-            getattr(args, "preserve_unowned_ref", False)
-        )
-        pr_ref_status = (
-            "preserved-unowned"
-            if preserve_unowned_ref
-            else delete_pinned_ref(target, pr_ref, state.get("pr_head", state["commit"]))
-        )
+        pr_ref_status = delete_pinned_ref(target, pr_ref, state["pr_head"])
         git(target, "worktree", "remove", "--force", str(worktree))
         if worktree.exists():
             raise WorkspaceError(f"git did not remove the review worktree: {worktree}")
@@ -1220,46 +1115,9 @@ def cleanup(args: argparse.Namespace) -> dict[str, str]:
     }
 
 
-def positive_integer(value: str) -> int:
-    number = int(value)
-    if number < 1:
-        raise argparse.ArgumentTypeError("must be a positive integer")
-    return number
-
-
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description=__doc__)
     commands = root.add_subparsers(dest="command", required=True)
-
-    create_parser = commands.add_parser("create", help="create a unique detached review worktree")
-    create_parser.add_argument(
-        "--target",
-        help="JSON printed by .agents/scripts/review_target.py resolve (saves below reviews/<owner>/<repo>/)",
-    )
-    create_parser.add_argument("--repo", help="without --target: the checkout whose reviews/ receives the review")
-    create_parser.add_argument("--pr-number", type=positive_integer)
-    create_parser.add_argument("--commit")
-    create_parser.add_argument("--head-branch")
-    create_parser.add_argument("--model-name")
-    create_parser.add_argument("--review-commit", help="review a full commit SHA separately from the PR head")
-    create_parser.add_argument("--source-root", help="main checkout containing an unpushed commit; origin must match")
-    create_parser.add_argument("--temp-root")
-    create_parser.add_argument("--session-dir", help="use this preclaimed, fresh session directory")
-    create_parser.add_argument("--preserve-unowned-ref", action="store_true")
-    create_parser.set_defaults(handler=create)
-
-    verify_parser = commands.add_parser("verify", help="verify that the main checkout is unchanged")
-    verify_parser.add_argument("--state", required=True)
-    verify_parser.set_defaults(handler=verify)
-
-    save_parser = commands.add_parser("save", help="atomically save the pinned review draft")
-    save_parser.add_argument("--state", required=True)
-    save_parser.add_argument(
-        "--findings",
-        action="store_true",
-        help="also validate and save the pinned candidates draft (review-findings v1)",
-    )
-    save_parser.set_defaults(handler=save)
 
     reap_check_parser = commands.add_parser("reap-check", help="check whether a saved session is safe to reap")
     reap_check_parser.add_argument("--state", required=True)
@@ -1268,7 +1126,6 @@ def parser() -> argparse.ArgumentParser:
     cleanup_parser = commands.add_parser("cleanup", help="remove the session worktree once the review is saved")
     cleanup_parser.add_argument("--state", required=True)
     cleanup_parser.add_argument("--strict-reap", action="store_true")
-    cleanup_parser.add_argument("--preserve-unowned-ref", action="store_true")
     cleanup_parser.set_defaults(handler=cleanup)
     return root
 
