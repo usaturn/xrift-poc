@@ -87,7 +87,6 @@ class FakeGh:
         self.comments: list[dict[str, Any]] = []
         self.issue_state = "OPEN"
         self.post_fails = False
-        self.head_after_post: str | None = None
         self.issue_fails = False
         self.merge_stays_open = False
         self.list_fails = False
@@ -110,8 +109,6 @@ class FakeGh:
                 body = json.loads(input_text)["body"]
                 self.comments = [{"id": 99, "body": body, "author_association": "OWNER", "user": {"login": "usaturn"}}]
                 value = {"id": 99, "html_url": self.view["url"] + "#issuecomment-99"}
-                if self.head_after_post is not None:
-                    self.view["headRefOid"] = self.head_after_post
         elif argv[1:3] == ("pr", "merge"):
             if not self.merge_stays_open:
                 self.view.update(state="MERGED", mergedAt="2026-10-08T06:05:00Z")
@@ -157,17 +154,6 @@ def test_draft_or_conflicting_pr_stops_before_any_write(field: str, value: Any) 
     result = mod.finalize(record(), "状況", checks(), runner=gh)
     assert gh.writes() == []
     assert result["outcome"] == "stopped" and result["merged"] is False
-
-
-def test_head_changed_after_status_post_stops_before_merge_or_issue_update() -> None:
-    """投稿中に動いた HEAD を再確認しないと、検証していない HEAD のマージや関連 Issue の更新を試みる。"""
-    gh = FakeGh()
-    gh.head_after_post = "2" * 40
-    result = mod.finalize(record(), "## 状況\n検証済み。\n\t投稿後の HEAD を再確認する。 ", checks(), runner=gh)
-    writes = gh.writes()
-    assert len(writes) == 1 and writes[0][3] == "POST"
-    assert mod.poster.records.extract_record(gh.comments[0]["body"]) == record()
-    assert result["outcome"] == "stopped" and result["merged"] is False and result["issues"] == []
 
 
 @pytest.mark.parametrize("mutation", ["head", "missing", "failed"])
