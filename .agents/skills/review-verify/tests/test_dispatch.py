@@ -381,6 +381,23 @@ def main_argv(tmp_path: Path, request: dict[str, Any], assign: str | None = None
     return argv + ["--assign", assign] if assign else argv
 
 
+def test_input_error_does_not_echo_request_secrets(
+    dispatch: Any, verification_input: dict[str, Any], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """入力検証エラーがrequestの値を表示すると、自由記述や秘密がstderrへ漏れる。"""
+    secret = "private-191"
+    free_text = f"{secret} 日本語の自由記述\n  次の行にも空白あり"
+    verification_input["fix_sections"] = free_text
+    verification_input["fix_ids"] = [secret, secret]
+
+    assert dispatch.main(main_argv(tmp_path, verification_input)) != 0
+
+    output = capsys.readouterr()
+    assert output.err
+    for fragment in (secret, "日本語の自由記述", "次の行にも空白あり"):
+        assert fragment not in output.err + output.out
+
+
 def test_accept_saves_the_tool_output_unchanged_with_the_observed_verifier(
     dispatch: Any, scenario: Scenario, tmp_path: Path
 ) -> None:
@@ -509,6 +526,10 @@ def test_accept_rejects_a_failed_run(dispatch: Any, scenario: Scenario, tmp_path
         # 前に受け取った結果を外部担当が書き換えた run を受け取ると、検証していない内容を前の結果として扱う。
         # Gitignore の保存先は runner の outside_changes に出ない。
         pytest.param("ignored", "overwrite", id="ignored-overwrite"),
+        # 先の結果の消失・改名・権限変更は、内容の上書きとは別の監査条件を通る。
+        pytest.param("ignored", "delete", id="ignored-delete"),
+        pytest.param("ignored", "rename", id="ignored-rename"),
+        pytest.param("ignored", "chmod", id="ignored-chmod"),
         # 保存先に担当が作ったファイル（偽の verified の一覧など）を前の結果として扱う。
         pytest.param("outside", "create", id="outside-create"),
     ],
@@ -529,14 +550,24 @@ def test_review_directory_changes_are_rejected_before_publishing(
         (scenario.root / ".git/info/exclude").write_text("/reviews/\n")
         scenario.request["review_dir"] = str(scenario.review_dir)
     target = scenario.review_dir / "previous\nresult.json"
+    previous = "previous accepted contents"
+    renamed = target.with_name("renamed\nresult.json")
     if mutation != "create":
-        target.write_text("previous accepted contents")
+        target.write_text(previous)
+    original_mode = target.stat().st_mode if target.exists() else None
     payload = scenario.payload()
     set_skill_digest(dispatch, payload)
 
     class MutatingAdapter(PayloadAdapter):
         def collect(self, context: AdapterContext, stdout_path: Path, stderr_path: Path) -> AdapterOutcome:
-            target.write_text("unvalidated contents")
+            if mutation == "delete":
+                target.unlink()
+            elif mutation == "rename":
+                target.rename(renamed)
+            elif mutation == "chmod":
+                target.chmod(target.stat().st_mode ^ 0o100)
+            else:
+                target.write_text("unvalidated contents")
             return super().collect(context, stdout_path, stderr_path)
 
     dispatch.main(main_argv(tmp_path, scenario.request, "probe"), adapter_loader=loader_for(MutatingAdapter(payload)))
@@ -544,7 +575,14 @@ def test_review_directory_changes_are_rejected_before_publishing(
     assert accept(dispatch, Path(output["artifact_dir"])) == 1
     assert not (scenario.review_dir / "verified").exists()
     # 観測だけで書込み元を断定しない。他セッションの更新を自動削除・復元しない。
-    assert target.read_text() == "unvalidated contents"
+    if mutation == "delete":
+        assert not target.exists()
+    elif mutation == "rename":
+        assert not target.exists() and renamed.read_text() == previous
+    elif mutation == "chmod":
+        assert target.read_text() == previous and target.stat().st_mode != original_mode
+    else:
+        assert target.read_text() == "unvalidated contents"
 
 
 def test_accept_never_writes_through_a_verified_directory_symlink(
