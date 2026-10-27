@@ -423,3 +423,13 @@ Issue #59 の対応として、5174〜5179 も `forwardPorts` に追加した。
 導入済み `validatePreIsolatedTaskCwds` を使い、scratch repository の clean な別 worktree は受理され、同じ worktree の重複、親 checkout の流用、別 repository、dirty な親・Task、親 HEAD を含まない Task は拒否されることを実行で確認した。並列起動後の全件待機は実装の concurrent launch と join を読んだ確認である。
 
 この修正を行ったセッションには旧起動ルールも指示として適用されており、現行ツールに無い起動条件を迂回しなかった。実際の子の起動、モデルによる修正前後の指示比較、実モデルでの並列実行と worktree の自動片付けは未検証である。引数検証と隔離ガードの成功を、委譲全体の成功とは扱わない。進行中の #191 の再実行や既存セッションへの介入もしていない。
+
+### PR #205 のレビューを受けた並列呼び出しの確認
+
+レビューの指摘（M-1・L-1）を受けて、`.pi/APPEND_SYSTEM.md` の通常の並列呼び出しの前後の確認と、隔離の設定の説明を直した。導入済みの拡張は、一時 worktree の置き場所が Git で無視されていなければ `.gitignore` に追記したまま残し、並列呼び出しを隔離するかを起動したコマンドではなく全コマンドの設定から決める。導入済みの `createParallelWorktreeSetup`・`cleanupWorktrees`・`resolveSuperagentWorktreeEnabled`・`loadEffectiveConfig` を scratch repository で実行し、修正前と修正後の手順を比べた。
+
+- 置き場所: 親の feature worktree（ルートとサブディレクトリから）と、`.git/info/exclude` に `.worktrees/` を置いた制作物の worktree（追跡する `.gitignore` の有無の両方）では、修正前の手順は 1 回目で `.gitignore` を書き換え（無い制作物では未追跡の `.gitignore` を作り）、2 回目を止めた。修正後の手順（置き場所を作ってから `git check-ignore` で確かめ、呼び出しの後に空の置き場所を `rmdir`）は、日本語と改行を含む独立 2 Task の呼び出しを 3 回とも受け付け、`git status --porcelain` と `--ignored=matching` の出力を変えなかった。置き場所が既にある main checkout は、修正前後とも変わらなかった。置き場所を無視しないリポジトリでは、修正後の手順は並列を始めなかった。
+- 隔離の設定: 利用者の設定と、導入済みのすべての launcher の設定で、`sp-implement` の `worktrees.enabled` は false、並列呼び出しの隔離は有効だった。隔離が無効になるのは、どのコマンドも有効にせず `sp-implement` が false のときだけであることを、合成した設定で確かめた。
+- 未 commit の変更: 追跡ファイルの変更と未追跡のファイルのどちらでも、修正前の文面に従って読み取りだけの並列を呼ぶと、拡張が拒否した。修正後の手順は並列を始めず、利用者の変更を変えなかった。
+
+子 Pi とモデルは起動していない。モデルが修正後の指示を読んで並列と単発を選ぶ挙動と、実際の子の起動は未検証である。
