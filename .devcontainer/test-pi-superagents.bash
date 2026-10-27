@@ -250,6 +250,68 @@ test_pixg_rejects_non_oauth_xai_credentials() {
     assert_eq "$(run_launcher "$home" pixg | sed -n 1p)" "bwrap" "valid xAI OAuth must reach argv"
 }
 
+# このテストが無いと、ランチャーかヘルパが利用者の引数（空文字・改行・空白・日本語を含む）を落とす・分割する変更が入っても、Pi が別の引数のまま黙って起動する。
+test_launchers_forward_user_arguments_to_pi() {
+    local root="${TEST_ROOT}/forward-pi" launcher home record i offset
+    local bin="${root}/bin"
+    local -a user_args got vertex_ids
+    user_args=(--session '日本語 のセッション.jsonl' -- $'  1 行目\n2 行目 末尾の空白  ' '')
+    mkdir -p "$bin"
+    # bwrap の指定（最初の -- まで）を読み飛ばし、残り（pi とその引数）をそのまま実行する
+    cat > "${bin}/bwrap" <<'FORWARD_BWRAP_EOF'
+#!/bin/bash
+while [ "$#" -gt 0 ] && [ "$1" != -- ]; do
+    shift
+done
+shift
+exec "$@"
+FORWARD_BWRAP_EOF
+    # 受け取った引数を NUL 区切りで記録する（行区切りでは改行を含む引数を区別できない）
+    cat > "${bin}/pi" <<'FORWARD_PI_EOF'
+#!/bin/bash
+printf '%s\0' "$@" > "${FAKE_PI_ARGV:?}"
+FORWARD_PI_EOF
+    chmod +x "${bin}/bwrap" "${bin}/pi"
+
+    # Vertex のランチャーは起動の前に、pi の実体の近くの bundled catalog で model ID を確かめる。
+    # ID はヘルパの定義から求め、テストに写さない
+    mapfile -t vertex_ids < <("${ZSH_BIN}" -c "source '${HELPER}'; typeset -a reply; for l in \"\$@\"; do pi_google_vertex_models \"\$l\" && print -rl -- \"\${reply[@]}\"; done; true" _ "${LAUNCHERS[@]}" | LC_ALL=C sort -u)
+    [ "${#vertex_ids[@]}" -gt 0 ] || fail "pi_google_vertex_models must define Vertex model IDs"
+    mkdir -p "${bin}/node_modules/@earendil-works/pi-ai/dist/providers/data"
+    python3 - "${bin}/node_modules/@earendil-works/pi-ai/dist/providers/data/google-vertex.json" "${vertex_ids[@]}" <<'PY'
+import json
+import sys
+
+path, *ids = sys.argv[1:]
+catalog = {f"chat:{id_}": {"id": id_, "provider": "google-vertex", "api": "google-vertex"} for id_ in ids}
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump({"google-vertex": catalog}, handle)
+PY
+
+    record="${root}/argv"
+    for launcher in "${LAUNCHERS[@]}"; do
+        home="${root}/home-${launcher}"
+        mkdir -p "${home}/.pi/agent/extensions/subagent.d/${launcher}"
+        printf '{"superagents":{"modelTiers":{}}}\n' \
+            > "${home}/.pi/agent/extensions/subagent.d/${launcher}/config.json"
+        write_oauth_auth "$home"
+        rm -f "$record"
+        env HOME="$home" PI_CODING_AGENT_DIR="${home}/.pi/agent" \
+            COMMANDCODE_API_KEY=dummy-for-forward OPENCODE_API_KEY=dummy-for-forward \
+            PATH="${bin}:${PATH}" PI_SUPERAGENTS_LAUNCHER_DRY_RUN=0 FAKE_PI_ARGV="$record" \
+            "${ZSH_BIN}" "${REPO_ROOT}/.devcontainer/${launcher}" "${user_args[@]}" \
+            || fail "${launcher} must start pi"
+        # 対照: fake pi が実際に起動した
+        [ -f "$record" ] || fail "${launcher} did not reach pi"
+        mapfile -d '' -t got < "$record"
+        [ "${#got[@]}" -ge "${#user_args[@]}" ] || fail "${launcher} dropped user arguments"
+        offset=$(( ${#got[@]} - ${#user_args[@]} ))
+        for i in "${!user_args[@]}"; do
+            assert_eq "${got[$((offset + i))]}" "${user_args[$i]}" "${launcher} user argument #${i}"
+        done
+    done
+}
+
 SETUP="${REPO_ROOT}/scripts/setup_pi_superagents.zsh"
 
 run_setup() {
@@ -277,16 +339,20 @@ test_setup_backs_up_modified_config() {
         || fail "setup must restore the repository content"
 }
 
-# このテストが無いと、リビルドのたびに導入が --if-absent で呼ぶ setup が既存の設定を置き換え、利用者が編集した tier 設定を黙って失う。
+# このテストが無いと、リビルドのたびに導入が --if-absent で呼ぶ setup が既存の設定を置き換えて利用者が編集した tier 設定を黙って失う、または README が案内する --if-absent の更新が成功したまま古い共通ヘルパを残す。
 test_setup_if_absent_preserves_user_edits() {
-    local home config
+    local home config helper
     home="${TEST_ROOT}/setup-if-absent"
     mkdir -p "$home"
     run_setup "$home" >/dev/null
     config="${home}/.pi/agent/extensions/subagent.d/piccd/config.json"
+    helper="${home}/.local/bin/pi-superagents-exec.zsh"
     printf '{"superagents":{"modelTiers":{"cheap":{"model":"x/y","thinking":"max"}}}}\n' > "$config"
+    # 前の版のヘルパが配置済みの環境（リビルドしない既存環境）
+    printf '%s\n' '# stale helper' > "$helper"
     run_setup "$home" --if-absent >/dev/null
     grep -q '"x/y"' "$config" || fail "--if-absent must not overwrite an existing config"
+    cmp -s "$HELPER" "$helper" || fail "--if-absent must refresh the shared helper from the repository"
 }
 
 INSTALL_SCRIPT="${REPO_ROOT}/.devcontainer/install_beforehand.bash"
@@ -362,6 +428,7 @@ test_launchers_wrap_pi_with_their_own_config
 test_only_vertex_launchers_overlay_auth
 test_pigs_opencode_key_reaches_child_process
 test_pixg_rejects_non_oauth_xai_credentials
+test_launchers_forward_user_arguments_to_pi
 test_setup_backs_up_modified_config
 test_setup_if_absent_preserves_user_edits
 make_fake_pi
