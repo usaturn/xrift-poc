@@ -2,7 +2,8 @@
 
 出力は ``MODEL_NAME`` としてレビュー・状況コメント・ファイル名に記録され、誤った値はどこでもエラーにならない。
 照合は、実行中の変数が当てにならない場面で記録を止める安全網で、誤った証拠を読むと食い違いを黙って見逃す。
-情報表示の経路（``--allow-session-history``・``--session``）と、壊れると exit 2 で止まる方向は確かめない。
+情報表示の経路（``--allow-session-history``・``--session``）は確かめない。
+照合失敗は、疑わしい値を正式値として出さない境界を確かめる。
 """
 
 from __future__ import annotations
@@ -216,6 +217,18 @@ def test_explicit_session_file_precedes_env_sources(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["selected"]["model"] == "model-a"
+
+
+@pytest.mark.parametrize("explicit_exists", [False, True], ids=["missing", "wrong-session-id"])
+def test_explicit_session_failure_suppresses_the_runtime_value(tmp_path: Path, explicit_exists: bool) -> None:
+    """明示セッションを照合できないのに値を出すと、疑わしい MODEL_NAME を黙って記録する。"""
+    current = write_session(tmp_path / "current.jsonl", [model_change("m1", None)])
+    explicit = tmp_path / "explicit.jsonl"
+    if explicit_exists:
+        write_session(explicit, [model_change("m1", None)], session_id="other")
+    result = run_script(["--session-file", str(explicit)], runtime_env(current))
+    assert result.returncode != 0
+    assert result.stdout == ""
 
 
 def test_pi_session_file_precedes_subagent_session(tmp_path: Path) -> None:
