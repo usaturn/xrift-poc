@@ -87,6 +87,7 @@ class FakeGh:
         self.comments: list[dict[str, Any]] = []
         self.issue_state = "OPEN"
         self.post_fails = False
+        self.head_after_post: str | None = None
         self.issue_fails = False
         self.merge_stays_open = False
         self.list_fails = False
@@ -109,6 +110,8 @@ class FakeGh:
                 body = json.loads(input_text)["body"]
                 self.comments = [{"id": 99, "body": body, "author_association": "OWNER", "user": {"login": "usaturn"}}]
                 value = {"id": 99, "html_url": self.view["url"] + "#issuecomment-99"}
+                if self.head_after_post is not None:
+                    self.view["headRefOid"] = self.head_after_post
         elif argv[1:3] == ("pr", "merge"):
             if not self.merge_stays_open:
                 self.view.update(state="MERGED", mergedAt="2026-10-08T06:05:00Z")
@@ -141,6 +144,30 @@ def test_no_fix_result_requires_post_merge_confirmation_and_issue_update() -> No
     assert merge[merge.index("--match-head-commit") + 1] == HEAD
     assert issue[1:3] == ("issue", "close")
     assert gh.calls[-1][1:3] == ("issue", "view")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [pytest.param("isDraft", True, id="draft"), pytest.param("mergeable", "CONFLICTING", id="conflicting")],
+)
+def test_draft_or_conflicting_pr_stops_before_any_write(field: str, value: Any) -> None:
+    """draft・競合中の PR を通すと、未確定の状況を投稿し、マージや関連 Issue の更新まで進めてしまう。"""
+    gh = FakeGh()
+    gh.view[field] = value
+    result = mod.finalize(record(), "状況", checks(), runner=gh)
+    assert gh.writes() == []
+    assert result["outcome"] == "stopped" and result["merged"] is False
+
+
+def test_head_changed_after_status_post_stops_before_merge_or_issue_update() -> None:
+    """投稿中に動いた HEAD を再確認しないと、検証していない HEAD のマージや関連 Issue の更新を試みる。"""
+    gh = FakeGh()
+    gh.head_after_post = "2" * 40
+    result = mod.finalize(record(), "## 状況\n検証済み。\n\t投稿後の HEAD を再確認する。 ", checks(), runner=gh)
+    writes = gh.writes()
+    assert len(writes) == 1 and writes[0][3] == "POST"
+    assert mod.poster.records.extract_record(gh.comments[0]["body"]) == record()
+    assert result["outcome"] == "stopped" and result["merged"] is False and result["issues"] == []
 
 
 @pytest.mark.parametrize("mutation", ["head", "missing", "failed"])
@@ -259,6 +286,43 @@ def cli_args(tmp_path: Path, result: Path) -> list[str]:
         "--result-file",
         str(result),
     ]
+
+
+@pytest.mark.parametrize("destination_kind", ["symlink", "directory", "missing-parent"])
+def test_invalid_result_destination_stops_before_any_gh_call(
+    destination_kind: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """結果を保存できないまま外部操作すると、マージ済みの記録が欠け、既存データも置き換えられうる。"""
+    existing = tmp_path / "existing"
+    existing.mkdir()
+    preserved = existing / "prior.txt"
+    prior = "前の結果\n\t保存したデータ "
+    preserved.write_text(prior, encoding="utf-8")
+    destination = tmp_path / "result.json"
+    if destination_kind == "symlink":
+        destination.symlink_to(preserved)
+    elif destination_kind == "directory":
+        destination = existing
+    else:
+        destination = tmp_path / "missing" / "result.json"
+    gh = FakeGh()
+    monkeypatch.setattr(mod.poster, "GhRunner", lambda: gh)
+
+    status = mod.main(cli_args(tmp_path, destination))
+
+    assert gh.calls == []
+    assert status != 0
+    actual = json.loads(capsys.readouterr().out)
+    assert actual["outcome"] == "stopped" and actual["merged"] is False and actual["issues"] == []
+    assert preserved.read_text(encoding="utf-8") == prior
+    assert existing.is_dir()
+    if destination_kind == "symlink":
+        assert destination.is_symlink() and destination.resolve() == preserved
+    elif destination_kind == "missing-parent":
+        assert not destination.parent.exists()
 
 
 def test_post_operation_save_failure_preserves_observed_effects_in_stdout(
