@@ -1,10 +1,18 @@
-"""Configured skill-source resolution shared by the adapter launch prompts."""
+"""Skill-source resolution shared by the adapter launch prompts and run identities."""
 
 import hashlib
 import os
+import re
 import stat
 from collections.abc import Iterable
 from pathlib import Path
+
+# An absolute SKILL.md under a ``skills`` directory, as codex/cursor read evidence names it.
+SKILL_MD_PATH = re.compile(r"(/[^\s\"'\\]+/skills/[^\s\"'\\]+/SKILL\.md)")
+# Any SKILL.md path mentioned inside tool-call text (devin/pi).
+SKILL_MD_MENTION = re.compile(r"[^\s\"'`]*SKILL\.md")
+_SKILL_FILE = "SKILL.md"
+_SKILL_ROOTS = (".claude/skills", ".agents/skills", ".devin/skills")
 
 
 def configured_skill_paths(work_dir: Path, sources: list[str], names: list[str]) -> dict[str, Path]:
@@ -86,4 +94,58 @@ def verified_versions(evidence: Iterable[tuple[str, str]]) -> dict[str, str]:
         if observed != content:
             continue
         versions.setdefault(path.parent.name, hashlib.sha256(raw).hexdigest())
+    return versions
+
+
+def locate_skill_md(target: str, work_dir: Path, sources: Iterable[str], *, from_work_dir: bool) -> Path | None:
+    """The first existing SKILL.md a skill name or path points to.
+
+    ``from_work_dir`` also tries the target as a path relative to ``work_dir``
+    (devin/pi report observed paths); claude-code passes skill names only.
+    """
+    text = target.strip().strip("'\"")
+    if not text:
+        return None
+    candidates: list[Path] = []
+    direct = Path(text)
+    if direct.is_absolute():
+        candidates.extend((direct, direct / _SKILL_FILE))
+    else:
+        if from_work_dir and direct.name == _SKILL_FILE:
+            candidates.append(work_dir / direct)
+        for source in sources:
+            base = Path(source)
+            candidates.extend((base / direct, base / direct / _SKILL_FILE, base / direct.name / _SKILL_FILE))
+        candidates.extend(work_dir / root / text / _SKILL_FILE for root in _SKILL_ROOTS)
+        if from_work_dir:
+            candidates.append(work_dir / direct)
+            if direct.name != _SKILL_FILE:
+                candidates.append(work_dir / direct / _SKILL_FILE)
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def located_versions(
+    targets: Iterable[str], work_dir: Path, sources: Iterable[str], *, from_work_dir: bool
+) -> dict[str, str]:
+    """``sha256:``-prefixed hashes of the SKILL.md files the targets locate now.
+
+    Unlike ``verified_versions``, there is no observed content to compare: the
+    present bytes are recorded as they are.
+    """
+    versions: dict[str, str] = {}
+    for target in dict.fromkeys(targets):
+        path = locate_skill_md(target, work_dir, sources, from_work_dir=from_work_dir)
+        if path is None:
+            continue
+        try:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            continue
+        versions.setdefault(path.parent.name, f"sha256:{digest}")
     return versions

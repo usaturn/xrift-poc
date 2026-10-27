@@ -98,3 +98,16 @@ def test_skill_tool_call_records_file_hash(context: AdapterContext, tmp_path: Pa
     outcome = _collect(context, '{"ok": true}', export=_export(tool_calls=calls))
     expected = "sha256:" + hashlib.sha256(skill.read_bytes()).hexdigest()
     assert outcome.identity.skill_versions == {"review": expected}
+
+
+def test_relative_skill_md_in_tool_call_is_hashed(context: AdapterContext) -> None:
+    """作業ディレクトリからの相対パスで読んだ SKILL.md の版を記録しないと、実行記録の provenance が黙って欠ける。"""
+    skill = context.work_dir / "docs" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("---\nname: docs\n---\nbody\n", encoding="utf-8")
+    calls: list[dict[str, object]] = [
+        {"type": "function", "function": {"name": "read", "arguments": json.dumps({"path": "docs/SKILL.md"})}}
+    ]
+    outcome = _collect(context, '{"ok": true}', export=_export(tool_calls=calls))
+    expected = "sha256:" + hashlib.sha256(skill.read_bytes()).hexdigest()
+    assert outcome.identity.skill_versions == {"docs": expected}

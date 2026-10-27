@@ -1,6 +1,5 @@
 """Codex (`codex exec`) adapter: JSONL events plus session rollout identity."""
 
-import json
 import os
 import re
 import shlex
@@ -8,15 +7,14 @@ from pathlib import Path
 from typing import cast
 
 from tools.agent_runner.adapters import AdapterContext, AdapterOutcome, Capabilities, LaunchSpec
-from tools.agent_runner.adapters.skills import prompt_lines, verified_versions
-from tools.agent_runner.adapters.strict_json import decode, raw_decode
-from tools.agent_runner.models import Identity, Receipt, State
+from tools.agent_runner.adapters.output import embedded_object, json_event, read_text, receipt_for
+from tools.agent_runner.adapters.skills import SKILL_MD_PATH, prompt_lines, verified_versions
+from tools.agent_runner.models import Identity, State
 
 _AUTHENTICATION = re.compile(
     r"(?i)(not logged in|login required|please log in|please run ['\"`]?\S* login|"
     r"unauthorized|invalid api key|authentication (?:required|failed)|token expired)"
 )
-_SKILL_FILE = re.compile(r"(/[^\s\"'\\]+/skills/[^\s\"'\\]+/SKILL\.md)")
 
 
 def _prompt(context: AdapterContext) -> str:
@@ -25,47 +23,6 @@ def _prompt(context: AdapterContext) -> str:
         parts.append("Answer with a single JSON object as your final message.")
     parts.extend(prompt_lines(context.work_dir, context.agent.skill_sources, context.role.skills, prefix="$"))
     return "\n\n".join(parts)
-
-
-def _event(line: str) -> dict[str, object] | None:
-    try:
-        value: object = json.loads(line)
-    except json.JSONDecodeError:
-        return None
-    return cast(dict[str, object], value) if isinstance(value, dict) else None
-
-
-def _read(path: Path) -> str:
-    try:
-        return path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return ""
-
-
-def _json_object(text: str) -> dict[str, object] | None:
-    stripped = text.strip()
-    try:
-        whole = decode(stripped)
-    except json.JSONDecodeError:
-        pass
-    except ValueError:
-        return None
-    else:
-        if isinstance(whole, dict) and whole:
-            return cast(dict[str, object], whole)
-    for index, character in enumerate(text):
-        if character != "{":
-            continue
-        try:
-            value, _end = raw_decode(text[index:])
-        except json.JSONDecodeError:
-            continue
-        except ValueError:
-            # Do not salvage a nested object after rejecting the outer answer.
-            return None
-        if isinstance(value, dict) and value:
-            return cast(dict[str, object], value)
-    return None
 
 
 def _read_evidence(event: dict[str, object]) -> list[tuple[str, str]]:
@@ -88,7 +45,7 @@ def _read_evidence(event: dict[str, object]) -> list[tuple[str, str]]:
     except ValueError:
         return []
     # Deliberately do not interpret compound commands, options or shell expansions.
-    if len(words) != 2 or words[0] != "cat" or not _SKILL_FILE.fullmatch(words[1]):
+    if len(words) != 2 or words[0] != "cat" or not SKILL_MD_PATH.fullmatch(words[1]):
         return []
     if any(character in words[1] for character in "$`*?[]{}~;|&()<>"):
         return []
@@ -103,7 +60,7 @@ def _skill_versions(*texts: str) -> dict[str, str]:
     evidence: list[tuple[str, str]] = []
     for text in texts:
         for line in text.splitlines():
-            event = _event(line)
+            event = json_event(line)
             if event is None:
                 continue
             evidence.extend(_read_evidence(event))
@@ -116,7 +73,7 @@ def _diagnostics(stdout: str, stderr: str) -> str:
     for line in stdout.splitlines():
         if not line.strip():
             continue
-        event = _event(line)
+        event = json_event(line)
         if event is None or event.get("type") in {"error", "turn.failed"}:
             parts.append(line)
     return "\n".join(parts)
@@ -133,14 +90,14 @@ def _rollout(session_id: str | None) -> str:
     for root in homes:
         hits = sorted(root.glob(f"sessions/**/rollout-*{session_id}.jsonl"))
         if hits:
-            return _read(hits[-1])
+            return read_text(hits[-1])
     return ""
 
 
 def _rollout_fields(text: str) -> dict[str, str]:
     fields: dict[str, str] = {}
     for line in text.splitlines():
-        record = _event(line)
+        record = json_event(line)
         if record is None:
             continue
         payload = record.get("payload")
@@ -169,9 +126,9 @@ class _CodexAdapter:
         return LaunchSpec(tuple(argv), _prompt(context).encode("utf-8"))
 
     def collect(self, context: AdapterContext, stdout_path: Path, stderr_path: Path) -> AdapterOutcome:
-        stdout = _read(stdout_path)
-        stderr = _read(stderr_path)
-        events = [e for e in (_event(line) for line in stdout.splitlines()) if e is not None]
+        stdout = read_text(stdout_path)
+        stderr = read_text(stderr_path)
+        events = [e for e in (json_event(line) for line in stdout.splitlines()) if e is not None]
 
         session_id: str | None = None
         for event in events:
@@ -215,23 +172,14 @@ class _CodexAdapter:
         if text is None:
             return failed("response_failed")
         if context.request.result_shape == "json":
-            payload = _json_object(text)
+            payload = embedded_object(text)
             if payload is None:
                 return failed("response_failed")
         else:
             if not text.strip():
                 return failed("response_failed")
             payload = text
-        request = context.request
-        receipt = Receipt(
-            run_id=request.run_id,
-            request_id=request.request_id,
-            agent_id=request.agent_id,
-            role=request.role,
-            status="success",
-            payload=payload,
-        )
-        return AdapterOutcome(receipt=receipt, identity=identity)
+        return AdapterOutcome(receipt=receipt_for(context.request, "success", payload), identity=identity)
 
 
 ADAPTER = _CodexAdapter()

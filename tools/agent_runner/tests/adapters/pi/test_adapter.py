@@ -140,3 +140,20 @@ def test_skill_source_and_observed_skill_md_are_hashed(context: AdapterContext, 
         "read-one": "sha256:" + hashlib.sha256(seen.read_bytes()).hexdigest(),
     }
     assert outcome.identity.skill_versions == expected
+
+
+def test_relative_skill_md_in_event_is_hashed(context: AdapterContext) -> None:
+    """作業ディレクトリからの相対パスで読んだ SKILL.md の版を記録しないと、実行記録の provenance が黙って欠ける。"""
+    skill = context.work_dir / "docs" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("docs\n", encoding="utf-8")
+    tool_call: dict[str, object] = {
+        "type": "message_update",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "toolCall", "name": "read", "arguments": {"path": "docs/SKILL.md"}}],
+        },
+    }
+    outcome = _collect(context, [_session(), tool_call, _agent_end(), {"type": "agent_settled"}])
+    expected = "sha256:" + hashlib.sha256(skill.read_bytes()).hexdigest()
+    assert outcome.identity.skill_versions == {"docs": expected}
