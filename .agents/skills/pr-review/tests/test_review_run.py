@@ -116,10 +116,6 @@ def prepared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     }
 
 
-ACCEPTED_BODY = "日本語の説明\n複数行の本文\nCloses #42\nother/repo#333333 は別リポジトリの裸参照\n"
-ISSUE_42 = {"body": "受け入れ条件\n第二行", "comments": [{"body": "承認済み"}]}
-
-
 def mark_reviewed(result: dict[str, Any]) -> None:
     draft = Path(result["draft"])
     draft.write_text(
@@ -439,15 +435,21 @@ def test_attach_runner_skips_files_outside_the_record_layout(
     completed_review(prepared)
     original = run_records(prepared["parent"])[0]
     content = original.read_bytes()
-    original.unlink()
-    # symlink の階層の下・形式の違う JSON・ディレクトリと PR 番号の合わない記録は、どれも書き先にしない
-    linked = prepared["parent"] / "reviews" / "example" / "linked"
-    linked.mkdir(parents=True)
-    (linked / original.parent.parent.name).symlink_to(original.parent.parent, target_is_directory=True)
+    # 有効な外部記録を同じ repository/PR の runs symlink から参照させる。
+    # 正常な original も残し、常に拒否する実装では通らない対照にする。
+    elsewhere = tmp_path / "external-records"
+    elsewhere.mkdir()
+    external_record = elsewhere / original.name
+    external_record.write_bytes(content)
+    linked = original.parent.parent.with_name("#7-linked")
+    linked.mkdir()
+    (linked / "runs").symlink_to(elsewhere, target_is_directory=True)
     (original.parent / "notes.json").write_text(json.dumps({"kind": "planning"}), encoding="utf-8")
-    other_runs = linked.parent / "syncer" / "#8-other" / "runs"
+    other_runs = linked.parent / "#8-other" / "runs"
     other_runs.mkdir(parents=True)
     (other_runs / original.name).write_bytes(content)
     code, payload = attach(batch_result(tmp_path / "result.json"), capsys)
-    assert code == 0 and payload["attached"] == [] and payload["skipped"] == 3
-    assert json.loads((other_runs / original.name).read_text(encoding="utf-8"))["runner"] is None
+    assert external_record.read_bytes() == content
+    assert code == 0 and payload["attached"] == [str(original)] and payload["skipped"] == 3
+    assert json.loads(original.read_text(encoding="utf-8"))["runner"] is not None
+    assert (other_runs / original.name).read_bytes() == content
