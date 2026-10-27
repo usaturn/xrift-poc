@@ -962,4 +962,4 @@ uv run --no-project python "$TOPLEVEL/.agents/scripts/review_findings.py" stats 
 - 旧 PR 修正ループ（`LOOP_CONTEXT_V1=`。#571 で削除）は、この文書の形式のファイルを作らず、読まなかった。新しい PR 修正ループ（#570）のレビュアーは通常の pr-review で候補一覧を作り、各サイクルの計画は review-fix-planning が確認済みの一覧と工程の記録を作る。
 - 新規の candidates / verified / planning は v2 にし、3.1節の識別情報を必須にする。既存 v1 は無変換で読み、検査条件も維持する。`from-markdown` は旧資料の読み取りなので v1、`statement-candidates` の出力も v1 のまま。スキルが新規項目を書く変更は #562 / #568 / #569 が担当する。知らない版は拒否する。
 - 実行記録（`review_run`）は v2 だけで、v1 の形は無い。`runs/` の無い既存のレビューディレクトリも、そのまま読める。
-- 記入例を変えたら `.agents/scripts/tests/test_review_findings.py` を実行する。
+- 記入例を検査する常設のテストは無い。記入例（`<!-- review-findings:example <kind> -->` の直後の JSON）を変えたら、その JSON をファイルに書き出し、`uv run --no-project python .agents/scripts/review_findings.py validate <file>` で検査する。`fix_check` の例は、`statement_candidates.file` の名前で `statement_candidates` の例を同じディレクトリに置いてから検査する。

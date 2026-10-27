@@ -4,7 +4,7 @@
 
 - 判断の記録の検査・照合・集約・描画・取り出しは、`.agents/scripts/review_records.py` が実装する。標準ライブラリだけで書かれており、`uv run --no-project python` で動く（7.6 節）。
 - この文書の記入例のうち、PR・指摘・HEAD を示すもの（識別子の例を含む）は、すべて架空の PR #900 のもので、実在の PR やレビューの指摘とは関係しない。pr-review はこの文書を読むため、実在の指摘を記入例にすると、その PR を使った評価でレビュアーに答えを渡してしまう。記入例を足すときも、実在の PR の指摘を使わない。
-- この文書の記入例は、`.agents/scripts/tests/test_review_records.py` が検査する。記入例を変えたら、このテストを実行する。
+- この文書の記入例を検査する常設のテストは無い。記入例の判断の記録（`<!-- review-records:example round-1 -->` の例の JSON と、`status-comment-round-2` の例の記録のブロックの中の JSON）を変えたら、それぞれをファイルに書き出し、`uv run --no-project python .agents/scripts/review_records.py validate --record-file <file>` で検査する。
 - 形式を変える必要があるときは、10 章の手順に従う。
 
 ## 1. 用語と、誰が何を読み書きするか
@@ -838,4 +838,4 @@ gh api --paginate --slurp "repos/$PR_REPO/issues/$PR_NUMBER/comments" \
 
 - 形式を変える必要に気づいたら、変更を扱う Issue を起票し、関連に #493・#494 を書く。その Issue で #494 の Spec を改訂し、改訂版を remote から参照・復元できる形で公開してから、この文書と、必要な場合は `review_records.py` を変える。
 - 互換の無い変更は、`review-records/v2` にする。`review_records.py` は、知らない版の記録を拒否する。
-- 記入例を変えたら、`.agents/scripts/tests/test_review_records.py` を実行する。
+- 記入例を変えたら、冒頭の手順（`review_records.py validate --record-file`）で記入例の記録を検査する。

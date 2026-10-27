@@ -77,8 +77,10 @@ handoff はエージェント間で作業を移す。引き継ぎ先のエージ
 
 検証のコマンド:
 
-- `uv run python <skill-creator-path>/scripts/quick_validate.py .agents/skills/agent-handoff`
-- `uv run pytest .agents/skills/agent-handoff/tests -q` — スキルが引き継ぎの仕様を述べていること、スキルが参照するパスが実在することを検査する
+- `uv run --no-project --with pyyaml python <skill-creator-path>/scripts/quick_validate.py .agents/skills/agent-handoff` — `quick_validate.py` は pyyaml を使う
+- `uv run --project tools/devenv --no-sync pytest -c tools/devenv/pyproject.toml --rootdir . .agents/tests/test_skill_layout.py -q` — すべてのスキルの置き場所と frontmatter を検査する（リポジトリの root で、`uv sync --project tools/devenv --locked` の後に実行する）
+
+スキルの文面を照合する常設のテストは無い。文面を変えたら、`evals/evals.json` の書く側・読む側の場面で、変更の前と後の振る舞いを比べる（writing-skills の無し／ありの比較）。
 
 ## 参照
 
