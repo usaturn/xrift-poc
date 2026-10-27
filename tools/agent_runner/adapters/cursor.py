@@ -1,21 +1,19 @@
 """Cursor CLI (`agent -p`) adapter: stream-json events for identity and results."""
 
-import json
 import re
 from pathlib import Path
 from typing import cast
 
 from tools.agent_runner.adapters import AdapterContext, AdapterOutcome, Capabilities, LaunchSpec
-from tools.agent_runner.adapters.skills import prompt_lines, verified_versions
-from tools.agent_runner.adapters.strict_json import decode, raw_decode
-from tools.agent_runner.models import Identity, Receipt, State
+from tools.agent_runner.adapters.output import embedded_object, json_event, read_text, receipt_for
+from tools.agent_runner.adapters.skills import SKILL_MD_PATH, prompt_lines, verified_versions
+from tools.agent_runner.models import Identity, State
 
 _AUTHENTICATION = re.compile(
     r"(?i)(not logged in|login required|please log in|unauthorized|invalid api key|"
     r"authentication (?:required|failed)|token expired)"
 )
 _APPROVAL = re.compile(r"(?i)(workspace trust required|trust the contents|approval required)")
-_SKILL_FILE = re.compile(r"(/[^\s\"'\\]+/skills/[^\s\"'\\]+/SKILL\.md)")
 
 
 def _prompt(context: AdapterContext) -> str:
@@ -24,47 +22,6 @@ def _prompt(context: AdapterContext) -> str:
         parts.append("Answer with a single JSON object as your final message.")
     parts.extend(prompt_lines(context.work_dir, context.agent.skill_sources, context.role.skills))
     return "\n\n".join(parts)
-
-
-def _event(line: str) -> dict[str, object] | None:
-    try:
-        value: object = json.loads(line)
-    except json.JSONDecodeError:
-        return None
-    return cast(dict[str, object], value) if isinstance(value, dict) else None
-
-
-def _read(path: Path) -> str:
-    try:
-        return path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return ""
-
-
-def _json_object(text: str) -> dict[str, object] | None:
-    stripped = text.strip()
-    try:
-        whole = decode(stripped)
-    except json.JSONDecodeError:
-        pass
-    except ValueError:
-        return None
-    else:
-        if isinstance(whole, dict) and whole:
-            return cast(dict[str, object], whole)
-    for index, character in enumerate(text):
-        if character != "{":
-            continue
-        try:
-            value, _end = raw_decode(text[index:])
-        except json.JSONDecodeError:
-            continue
-        except ValueError:
-            # Do not salvage a nested object after rejecting the outer answer.
-            return None
-        if isinstance(value, dict) and value:
-            return cast(dict[str, object], value)
-    return None
 
 
 def _read_evidence(event: dict[str, object]) -> list[tuple[str, str]]:
@@ -114,11 +71,11 @@ def _skill_versions(text: str) -> dict[str, str]:
     """Version map from completed reads whose returned content still equals the present bytes."""
     evidence: list[tuple[str, str]] = []
     for line in text.splitlines():
-        event = _event(line)
+        event = json_event(line)
         if event is None:
             continue
         for item in _read_evidence(event):
-            if not _SKILL_FILE.fullmatch(item[0]):
+            if not SKILL_MD_PATH.fullmatch(item[0]):
                 continue
             evidence.append(item)
     return verified_versions(evidence)
@@ -130,7 +87,7 @@ def _diagnostics(stdout: str, stderr: str) -> str:
     for line in stdout.splitlines():
         if not line.strip():
             continue
-        event = _event(line)
+        event = json_event(line)
         if (
             event is None
             or event.get("type") == "error"
@@ -155,9 +112,9 @@ class _CursorAdapter:
         return LaunchSpec(tuple(argv), _prompt(context).encode("utf-8"))
 
     def collect(self, context: AdapterContext, stdout_path: Path, stderr_path: Path) -> AdapterOutcome:
-        stdout = _read(stdout_path)
-        stderr = _read(stderr_path)
-        events = [e for e in (_event(line) for line in stdout.splitlines()) if e is not None]
+        stdout = read_text(stdout_path)
+        stderr = read_text(stderr_path)
+        events = [e for e in (json_event(line) for line in stdout.splitlines()) if e is not None]
 
         session_id: str | None = None
         model: str | None = None
@@ -194,23 +151,14 @@ class _CursorAdapter:
         if errored or result is None:
             return failed("response_failed")
         if context.request.result_shape == "json":
-            payload = _json_object(result)
+            payload = embedded_object(result)
             if payload is None:
                 return failed("response_failed")
         else:
             if not result.strip():
                 return failed("response_failed")
             payload = result
-        request = context.request
-        receipt = Receipt(
-            run_id=request.run_id,
-            request_id=request.request_id,
-            agent_id=request.agent_id,
-            role=request.role,
-            status="success",
-            payload=payload,
-        )
-        return AdapterOutcome(receipt=receipt, identity=identity)
+        return AdapterOutcome(receipt=receipt_for(context.request, "success", payload), identity=identity)
 
 
 ADAPTER = _CursorAdapter()
