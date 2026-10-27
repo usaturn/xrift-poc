@@ -3,6 +3,7 @@ import os
 import shutil
 import subprocess
 import sys
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import TypedDict
 
@@ -108,3 +109,29 @@ def test_runner_scopes_conftest_fixtures_to_their_directory(tmp_path: Path) -> N
     result = run_runner(root, env=env, cwd=root)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "2 passed" in result.stdout
+
+
+def test_formal_collection_includes_every_tracked_test_file(tmp_path: Path) -> None:
+    """追跡している test_*.py が正式検証の収集から外れると、そのテストが守る挙動が CI を通らないまま黙って壊れる。"""
+    log, env = make_fake_uv(tmp_path)
+    result = run_runner(SOURCE_ROOT, env=env, cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    # 対象のディレクトリを写さず、正式検証が pytest に渡す引数のまま収集する（pyproject・conftest の除外も効く）。
+    (call,) = [call for call in read_calls(log) if call["stage"] == "pytest"]
+    pytest_args = call["argv"][call["argv"].index("pytest") + 1 :]
+    collected = subprocess.run(
+        [sys.executable, "-m", "pytest", *pytest_args, "--collect-only", "-q", "-p", "no:cacheprovider"],
+        cwd=call["cwd"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert collected.returncode == 0, collected.stdout + collected.stderr
+    collected_files = {line.split("::", 1)[0] for line in collected.stdout.splitlines() if "::" in line}
+    listed = subprocess.run(
+        ["git", "-C", str(SOURCE_ROOT), "ls-files", "-z"], capture_output=True, check=True
+    ).stdout.decode()
+    tracked = {path for path in listed.split("\0") if fnmatch(Path(path).name, "test_*.py")}
+    assert tracked
+    # Git で無視する XRift 公式スキルのテストは main checkout でだけ収集されるので、追跡している側だけを比べる。
+    assert tracked <= collected_files, sorted(tracked - collected_files)
