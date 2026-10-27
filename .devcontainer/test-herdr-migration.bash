@@ -457,7 +457,8 @@ test_cc_launcher_env_unsets() {
 
     # 汚染する資格情報。cc_launcher_unsets から取り出すと、一覧から外した変数は汚染されず、外す変更を
     # 検出できない。名前が資格情報の形であること（Claude Code が認証に読む ANTHROPIC_*・CLAUDE_CODE_* の
-    # API key・token・client key とその passphrase、ランチャーが使う他のプロバイダの API key）から独立に選ぶ。
+    # API key・token・client key とその passphrase、鍵や token のファイルを指す *_FILE_DESCRIPTOR と
+    # ヘッダ上書きの CUSTOM_HEADERS、ランチャーが使う他のプロバイダの API key）から独立に選ぶ。
     # モデルのピン留め・プロバイダの切り替えは秘密ではないので含めない
     local -a credentials=(
         ANTHROPIC_API_KEY
@@ -466,13 +467,19 @@ test_cc_launcher_env_unsets() {
         ANTHROPIC_FOUNDRY_API_KEY
         ANTHROPIC_FOUNDRY_AUTH_TOKEN
         ANTHROPIC_IDENTITY_TOKEN
+        ANTHROPIC_IDENTITY_TOKEN_FILE
+        ANTHROPIC_CUSTOM_HEADERS
         CLAUDE_CODE_OAUTH_TOKEN
+        CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR
         CLAUDE_CODE_OAUTH_REFRESH_TOKEN
         CLAUDE_CODE_SESSION_ACCESS_TOKEN
         CLAUDE_CODE_HFI_BEARER_TOKEN
         CLAUDE_CODE_GATEWAY_TOKEN
+        CLAUDE_CODE_GATEWAY_TOKEN_FILE_DESCRIPTOR
+        CLAUDE_CODE_WEBSOCKET_AUTH_FILE_DESCRIPTOR
         CLAUDE_CODE_CLIENT_KEY
         CLAUDE_CODE_CLIENT_KEY_PASSPHRASE
+        CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR
         COMMANDCODE_API_KEY
         OPENCODE_API_KEY
         OPENCODE_GO_API_KEY

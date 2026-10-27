@@ -45,10 +45,12 @@ def sandbox(tmp_path: Path) -> tuple[Path, Path, Path]:
     (package / "package.json").write_text('{"name":"@earendil-works/pi-coding-agent"}')
     cli = package / "dist/bundle/cli.js"
     cli.parent.mkdir(parents=True)
+    # args は、合成した鍵を argv へ移す変更を「secret が出力に無い」assert が検出するために要る。
+    # 出力の他の項目と違ってテストが直接読まないが、未使用として消すと検出力が黙って落ちる。
     cli.write_text(
         f"#!{sys.executable}\n"
-        "import json, os\n"
-        "print(json.dumps({'project':os.environ.get('GOOGLE_CLOUD_PROJECT'),\n"
+        "import json, os, sys\n"
+        "print(json.dumps({'args':sys.argv[1:], 'project':os.environ.get('GOOGLE_CLOUD_PROJECT'),\n"
         "'location':os.environ.get('GOOGLE_CLOUD_LOCATION'),\n"
         "'adc':os.environ.get('GOOGLE_APPLICATION_CREDENTIALS'),\n"
         "'cloud_key_present':'GOOGLE_CLOUD_API_KEY' in os.environ}))\n"
