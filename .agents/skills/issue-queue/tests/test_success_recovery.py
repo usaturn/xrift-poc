@@ -1,3 +1,5 @@
+import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -148,6 +150,55 @@ def test_success_recovery_rechecks_child_and_keeps_another_kind_pane(queue_env: 
     before = data["panes"].copy()
     assert queue_env.call("advance", "--run", run)["run"]["phase"] == "followup"
     assert queue_env.data()["panes"] == before
+
+
+def test_live_owner_blocks_takeover_from_new_pane(queue_env: QueueEnv) -> None:
+    """生存中の旧ownerから別会話が所有権を奪い、同じrunを二重に操作する。"""
+    run, attempt = successful_stage(queue_env, "implement")
+    disappear(queue_env, attempt, "pane")
+    data = queue_env.data()
+    new_pane = pane("w1:p99", "recovery-session", name="recovery-controller")
+    data["panes"][new_pane["pane_id"]] = new_pane
+    queue_env.save(data)
+    state_file = Path(run) / "state.json"
+    before = json.loads(state_file.read_text())
+    transfers_before = [e for e in before["events"] if e["action"] == "owner_transferred"]
+    reason = "  旧ownerの終了を確認して続行。\n 子の完了と外部の記録を確認済み。  "
+    args = ("resume", "--run", run, "--continue", "--reason", reason)
+
+    rejected = queue_env.call(*args, pane_id=new_pane["pane_id"], code=3)
+    assert rejected["status"] == "blocked"
+    saved = json.loads(state_file.read_text())
+    assert saved["owner"] == before["owner"]
+    assert [e for e in saved["events"] if e["action"] == "owner_transferred"] == transfers_before
+    assert saved["attempts"] == before["attempts"]
+    after = queue_env.data()
+    assert after["panes"] == data["panes"]
+    # 照合中は入力・起動・閉鎖を含むHerdrへの書き込みを行わない。
+    assert all(call[2] in {"get", "list"} for call in after["calls"][len(data["calls"]) :] if call[0] == "herdr")
+
+    after["panes"].pop("w1:p1")
+    queue_env.save(after)
+    resumed = queue_env.call(*args, pane_id=new_pane["pane_id"])
+    assert (resumed["status"], resumed["next"]) == ("ok", "advance")
+    saved = json.loads(state_file.read_text())
+    owner = saved["owner"]
+    assert owner["pane_id"] == new_pane["pane_id"]
+    assert owner["terminal_id"] == new_pane["terminal_id"]
+    assert json.loads(owner["session"]) == new_pane["agent_session"]
+    transfers = [e for e in saved["events"] if e["action"] == "owner_transferred"]
+    assert transfers[:-1] == transfers_before
+    assert transfers[-1]["previous"] == before["owner"]
+    assert transfers[-1]["current"] == owner
+    assert saved["attempts"][-1]["absent_child_reason"] == reason
+    assert any(
+        e["action"] == "child_absence_confirmed"
+        and e["attempt"] == attempt["id"]
+        and e["reason"] == reason
+        and e["by"] == owner
+        for e in saved["events"]
+    )
+    assert queue_env.data()["panes"] == after["panes"]
 
 
 def test_success_recovery_cleanup_can_update_main_after_owner_takeover(queue_env: QueueEnv) -> None:
