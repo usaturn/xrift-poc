@@ -312,10 +312,12 @@ def judged_pair() -> tuple[dict[str, Any], dict[str, Any]]:
     return document, candidates_value
 
 
-def test_check_statement_judgments_reports_a_different_to() -> None:
+@pytest.mark.parametrize("endpoint", ["from", "to"])
+def test_check_statement_judgments_rejects_a_different_range(endpoint: str) -> None:
     """別の範囲で作った候補ファイルを使い回しても通ると、今回の修正で変わった文書を確かめない。"""
     document, candidates_value = judged_pair()
-    candidates_value["to"] = HEAD
+    review_findings.check_statement_judgments(document, candidates_value)
+    candidates_value[endpoint] = BASE
     with pytest.raises(review_findings.FindingsError):
         review_findings.check_statement_judgments(document, candidates_value)
 
@@ -404,8 +406,16 @@ REVIEW_MD = f"""- 対象: PR #542 / head {HEAD[:12]} / 2026-10-04
 
 def test_from_markdown_reads_active_findings_and_unverified_candidates() -> None:
     """読み取りを誤ると、JSON の無いレビュアーの指摘が黙って欠ける・誤読され、確かめも判断もされない。"""
+    title = "空白 と 日本語を含むリンクを誤認する"
+    body = "条件: 参照リンク と 空白。\n\n2 行目の影響も確認する。"
+    summary = "復旧時の owner が残る疑い（未確認）"
+    markdown = (
+        REVIEW_MD.replace("リンクの箇条書きを checkbox と誤認する", title)
+        .replace("条件。", body)
+        .replace("復旧の初期化に失敗したとき owner が残る疑い", summary)
+    )
     value = review_findings.candidates_from_markdown(
-        REVIEW_MD,
+        markdown,
         review_file="claude-opus-5-5.md",
         repository="usaturn/xrift-poc",
         number=542,
@@ -421,6 +431,10 @@ def test_from_markdown_reads_active_findings_and_unverified_candidates() -> None
     assert "confidence" not in second
     assert value["reviewed_head"] == HEAD[:12]
     assert [item["id"] for item in value["unverified_candidates"]] == ["U-1"]
+    assert first["title"] == title
+    expected_body = markdown.split(f"### H-1: {title}【検証済み】\n", 1)[1].split("\n## Medium", 1)[0].strip()
+    assert first["raw"] == expected_body
+    assert value["unverified_candidates"][0]["summary"] == summary
 
 
 @pytest.mark.parametrize(
@@ -469,6 +483,19 @@ def test_check_pair_reports_what_the_json_dropped(mutation: Callable[[dict[str, 
     with pytest.raises(review_findings.FindingsError) as caught:
         review_findings.check_pair(REVIEW_MD, value)
     assert any(dropped in problem for problem in caught.value.problems), caught.value.problems
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [("severity", "Low"), ("locations", ["tools/別の ファイル.py:99"])],
+)
+def test_check_pair_rejects_a_misread_finding(field: str, replacement: object) -> None:
+    """重大度・位置の食い違いを通すと、必須の修正や正しい位置での検証から指摘が黙って外れる。"""
+    value = paired()
+    review_findings.check_pair(REVIEW_MD, value)
+    value["findings"][0][field] = replacement
+    with pytest.raises(review_findings.FindingsError):
+        review_findings.check_pair(REVIEW_MD, value)
 
 
 def test_cli_check_pair_fails_when_the_json_drops_a_finding(tmp_path: Path) -> None:
@@ -813,10 +840,18 @@ def test_fix_evidence_rejects_a_check_run_at_another_head() -> None:
         validate_evidence(document, inventory)
 
 
-def test_artifact_claim_requires_executed_generated_evidence() -> None:
-    """成果物の主張を静的な確認だけで成功にできると、生成物を確かめないまま確認済みにする。"""
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [("mode", "static"), ("exit_code", 1), ("artifact", None)],
+)
+def test_artifact_claim_requires_executed_generated_evidence(field: str, replacement: object) -> None:
+    """失敗した実行や生成物の無い証拠を成功として通すと、確かめていない成果物を確認済みにする。"""
     document, inventory = evidence_pair()
-    document["fix_evidence"]["claims"][0]["checks"][0]["mode"] = "static"
+    validate_evidence(document, inventory)
+    checks = document["fix_evidence"]["claims"][0]["checks"]
+    checks[0][field] = replacement
+    if field == "exit_code":
+        checks.append(evidence_check())
     with pytest.raises(review_findings.FindingsError):
         validate_evidence(document, inventory)
 
