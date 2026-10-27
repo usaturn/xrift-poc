@@ -11,6 +11,8 @@ from typing import cast
 import pytest
 import yaml
 
+from tools.test_support.repos import create_env_repo
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 AGENTS_SKILLS = REPO_ROOT / ".agents/skills"
 CLAUDE_SKILLS = REPO_ROOT / ".claude/skills"
@@ -31,6 +33,21 @@ def tracked_skill_names() -> list[str]:
     )
     paths = [Path(item.decode()) for item in result.stdout.split(b"\0") if item]
     return sorted({path.parts[2] for path in paths if len(path.parts) > 3})
+
+
+def test_tracked_skill_names_includes_a_skill_with_only_skill_md(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SKILL.md 単独のスキルを探索から落とすと、frontmatter が壊れても検査を黙ってすり抜ける。"""
+    root = create_env_repo(tmp_path / "env", copy_paths=()).root
+    skill = root / ".agents" / "skills" / tmp_path.name
+    skill.mkdir(parents=True)
+    skill_md = skill / "SKILL.md"
+    skill_md.write_text(f"---\nname: {skill.name}\ndescription: 探索するスキル\n---\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "add", str(skill_md.relative_to(root))], check=True, capture_output=True)
+    monkeypatch.setattr(f"{__name__}.REPO_ROOT", root)
+
+    assert skill.name in tracked_skill_names()
 
 
 def unified_names() -> list[str]:
