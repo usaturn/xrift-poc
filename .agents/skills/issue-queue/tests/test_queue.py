@@ -1,4 +1,5 @@
 import fcntl
+import json
 import subprocess
 import sys
 import time
@@ -116,6 +117,94 @@ def test_lost_start_response_recovers_session_and_submits_only_once(queue_env: Q
     calls = queue_env.data()["calls"]
     assert sum(c[:3] == ["herdr", "agent", "start"] for c in calls) == 1
     assert sum(c[:3] == ["herdr", "agent", "prompt"] for c in calls) == 1
+
+
+def test_prompt_response_loss_waits_for_ack_without_resending(queue_env: QueueEnv) -> None:
+    """配達済み prompt の応答喪失を未送信と扱い、同じ依頼を子へ重ねて送る。"""
+    file = queue_env.init_file(kind="codex")
+    request = json.loads(file.read_text())
+    authorization = "  #11 の調査を許可。\n  外部への公開は含めない。  "
+    request["policy"]["authorization"] = authorization
+    file.write_text(json.dumps(request, ensure_ascii=False))
+    run = queue_env.call("init", "--input", str(file))["run_dir"]
+    data = queue_env.data()
+    data["fail_after"] = "herdr agent prompt"
+    queue_env.save(data)
+
+    failed = queue_env.call("launch", "--run", run, code=3)
+    attempt = failed["run"]["attempts"][-1]
+    assert attempt["launch"] == "submitting"
+    assert attempt["acknowledged"] is False
+    data = queue_env.data()
+    data["fail_after"] = None
+    queue_env.save(data)
+    queue_env.child(attempt, "idle")
+    reconciled = queue_env.call("reconcile", "--run", run)
+    assert reconciled["next"] == "wait"
+    queue_env.call("submit", "--run", run, code=3)
+    acknowledged = queue_env.ack(run, attempt)
+    assert acknowledged["run"]["attempts"][-1]["acknowledged"] is True
+
+    calls = queue_env.data()["calls"]
+    assert sum(c[:3] == ["herdr", "agent", "start"] for c in calls) == 1
+    prompts = [c for c in calls if c[:3] == ["herdr", "agent", "prompt"]]
+    assert len(prompts) == 1
+    assert json.dumps(authorization, ensure_ascii=False) in prompts[0][-1]
+
+
+@pytest.mark.parametrize("attribute", ["pane_id", "terminal_id", "name", "agent"])
+def test_first_ack_without_session_comes_only_from_started_child(queue_env: QueueEnv, attribute: str) -> None:
+    """session 未確定の子と一属性だけ異なる会話の ack を採用し、別の子の作業を今回の依頼に結び付ける。"""
+    run = queue_env.init(kind="codex")
+    attempt = queue_env.launch(run)
+    assert attempt["identity"] is None
+    data = queue_env.data()
+    original = data["panes"].pop(attempt["pane_id"])
+    changed = {**original, attribute: "claude" if attribute == "agent" else original[attribute] + "-other"}
+    data["panes"][changed["pane_id"]] = changed
+    queue_env.save(data)
+    queue_env.call("ack", "--run", run, "--attempt", attempt["id"], pane_id=changed["pane_id"], code=3)
+    saved = queue_env.call("status", "--run", run)["run"]["attempts"][-1]
+    assert saved["acknowledged"] is False
+    assert saved["identity"] is None
+
+    data = queue_env.data()
+    del data["panes"][changed["pane_id"]]
+    data["panes"][attempt["pane_id"]] = original
+    queue_env.save(data)
+    assert queue_env.ack(run, attempt)["run"]["attempts"][-1]["acknowledged"] is True
+
+
+def test_session_change_after_first_ack_is_rejected(queue_env: QueueEnv) -> None:
+    """ack 後の別 session を同じ子と認め、別会話の観測や結果を今回の依頼に採用する。"""
+    run = queue_env.init(kind="codex")
+    attempt = queue_env.launch(run)
+    identity = queue_env.ack(run, attempt)["run"]["attempts"][-1]["identity"]
+    file = queue_env.result(run, attempt, summary="  調査完了。\n  根拠を保存した。  ")
+    data = queue_env.data()
+    child = data["panes"][attempt["pane_id"]]
+    session = child["agent_session"]
+    child["agent_session"] = {**session, "value": session["value"] + "-other"}
+    queue_env.save(data)
+    commands = [
+        ("reconcile", "--run", run),
+        ("ack", "--run", run, "--attempt", attempt["id"]),
+        ("report", "--run", run, "--attempt", attempt["id"], "--input", str(file)),
+    ]
+    for command in commands:
+        caller = "w1:p1" if command[0] == "reconcile" else attempt["pane_id"]
+        queue_env.call(*command, pane_id=caller, code=3)
+        saved = queue_env.call("status", "--run", run)["run"]["attempts"][-1]
+        assert saved["identity"] == identity
+        assert saved["result"] is None
+
+    data = queue_env.data()
+    data["panes"][attempt["pane_id"]]["agent_session"] = session
+    queue_env.save(data)
+    assert queue_env.call(*commands[0])["next"] == "wait"
+    assert queue_env.ack(run, attempt)["run"]["attempts"][-1]["acknowledged"] is True
+    reported = queue_env.call(*commands[2], pane_id=attempt["pane_id"])
+    assert reported["run"]["attempts"][-1]["result"] == json.loads(file.read_text())
 
 
 def test_pane_lookup_failure_after_close_is_not_treated_as_absent(queue_env: QueueEnv) -> None:
@@ -329,9 +418,81 @@ def test_child_starts_with_saved_launch_args(queue_env: QueueEnv, kind: str, arg
         assert passed == args
 
 
-@pytest.mark.parametrize("case", ["child_left", "child_alive", "same_kind_in_pane", "marker_pr", "herdr_failure"])
+@pytest.mark.parametrize("remote_args", [["--remote", "http://127.0.0.1:9000"], ["--remote=http://127.0.0.1:9000"]])
+def test_codex_remote_is_refused_before_init_side_effects(queue_env: QueueEnv, remote_args: list[str]) -> None:
+    """共有 app-server の子を初期化して起動し、別 pane の環境で子の操作を実行させる。"""
+    args = ["-m", "gpt-x", "--search"]
+    file = queue_env.init_file(kind="codex", args=[*args, *remote_args])
+    calls = queue_env.data()["calls"]
+    queue_env.call("init", "--input", str(file), code=3)
+    assert queue_env.data()["calls"] == calls
+    assert not list((queue_env.root / "tmp/agents").glob("issue-queue.*/state.json"))
+    run = queue_env.init(kind="codex", args=args)
+    assert queue_env.launch(run)["launch"] == "submitted"
+
+
+@pytest.mark.parametrize("location", ["local", "remote"])
+def test_unreleased_claim_blocks_launch_before_child_side_effects(queue_env: QueueEnv, location: str) -> None:
+    """未解放 claim を無視して子を起動し、claim の所有者と同じ Issue の作業を重ねる。"""
+    run = queue_env.init()
+    before = queue_env.call("status", "--run", run)["run"]["attempts"]
+    panes = queue_env.data()["panes"]
+    claim = "refs/heads/agent-claims/issue-11-other"
+    head = queue_env.git("rev-parse", "HEAD")
+    if location == "local":
+        queue_env.git("update-ref", claim, head)
+    else:
+        queue_env.git("push", str(queue_env.remote), f"{head}:{claim}")
+    blocked = queue_env.call("launch", "--run", run, code=3)
+    assert blocked["run"]["attempts"] == before
+    assert queue_env.data()["panes"] == panes
+    assert not any(
+        c[:3] in (["herdr", "pane", "split"], ["herdr", "agent", "start"], ["herdr", "agent", "prompt"])
+        for c in queue_env.data()["calls"]
+    )
+    if location == "local":
+        queue_env.git("update-ref", "-d", claim, head)
+    else:
+        queue_env.git("push", str(queue_env.remote), f":{claim}")
+    assert queue_env.launch(run)["launch"] == "submitted"
+
+
+def test_unconfirmed_open_pr_blocks_launch_before_child_side_effects(queue_env: QueueEnv) -> None:
+    """未確認の open PR があるのに子を起動し、別の作業と競合する変更や PR を重ねる。"""
+    run = queue_env.init()
+    before = queue_env.call("status", "--run", run)["run"]["attempts"]
+    data = queue_env.data()
+    panes = data["panes"]
+    data["prs"] = [
+        {
+            "number": 100,
+            "url": "https://github.com/usaturn/xrift-poc/pull/100",
+            "html_url": "https://github.com/usaturn/xrift-poc/pull/100",
+            "state": "OPEN",
+            "body": "  別の会話の変更。\n  競合は未確認。  ",
+            "head": {"sha": queue_env.git("rev-parse", "HEAD"), "ref": "feat/issue-11-other"},
+            "base": {"ref": "main"},
+        }
+    ]
+    queue_env.save(data)
+    blocked = queue_env.call("launch", "--run", run, code=3)
+    assert blocked["run"]["attempts"] == before
+    assert queue_env.data()["panes"] == panes
+    assert not any(
+        c[:3] in (["herdr", "pane", "split"], ["herdr", "agent", "start"], ["herdr", "agent", "prompt"])
+        for c in queue_env.data()["calls"]
+    )
+    data = queue_env.data()
+    data["prs"] = []
+    queue_env.save(data)
+    assert queue_env.launch(run)["launch"] == "submitted"
+
+
+@pytest.mark.parametrize(
+    "case", ["child_left", "child_alive", "same_kind_in_pane", "marker_pr", "herdr_failure", "owner_alive"]
+)
 def test_abandon_accepts_only_unacknowledged_attempt_whose_child_is_gone(queue_env: QueueEnv, case: str) -> None:
-    """子が残る・照会に失敗する・子の PR がある attempt を閉じ、次の launch で同じ工程の子と PR を重ねる。"""
+    """子・PR・旧 owner が残る attempt を閉じ、同じ工程の子を重ねるか元の会話の管理状態を失う。"""
     # child_leftだけを受け付ける。他のcaseはchild_leftから条件を1つだけ変える。
     run = queue_env.init(kind="codex")
     attempt = queue_env.launch(run)
@@ -351,10 +512,19 @@ def test_abandon_accepts_only_unacknowledged_attempt_whose_child_is_gone(queue_e
     queue_env.save(data)
     if case == "marker_pr":
         queue_env.merge(attempt, close=False)
+    caller = "w1:p1"
+    if case == "owner_alive":
+        caller = "w1:p9"
+        data = queue_env.data()
+        data["panes"][caller] = pane(caller, "other-controller-session")
+        queue_env.save(data)
+    panes = queue_env.data()["panes"]
     accepted = case == "child_left"
-    queue_env.call("abandon", "--run", run, "--reason", "子の停止を確認", code=0 if accepted else 3)
+    reason = "  子の停止を確認。\n  同じ工程をやり直す。  "
+    queue_env.call("abandon", "--run", run, "--reason", reason, pane_id=caller, code=0 if accepted else 3)
     saved = queue_env.call("status", "--run", run)["run"]["attempts"][-1]
-    assert (saved["closed"], saved["abandon_reason"]) == ((True, "子の停止を確認") if accepted else (False, None))
+    assert (saved["closed"], saved["abandon_reason"]) == ((True, reason) if accepted else (False, None))
+    assert queue_env.data()["panes"] == panes
 
 
 def stop_child(queue_env: QueueEnv, run: str, attempt: dict[str, Any], **overrides: Any) -> None:
@@ -363,9 +533,9 @@ def stop_child(queue_env: QueueEnv, run: str, attempt: dict[str, Any], **overrid
     queue_env.child(attempt, "done")
 
 
-@pytest.mark.parametrize("case", ["stopped", "success", "child_working", "marker_pr"])
+@pytest.mark.parametrize("case", ["stopped", "success", "child_working", "marker_pr", "owner_alive"])
 def test_retry_accepts_only_stopped_child_with_finished_work(queue_env: QueueEnv, case: str) -> None:
-    """動いている子・成功した子・PR のある attempt を閉じ、同じ工程の子と PR を重ねる。"""
+    """動く子・成功・PR・旧 owner のある attempt を閉じ、作業を重ねるか元の会話の管理状態を失う。"""
     # stoppedだけを受け付ける。他のcaseはstoppedから条件を1つだけ変える。
     run = queue_env.init()
     attempt = queue_env.launch(run)
@@ -380,10 +550,19 @@ def test_retry_accepts_only_stopped_child_with_finished_work(queue_env: QueueEnv
         queue_env.child(attempt, "working")
     if case == "marker_pr":
         queue_env.merge(attempt, close=False)
+    caller = "w1:p1"
+    if case == "owner_alive":
+        caller = "w1:p9"
+        data = queue_env.data()
+        data["panes"][caller] = pane(caller, "other-controller-session")
+        queue_env.save(data)
+    panes = queue_env.data()["panes"]
     accepted = case == "stopped"
-    queue_env.call("retry", "--run", run, "--reason", "子の停止を確認", code=0 if accepted else 3)
+    reason = "  子の停止を確認。\n  同じ工程をやり直す。  "
+    queue_env.call("retry", "--run", run, "--reason", reason, pane_id=caller, code=0 if accepted else 3)
     saved = queue_env.call("status", "--run", run)["run"]["attempts"][-1]
-    assert (saved["closed"], saved["retry_reason"]) == ((True, "子の停止を確認") if accepted else (False, None))
+    assert (saved["closed"], saved["retry_reason"]) == ((True, reason) if accepted else (False, None))
+    assert queue_env.data()["panes"] == panes
 
 
 def test_retry_continues_followup_without_reposting(queue_env: QueueEnv) -> None:
@@ -553,18 +732,29 @@ def lose_split_response(queue_env: QueueEnv, run: str) -> None:
     queue_env.save(data)
 
 
-@pytest.mark.parametrize("case", ["settled_result", "background_running_done"])
+@pytest.mark.parametrize("case", ["settled_result", "background_running_done", "owner_alive"])
 def test_end_accepts_only_run_whose_child_is_stopped(queue_env: QueueEnv, case: str) -> None:
-    """バックグラウンドの処理で再開しうる子が残る run を終え、監視の無い子が作業を続ける。"""
+    """再開しうる子や旧 owner の残る run を終え、監視の無い作業や元の会話の管理状態の喪失を残す。"""
     # settled_resultだけを受け付ける。background_running_doneは結果のバックグラウンドの停止の報告だけを偽にする。
     run = queue_env.init()
     attempt = queue_env.launch(run)
     queue_env.ack(run, attempt)
-    stop_child(queue_env, run, attempt, background_stopped=case == "settled_result")
-    reason = "子の停止を確認。\n続けられないので終える"
+    stop_child(queue_env, run, attempt, background_stopped=case != "background_running_done")
+    caller = "w1:p1"
+    if case == "owner_alive":
+        caller = "w1:p9"
+        data = queue_env.data()
+        data["panes"][caller] = pane(caller, "other-controller-session")
+        queue_env.save(data)
+    panes = queue_env.data()["panes"]
+    before = queue_env.call("status", "--run", run)["run"]["attempts"][-1]
+    reason = "  子の停止を確認。\n  続けられないので終える。  "
     accepted = case == "settled_result"
-    end_run(queue_env, run, reason, code=0 if accepted else 3)
-    assert queue_env.call("status", "--run", run)["run"]["ended_reason"] == (reason if accepted else None)
+    queue_env.call("end", "--run", run, "--reason", reason, pane_id=caller, code=0 if accepted else 3)
+    saved = queue_env.call("status", "--run", run)["run"]
+    assert saved["ended_reason"] == (reason if accepted else None)
+    assert saved["attempts"][-1] == before
+    assert queue_env.data()["panes"] == panes
 
 
 def test_ended_run_refuses_progress(queue_env: QueueEnv) -> None:
