@@ -274,22 +274,24 @@
       "id": 22,
       "name": "no-copy-of-an-existing-rule",
       "prompt": "採用した High の修正について、レビュアーは「export に空入力の検査を新しく書く」を勧めている。同じ判定を持つ validate_payload() が src/inputs.py にあり、import が使っている。修正方針を決めて。",
-      "expected_output": "Reuse validate_payload() instead of adding another copy; any docstring claiming the same rule as import is backed by a test that shows they agree.",
+      "expected_output": "validate_payload()を再利用し、同じ規則という主張の裏付け方法はAGENTS.mdのテスト採用基準で決める。一致しないと黙って損害が残る実処理には最小の挙動テスト、文面だけの変更や損害前にエラーで止まる場合には代替確認を選べる。",
       "files": ["evals/decision-packet.md"],
       "expectations": [
-        "The plan aligns with the existing validate_payload() rather than adding a fourth copy of the rule.",
-        "A statement that export uses the same rule as import comes with a test that shows they agree."
+        "既存のvalidate_payload()へ揃え、同じ判定の写しを増やさない。",
+        "一致しないと何が黙って壊れるかを示し、採用基準に当たる場合だけ一致する挙動を最小の境界テストで守る。",
+        "文面だけの更新や損害が残る前の例外停止では、参照・構造・実行等の代替確認を認め、常設テストが無いことだけで不合格にしない。docstringの文字列一致は要求しない。"
       ]
     },
     {
       "id": 23,
       "name": "rejections-keep-accepting-real-inputs",
       "prompt": "採用した修正は、空の入力を拒否する検査を足す。修正計画に何を書くか。",
-      "expected_output": "The Spec lists real inputs that must keep being accepted (multi-line free text, whitespace inside content, other real shapes) and the plan tests them.",
+      "expected_output": "受け入れ続ける実入力（複数行自由文・内容中の空白・非ASCII等）をSpecへ列挙し、その入力が壊れたときの損害からテスト要否を決める。黙った欠落には最小の挙動テスト、損害前に検証エラーで止まるだけなら実行等の代替確認を選べる。",
       "files": [],
       "expectations": [
         "The Spec names the real inputs that must stay accepted after the new rejection.",
-        "The verification includes tests for those accepted inputs, not only for the rejection."
+        "拒否だけでなく受け入れ続ける入力の確認方法を示す。テストにするかはAGENTS.mdの採用基準で判断し、黙った入力欠落等を守る場合は最小の境界テストを要求する。",
+        "損害が残る前に検証エラーで止まるだけの場合は実入力での実行等を認め、常設テストを省いたことだけで不合格にしない。"
       ]
     },
     {
@@ -436,12 +438,13 @@
       "id": 35,
       "name": "suggested-fix-is-a-hypothesis",
       "prompt": "verify-packet.md の M-1（L-1 と同じ指摘、confirmed）を Fix にする。レビュアーの推奨の修正は「(?!\\() を足して inline link を除く」。修正計画をたてて。",
-      "expected_output": "The planner does not adopt the suggested regex as is; it checks it against the variants the list marks violates (the reference link) and plans a change that covers all of them.",
+      "expected_output": "推奨regexを仮説として全variantsを確認し、reference linkを含むviolatesを全て解消する。常設テストは採用基準に当たる損害の最小境界に絞り、同経路のvariants全件のparametrizeを必須にしない。",
       "files": ["../review-verify/evals/verify-packet.md"],
       "expectations": [
         "The suggested fix is treated as a hypothesis and checked against every variant marked violates.",
         "The planned change and its acceptance criteria include the reference-link variant, not only the reported inline link.",
-        "The plan includes a parametrised test over the variants that fails before the change and passes after it."
+        "全variantsの確認範囲と、常設テストとして残す最小の境界を分ける。同じ経路を通るvariants全件のparametrizeを合格条件にしない。",
+        "黙った欠落等の損害が残る別の分岐はそれぞれ最小の挙動テストで守り、変更前の失敗と変更後の成功を確認する。採用基準に当たらない場合は実行・構造等の代替確認を認める。parametrize自体は禁止しない。"
       ]
     },
     {
@@ -493,6 +496,30 @@
         "既存ゆえ元MediumでSkip、Unverifiedではない。",
         "不足確認と、成立なら既存Highで人の要確認になることを記録する。",
         "他にFix/Hold/Unverifiedが無く、最終化の実確認も済めばno_fix_needed。"
+      ]
+    },
+    {
+      "id": 40,
+      "name": "test-adoption-keeps-alternative-checks",
+      "prompt": "test-adoption-packet.mdのA/B/Dを判断し、候補案を採点する。D1の修正対象でも常設テストが必須か、文面だけの変更をどう確かめるか。",
+      "expected_output": "Aは修正対象のままCLIとCSVの実行確認、Bは定義元と参照の構造確認、Dは受入実入力の列挙と実行確認。採用基準から常設テスト不要と判断した候補を合格にする。",
+      "files": ["evals/test-adoption-packet.md"],
+      "expectations": [
+        "出力・副作用が無い例外停止のAを、テスト不要という理由で修正対象から外さない。",
+        "文面だけのBに文言一致テストを要求せず、用語変更時の形式・参照の整合は確認する。",
+        "Dの受入実入力はSpecに残し、実行等の代替確認があれば常設テスト無しを不合格にしない。"
+      ]
+    },
+    {
+      "id": 41,
+      "name": "test-adoption-keeps-minimum-harm-boundaries",
+      "prompt": "test-adoption-packet.mdのC/E/F/Gを判断し、候補案を採点する。全variantsをparametrizeする提案と、全件テスト不要にする提案の両方がある。",
+      "expected_output": "黙った入力欠落、エラー前の秘密漏出、誤った外部操作には最小の境界テストを要求する。全variantsは確認するが、同じ経路のラベル全件は機械的にテストへ変換しない。",
+      "files": ["evals/test-adoption-packet.md"],
+      "expectations": [
+        "Cの自由記述を変えず保存する挙動と、Eの黙った損害が残る解析分岐を最小の境界テストで守る。E-badはreferenceの確認・修正が欠けるので不合格。",
+        "Fは例外より先にtokenの投稿が済むため、テスト不要の候補を不合格にする。架空tokenとfake投稿先を用い、実外部操作はしない。",
+        "Gの操作先取り違えを最後の関門の最小テストで守り、一律にテスト不要へ広げない。"
       ]
     }
   ]
