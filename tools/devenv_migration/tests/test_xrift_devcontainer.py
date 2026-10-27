@@ -9,6 +9,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 DEVCONTAINER = Path(__file__).resolve().parents[3] / ".devcontainer"
 
 
@@ -45,6 +47,30 @@ def test_initialize_keeps_an_existing_xrift_directory(tmp_path: Path) -> None:
     assert config.read_text(encoding="utf-8") == '{"synthetic":"not-a-secret"}\n'
     assert config.stat().st_mode & 0o777 == 0o600
     assert config.parent.stat().st_mode & 0o777 == 0o755
+
+
+@pytest.mark.parametrize("kind", ["file", "symlink"])
+def test_initialize_preserves_rejected_xrift_paths(tmp_path: Path, kind: str) -> None:
+    """拒否時に ~/.xrift やリンク先を消すと、非0終了でも利用者の設定が黙って失われる。"""
+    home = tmp_path / "空白 home 日本語\n二行目"
+    xrift = home / ".xrift"
+    config = xrift if kind == "file" else home / "既存の設定" / "config.json"
+    payload = '{\n  "synthetic": "not-a-secret",\n  "note": "日本語の合成設定"\n}\n'.encode("utf-8")
+    config.parent.mkdir(parents=True)
+    config.write_bytes(payload)
+    link_target = config.parent.relative_to(home)
+    if kind == "symlink":
+        xrift.symlink_to(link_target, target_is_directory=True)
+
+    result = run_initialize(home)
+
+    assert result.returncode != 0, result.stderr
+    if kind == "symlink":
+        assert xrift.is_symlink()
+        assert xrift.readlink() == link_target
+    assert config.is_file()
+    assert not config.is_symlink()
+    assert config.read_bytes() == payload
 
 
 def _strip_jsonc(text: str) -> str:
