@@ -2,7 +2,8 @@
 
 導入は `set -e` を付けず、外部コマンドを 1 つずつ `if ! ...; then fail` で包む。包みが外れると、
 失敗しても postCreate が成功として終わる。ここでは、欠けたまま黙って進むと損害が残る手順
-（XRift スキルの導入）と、導入がホストのデータ・制作物の作業・利用者の ~/.zshrc を壊さないことを確かめる。
+（XRift スキルの導入）と、導入がホストのデータ・制作物の作業・利用者の ~/.zshrc と models.json を
+壊さないことを確かめる。
 
 `sudo` / `apt` / `npm` / `curl` / `pi` などを fake に差し替えた一時 HOME で、実際にスクリプトを走らせる。
 """
@@ -73,9 +74,38 @@ SUDO = (
     + FAIL_HOOK
     + """\
 printf 'sudo %s\\n' "$*" >> "${FAKE_CALLS}"
-if [ "${1:-}" = "chown" ] && [ -n "${FAKE_SUDO_FIX_CHOWN:-}" ]; then
-    # 実権限の代わりに、chown 成功がもたらす「書き込み可能」状態を再現する。
-    chmod 0755 "${3:-}"
+if [ "${1:-}" = "chown" ]; then
+    # 実権限の代わりに、所有者が変わるパス（再帰なら配下も）を FAKE_CHOWNED に記録し、
+    # FAKE_SUDO_FIX_CHOWN なら chown 成功がもたらす「書き込み可能」状態を再現する。
+    shift
+    recursive=0
+    owner=""
+    targets=()
+    for arg in "$@"; do
+        case "${arg}" in
+        --recursive) recursive=1 ;;
+        --*) ;;
+        -*) [[ "${arg}" == *R* ]] && recursive=1 ;;
+        *)
+            if [ -z "${owner}" ]; then
+                owner="${arg}"
+            else
+                targets+=("${arg}")
+            fi
+            ;;
+        esac
+    done
+    for target in "${targets[@]}"; do
+        if [ -n "${FAKE_CHOWNED:-}" ]; then
+            realpath -- "${target}" >> "${FAKE_CHOWNED}"
+            if [ "${recursive}" = 1 ]; then
+                find "${target}" -mindepth 1 -exec realpath -- {} + >> "${FAKE_CHOWNED}"
+            fi
+        fi
+        if [ -n "${FAKE_SUDO_FIX_CHOWN:-}" ]; then
+            chmod 0755 "${target}"
+        fi
+    done
     exit 0
 fi
 exec "$@"
@@ -276,6 +306,7 @@ def _run_installer(
         "XDG_CONFIG_HOME": str(home / ".config"),
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "FAKE_CALLS": str(tmp_path / "calls.log"),
+        "FAKE_CHOWNED": str(tmp_path / "chowned.log"),
         "FAKE_STUB_DIR": str(stub_dir),
         "FAKE_XRIFT_VERSION": _pinned_version("XRIFT_CLI_VERSION"),
         # fake の `ctx7 --version` の出力。スクリプトが固定した版。
@@ -312,22 +343,27 @@ def test_run_stops_when_the_xrift_skills_install_fails(tmp_path: Path) -> None:
     reason="test -w returns true regardless of mode under euid 0",
 )
 def test_run_recovers_a_non_writable_local_share(tmp_path: Path) -> None:
-    """chown が再帰になると、~/.local/share の下に bind mount したホストのデータの所有者を黙って変える。"""
+    """chown が再帰する・別の場所に及ぶと、~/.local/share の下に bind mount したホストのデータの所有者を
+    黙って変える。"""
     share = tmp_path / "home" / ".local" / "share"
-    share.mkdir(parents=True)
+    # bind mount したホストのデータの代わり
+    host_data = share / "host-mount" / "data.json"
+    host_data.parent.mkdir(parents=True)
+    host_data.write_text("{}\n")
     share.chmod(0o555)
     try:
         result, _ = _run_installer(tmp_path, sudo_fix_chown=True)
         assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-        calls = (tmp_path / "calls.log").read_text().splitlines()
-        chown_calls = [line for line in calls if line.startswith("sudo chown")]
-        assert chown_calls == [f"sudo chown {os.getuid()}:{os.getgid()} {share}"]
+        # 所有者が変わるのは書き込めなかったディレクトリだけで、配下のホストのデータを含まない
+        chowned = set((tmp_path / "chowned.log").read_text().splitlines())
+        assert chowned == {str(share.resolve())}
     finally:
         share.chmod(0o755)
 
 
 def test_installer_rerun_keeps_product_work_and_user_zshrc(tmp_path: Path) -> None:
-    """items/・worlds/ を作り直す・~/.zshrc を書き直す変更で、制作物の未コミットの作業や利用者の設定を黙って失う。"""
+    """items/・worlds/ を作り直す・~/.zshrc や共有の ~/.pi の models.json を書き直す変更で、
+    制作物の未コミットの作業や利用者の設定を黙って失う。"""
     root = _make_root(tmp_path)
     world = root / "worlds" / "my-world"
     world.mkdir(parents=True)
@@ -336,6 +372,11 @@ def test_installer_rerun_keeps_product_work_and_user_zshrc(tmp_path: Path) -> No
     zshrc = tmp_path / "home" / ".zshrc"
     zshrc.parent.mkdir(parents=True)
     zshrc.write_text("# 利用者の設定\n", encoding="utf-8")
+    # 導入は無いときだけ雛形を置く。bind mount した ~/.pi の、利用者が足した provider の定義
+    models = tmp_path / "home" / ".pi" / "agent" / "models.json"
+    models.parent.mkdir(parents=True)
+    user_models = '{"providers": {"利用者の provider": {}}}\n'
+    models.write_text(user_models, encoding="utf-8")
 
     # 導入はコンテナを作るたびに実 checkout で走る。2 回目はリビルドに当たる。
     for attempt in ("first", "second"):
@@ -346,3 +387,4 @@ def test_installer_rerun_keeps_product_work_and_user_zshrc(tmp_path: Path) -> No
 
     assert (world / "draft.txt").read_text(encoding="utf-8") == "未コミットの作業\n"
     assert zshrc.read_text(encoding="utf-8").startswith("# 利用者の設定\n")
+    assert models.read_text(encoding="utf-8") == user_models
