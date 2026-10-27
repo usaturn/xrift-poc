@@ -11,7 +11,7 @@
 | --- | --- | --- | --- | --- |
 | Claude Code | Bash `run_in_background: true` の完了通知（終了コードを含む）。サブエージェントは `Agent` の完了通知 | 既知の PID を `kill -0` | 完了通知やツール結果が返す出力ファイル path を `Read`。`verify-devenv.sh` はログ path を印字しないので、起動時に出力先を自分で決める | 下の参考実装を `run_in_background: true` に渡す。進捗を都度イベントとして受け取るときだけ `Monitor` を使う |
 | Devin | バックグラウンド `exec`（`timeout: 0`、または既定の自動バックグラウンド化）で起動した対象を `get_output` で待つ。`get_output` は対象プロセスの終了で即復帰し、終了コードは出力末尾の `Exit code: <n>` で確認する。1 回の待機上限は約 280 秒のため、タイムアウトしたら呼び直す。非同期の完了通知が届くのは `run_subagent` のサブエージェント（`<subagent_completion_notification>`）だけであり、シェルプロセスの終了は push されない | 既知の PID を `kill -0`（`exec` 経由）。`verify-devenv.sh` の PID 同一性確認はスキル step 3 のまま適用する | 起動時に決めたログ path を `read` で読む。mtime / サイズが必要なら `exec` で `stat` を使う | 下の参考実装をそのままバックグラウンド `exec`（`timeout: 0`）で動かし、その監視シェルを `get_output` で待つ。ループの脱出がそのまま `report exists OR worker is not alive` の解消になる |
-| pi | 完了通知もバックグラウンド実行も無い（`.pi/APPEND_SYSTEM.md`）。PR 修正ループの `loop.py review` は同期で戻るので、bash ツールの foreground で実行し、標準出力の JSON と終了コードを確認する。期限は runner が守る | 生存は runner の監督が保持する。既知の PID は `kill -0`（bash ツール） | `cycle-<n>.json` の `review.output_dir` の下のログを読む。mtime / サイズは bash ツールの `stat`。10 分間隔で 2 回 mtime が変わらなければ stall を報告する | `loop.py review` を foreground で実行する。ターンを占有できない事情があるときは、バックグラウンドに置かず、中断・保持の回収に `loop.py status` と `recover --operator-confirmed-stopped "<確かめた事実>"`（`pr-review-fix-loop` の「止まったとき」）を使う |
+| pi | `subagent` は単発・`tasks` の並列とも同期で、全ての子の終了を待って戻る（`.pi/APPEND_SYSTEM.md`）。バックグラウンド起動や別の完了通知を前提にしない。PR 修正ループの `loop.py review` も bash ツールの foreground で実行し、標準出力の JSON と終了コードを確認する。期限は runner が守る | 生存は runner の監督が保持する。既知の PID は `kill -0`（bash ツール） | `cycle-<n>.json` の `review.output_dir` の下のログを読む。mtime / サイズは bash ツールの `stat`。10 分間隔で 2 回 mtime が変わらなければ stall を報告する | `loop.py review` を foreground で実行する。ターンを占有できない事情があるときは、バックグラウンドに置かず、中断・保持の回収に `loop.py status` と `recover --operator-confirmed-stopped "<確かめた事実>"`（`pr-review-fix-loop` の「止まったとき」）を使う |
 | Cursor | TBD | TBD | TBD | TBD |
 
 ```bash
@@ -29,7 +29,7 @@ done
 | --- | --- | --- |
 | Claude Code | TBD | TBD |
 | Devin | サブエージェント（`run_subagent`）に停止手段が無い。`kill_shell` は `exec` シェルのみが対象 | 起動条件を満たせず常時省略 |
-| pi | 単発サブエージェントは `async: false` の同期起動のみ（`.pi/APPEND_SYSTEM.md`）。バックグラウンド起動と停止ができない | 起動条件を満たせず常時省略 |
+| pi | `subagent` は単発・並列とも同期実行のみ（`.pi/APPEND_SYSTEM.md`）。バックグラウンド起動・期限付き待機・個別の停止・停止確認の操作は提供しない | 起動条件を満たせず常時省略。通常の同期委譲で代用しない |
 | Cursor | TBD | TBD |
 
 ## task_watch による途中の判断と停止
