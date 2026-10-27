@@ -164,7 +164,8 @@ def test_immediate_exit_before_ownership_observation_stops_children(
 
 
 def test_coroutine_cancellation_stops_leader_and_escaped_descendant(tmp_path: Path) -> None:
-    """task の取り消しで finally の停止が飛ばされると、CLI と逃げた子が run の後も黙って動き続ける。"""
+    """S を停止と誤読する・取り消し時の停止が飛ぶと、CLI と逃げた子を生かしたまま停止テストが黙って通る。"""
+    observed: list[_Proc] = []
     code = """import os, subprocess, sys, time
 open('leader.pid','w').write(str(os.getpid()))
 subprocess.Popen([sys.executable, '-u', '-c',
@@ -185,19 +186,32 @@ time.sleep(60)
             )
         )
         await wait_for(tmp_path / "child.pid")
-        await asyncio.sleep(0.1)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, 3)
+        for name in ("leader.pid", "child.pid"):
+            entry = _read_proc(int((tmp_path / name).read_text()))
+            assert entry is not None
+            observed.append(entry)
+        try:
+            # Give the supervisor its observation window, then independently
+            # establish sleeping controls before trusting alive() after the stop.
+            await asyncio.sleep(0.1)
+            async with asyncio.timeout(3):
+                while not all((entry := _read_proc(item.pid)) is not None and entry.state == "S" for item in observed):
+                    await asyncio.sleep(0.01)
+            assert all(alive(item.pid) for item in observed)
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 3)
 
-    asyncio.run(exercise())
-    pids = [int((tmp_path / name).read_text()) for name in ("leader.pid", "child.pid")]
     try:
-        assert all(not alive(pid) for pid in pids)
+        asyncio.run(exercise())
+        assert all(not alive(item.pid) for item in observed)
     finally:
-        for pid in pids:
-            if alive(pid):
-                os.kill(pid, signal.SIGKILL)
+        # Cleanup must not depend on the very alive() classification being tested.
+        for item in observed:
+            current = _read_proc(item.pid)
+            if current is not None and current.starttime == item.starttime and current.state not in ("Z", "X"):
+                os.kill(item.pid, signal.SIGKILL)
 
 
 def test_unconfirmed_stop_is_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
