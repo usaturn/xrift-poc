@@ -15,22 +15,9 @@ class UvCall(TypedDict):
     stage: str
 
 
-def make_minimal_parent_fixture(
+def make_fake_uv(
     tmp_path: Path, failure: str | None = None, pytest_python: str | None = None
-) -> tuple[Path, Path, dict[str, str]]:
-    root = tmp_path / "parent"
-    for part in (
-        "scripts/ci",
-        "tools/devenv/tests",
-        "tools/devenv_migration/tests",
-        "tools/agent_runner/tests",
-        "tools/test_support/tests",
-        ".agents",
-    ):
-        (root / part).mkdir(parents=True)
-    shutil.copy2(SOURCE_ROOT / "scripts/ci/verify-devenv.sh", root / "scripts/ci/verify-devenv.sh")
-    shutil.copy2(SOURCE_ROOT / "tools/devenv/pyproject.toml", root / "tools/devenv/pyproject.toml")
-    shutil.copy2(SOURCE_ROOT / "tools/devenv/uv.lock", root / "tools/devenv/uv.lock")
+) -> tuple[Path, dict[str, str]]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     log = tmp_path / "uv-calls.jsonl"
@@ -52,6 +39,26 @@ def make_minimal_parent_fixture(
     )
     stub.chmod(0o755)
     env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
+    return log, env
+
+
+def make_minimal_parent_fixture(
+    tmp_path: Path, failure: str | None = None, pytest_python: str | None = None
+) -> tuple[Path, Path, dict[str, str]]:
+    root = tmp_path / "parent"
+    for part in (
+        "scripts/ci",
+        "tools/devenv/tests",
+        "tools/devenv_migration/tests",
+        "tools/agent_runner/tests",
+        "tools/test_support/tests",
+        ".agents",
+    ):
+        (root / part).mkdir(parents=True)
+    shutil.copy2(SOURCE_ROOT / "scripts/ci/verify-devenv.sh", root / "scripts/ci/verify-devenv.sh")
+    shutil.copy2(SOURCE_ROOT / "tools/devenv/pyproject.toml", root / "tools/devenv/pyproject.toml")
+    shutil.copy2(SOURCE_ROOT / "tools/devenv/uv.lock", root / "tools/devenv/uv.lock")
+    log, env = make_fake_uv(tmp_path, failure=failure, pytest_python=pytest_python)
     return root, log, env
 
 
@@ -70,15 +77,20 @@ def read_calls(log: Path) -> list[UvCall]:
     return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
 
 
-def test_runner_stops_at_a_failing_middle_stage(tmp_path: Path) -> None:
-    """途中の段階（ruff・pyright）の失敗を握りつぶし、CI が green になる。"""
-    root, log, env = make_minimal_parent_fixture(tmp_path, failure="pyright")
-    result = run_runner(root, env=env, cwd=root)
+def test_runner_fails_and_stops_at_any_failing_stage(tmp_path: Path) -> None:
+    """どの段階（uv sync・ruff・pyright・最後の pytest）の失敗を握りつぶしても、CI が green で壊れたコードを通す。"""
+    root, log, env = make_minimal_parent_fixture(tmp_path / "pass")
+    passing = run_runner(root, env=env, cwd=root)
+    assert passing.returncode == 0, passing.stderr
+    # 段階の名前を写さず、成功した実行で呼ばれた段階を、それぞれ失敗させる。
     stages = [call["stage"] for call in read_calls(log)]
-    assert result.returncode != 0
-    # 失敗した段階で止まり、後の段階（pytest）へ進まない。
-    assert stages[-1] == "pyright"
-    assert "pytest" not in stages
+    assert stages
+    for index, stage in enumerate(stages):
+        root, log, env = make_minimal_parent_fixture(tmp_path / f"fail-{index}", failure=stage)
+        result = run_runner(root, env=env, cwd=root)
+        assert result.returncode != 0, stage
+        # 失敗した段階で止まり、後の段階へ進まない。
+        assert [call["stage"] for call in read_calls(log)] == stages[: index + 1], stage
 
 
 def test_runner_scopes_conftest_fixtures_to_their_directory(tmp_path: Path) -> None:
