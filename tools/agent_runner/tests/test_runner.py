@@ -22,6 +22,7 @@ from tools.agent_runner.models import (
     Diagnosis,
     Identity,
     Receipt,
+    Request,
     Role,
     Runtime,
     State,
@@ -238,6 +239,77 @@ def configuration(agents: list[str] | None = None, fallback: list[str] | None = 
             "audit": Workflow(assignments={"inspect": Assignment(agents=agents or ["a"], fallback=fallback or [])})
         },
     )
+
+
+@pytest.mark.parametrize("stop_confirmed", [False, True])
+def test_preparation_stop_evidence_blocks_fallback(
+    repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stop_confirmed: bool
+) -> None:
+    """git/hook の停止未確認を落とすと、呼び出し側が生きている準備の領域を回収し、別担当を黙って起動する。"""
+    hook = repository / ".git/hooks/post-checkout"
+    hook.write_text("#!/bin/sh\nprintf '%s' 'hook completed' > preparation-marker\n")
+    hook.chmod(0o700)
+    original = workspace.execute
+
+    async def preparation(*args: object, **kwargs: object) -> process.ProcessResult:
+        result = await original(*args, **kwargs)  # type: ignore[arg-type]
+        assert result.stop_confirmed and result.exit_code == 0
+        return process.ProcessResult(result.state, result.exit_code, stop_confirmed, result.elapsed_seconds)
+
+    monkeypatch.setattr(workspace, "execute", preparation)
+    config = configuration(fallback=["b"])
+    assigned = config.workflows["audit"].assignments["inspect"]
+    batch = run_workflow(
+        config,
+        "audit",
+        "準備の停止を確認する",
+        repository,
+        output_dir=tmp_path / "run",
+        adapter_loader=lambda _: FakeAdapter({"a": {"missing": True}}),
+    )
+    attempts = batch.results[0].attempts
+    expected = assigned.agents + assigned.fallback if stop_confirmed else assigned.agents
+    assert [item.agent_id for item in attempts] == expected
+    assert attempts[0].stop_confirmed is stop_confirmed
+    assert batch.checkout_isolated is stop_confirmed
+    if stop_confirmed:
+        assert batch.state == "success"
+    else:
+        item = attempts[0]
+        assert batch.state != "success"
+        assert item.work_dir is not None and (item.work_dir / "preparation-marker").read_text() == "hook completed"
+        assert item.stdout_path is not None and item.stdout_path.is_file()
+        assert item.stderr_path is not None and item.stderr_path.is_file()
+        assert item.request_path is not None and not item.request_path.exists()
+
+
+@pytest.mark.parametrize("writes", [False, True])
+def test_request_preserves_scope_and_multiline_prompt(repository: Path, tmp_path: Path, writes: bool) -> None:
+    """作業先・書き込み条件・例外や自由記述が欠けると、担当が黙って別の範囲や依頼で作業する。"""
+    prompt = " \t日本語の依頼 '引用' \"二重引用\" $HOME; $(echo forbidden)\n次の行 & | <>\n末尾の空白 \t\n"
+    exceptions = [f"Save the review to {tmp_path / '結果 with spaces.md'}", "記録の追記だけを許可する"]
+    config = configuration()
+    config.roles["inspect"].writes = writes
+    batch = run_workflow(
+        config,
+        "audit",
+        prompt,
+        repository,
+        output_dir=tmp_path / "run",
+        write_exceptions=exceptions,
+        adapter_loader=lambda _: FakeAdapter(),
+    )
+    assert batch.state == "success"
+    item = batch.results[0].attempts[0]
+    assert item.request_path is not None
+    request = Request.model_validate_json(item.request_path.read_bytes())
+    assert request.work_dir == item.work_dir
+    assert request.prompt.endswith(prompt)
+    instructions = request.prompt.removesuffix(prompt)
+    assert str(item.work_dir) in instructions
+    assert f"writes={writes}" in instructions
+    assert all(exception in instructions for exception in exceptions)
+    assert isinstance(item.payload, dict) and item.payload["prompt"] == request.prompt
 
 
 def test_unavailable_registered_checkout_is_an_outside_change(repository: Path, tmp_path: Path) -> None:
