@@ -121,7 +121,7 @@ Claude Code は `~/.claude/projects/<cwd スラグ>/` で会話履歴を管理�
 `zsh -l`（非インタラクティブ）は `.zshrc` を読まないため `herdrstart` が走らない。
 プローブシェルの残留と、それによる `session.json` の汚染がなくなる。
 
-`.zshrc` にしか定義されていない PATH（bun、grok、opencode など）はプローブで採取できなく
+`.zshrc` にしか定義されていない PATH（bun、opencode など）はプローブで採取できなく
 なるが、現状はプローブが herdr でハングして何も採取できていないため悪化しない。
 
 ### 3. `.devcontainer/install_beforehand.bash` — 追記順序を直す

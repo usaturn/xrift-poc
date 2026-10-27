@@ -5,7 +5,6 @@ set -e
 mkdir -p \
   "${HOME}/.codex" \
   "${HOME}/.claude" \
-  "${HOME}/.grok" \
   "${HOME}/.config/gh" \
   "${HOME}/.pi" \
   "${HOME}/.cursor" \

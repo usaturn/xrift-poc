@@ -101,7 +101,6 @@ for dir in \
     "${HOME}/.config/gcloud" \
     "${HOME}/.claude" \
     "${HOME}/.codex" \
-    "${HOME}/.grok" \
     "${HOME}/.pi" \
     "${HOME}/.cursor" \
     "${HOME}/.xrift"; do
@@ -186,14 +185,6 @@ done
 step "Installing the Codex CLI"
 if ! npm install -g @openai/codex@latest; then
     fail "Codex CLI installation failed."
-fi
-
-step "Installing Grok Build"
-if ! (
-    set -o pipefail
-    curl -fsSL https://x.ai/cli/install.sh | bash
-); then
-    fail "Grok Build installation failed."
 fi
 
 step "Installing the Cursor CLI"
@@ -417,10 +408,10 @@ if ! zsh scripts/setup_pi_superagents.zsh --if-absent; then
 fi
 
 step "Installing the shared skills (herdr / find-skills)"
-if ! npx -y skills add herdrdev/herdr --skill herdr -g -y -a claude-code -a pi -a grok; then
+if ! npx -y skills add herdrdev/herdr --skill herdr -g -y -a claude-code -a pi; then
     fail "Failed to install the herdr skill."
 fi
-if ! npx -y skills add vercel-labs/skills@find-skills -g -y -a claude-code -a pi -a grok; then
+if ! npx -y skills add vercel-labs/skills@find-skills -g -y -a claude-code -a pi; then
     fail "Failed to install the find-skills skill."
 fi
 

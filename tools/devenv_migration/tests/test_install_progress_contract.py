@@ -174,7 +174,6 @@ while [ "$#" -gt 0 ]; do
 done
 case "${url}" in
 *claude.ai*) cat "${FAKE_STUB_DIR}/claude.sh" ;;
-*x.ai*) cat "${FAKE_STUB_DIR}/grok.sh" ;;
 *cursor.com*) cat "${FAKE_STUB_DIR}/cursor.sh" ;;
 *devin.ai*) cat "${FAKE_STUB_DIR}/devin.sh" > "${output}" ;;
 *herdr.dev*) cat "${FAKE_STUB_DIR}/herdr.sh" ;;
@@ -261,7 +260,6 @@ def _run_installer(
         _write_executable(bin_dir / name, body)
     for name, tool in (
         ("claude.sh", "claude"),
-        ("grok.sh", "grok"),
         ("cursor.sh", "cursor-agent"),
         ("devin.sh", "devin"),
         ("herdr.sh", "herdr"),

@@ -545,9 +545,7 @@ def parser() -> argparse.ArgumentParser:
     commands = root.add_subparsers(dest="command", required=True)
     start = commands.add_parser("prepare")
     start.add_argument("--pr", required=True)
-    start.add_argument(
-        "--runtime", required=True, choices=("claude-code", "devin", "pi", "codex", "cursor", "grok-build")
-    )
+    start.add_argument("--runtime", required=True, choices=("claude-code", "devin", "pi", "codex", "cursor"))
     start.add_argument("--model-name")
     start.add_argument("--request")
     start.add_argument("--review-commit")

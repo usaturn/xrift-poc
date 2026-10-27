@@ -7,7 +7,7 @@ from typing import Annotated, Literal, cast
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator
 
-Runtime = Literal["claude-code", "devin", "pi", "codex", "cursor", "grok-build"]
+Runtime = Literal["claude-code", "devin", "pi", "codex", "cursor"]
 ResultShape = Literal["json", "text"]
 State = Literal[
     "success",

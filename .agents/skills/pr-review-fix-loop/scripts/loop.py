@@ -58,7 +58,7 @@ from tools.agent_runner.hooks import run_after_run  # noqa: E402
 SCHEMA = "pr-review-fix-loop/v1"
 HELPER = Path(__file__).resolve()
 DEFAULT_TEMPLATE = ROOT / ".devcontainer/agent-runner.toml"
-RUNTIMES = ("claude-code", "devin", "pi", "codex", "cursor", "grok-build")
+RUNTIMES = ("claude-code", "devin", "pi", "codex", "cursor")
 FIX_ROLES = ("implement", "self-review", "fix-check")
 ROLES = ("inspect", *FIX_ROLES)
 OUTCOMES = ("fixes_pushed", "no_fix_needed", "stopped")

@@ -55,7 +55,6 @@ _MODULES = {
     "pi": "pi",
     "codex": "codex",
     "cursor": "cursor",
-    "grok-build": "grok_build",
 }
 
 

@@ -229,7 +229,7 @@ xrift check --build
 
 - スキルの本体は `.agents/skills/<name>/` に 1 つだけ置き、日本語で書く（frontmatter の `description` を含む）。コードブロック・識別子・コマンド・パスは原文のまま書く
 - `.claude/skills/<name>` は `../../.agents/skills/<name>` への相対シンボリックリンクにする。Claude Code は `.claude/skills/` しか読まない
-- `.devin/skills` などランタイム専用の置き場所に写しを置かない。Pi・Codex・Devin は `.agents/skills` を読む。Devin・Cursor CLI・Grok Build は `.claude/skills` も読むが、リンクなので同じ実体である。Devin はリンクを 1 件にまとめ、`/agents:<name>` のような接頭辞を付けない
+- `.devin/skills` などランタイム専用の置き場所に写しを置かない。Pi・Codex・Devin は `.agents/skills` を読む。Devin・Cursor CLI は `.claude/skills` も読むが、リンクなので同じ実体である。Devin はリンクを 1 件にまとめ、`/agents:<name>` のような接頭辞を付けない
 - `.pi/settings.json` の `skills` に、このリポジトリのスキルを足さない
 - ランタイムによって違う部分は、同じ `SKILL.md` の中で「ランタイムごとの違い」節に分けて書く。frontmatter はランタイム固有のキー（Devin の `subagent` など）を併記し、その意味を同じ節に書く。`allowed-tools` は Claude Code と Devin が読むが、どちらも一覧のツールを許可の確認なしで実行するだけで、使えるツールを制限しない
 - スキルのテストは `.agents/skills/<name>/` の実体のパスだけを読む。置き場所は `.agents/tests/test_skill_layout.py` がすべてのスキルについて検査する。一本化していないスキルは同ファイルの `PENDING` に載っており、一本化する変更で外す
