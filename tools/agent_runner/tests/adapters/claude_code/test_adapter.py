@@ -159,3 +159,20 @@ def test_skill_tool_use_records_file_hash(context: AdapterContext) -> None:
     outcome = _collect(context, init, use, _result())
     expected = "sha256:" + hashlib.sha256(skill.read_bytes()).hexdigest()
     assert outcome.identity.skill_versions == {"find-docs": expected}
+
+
+def test_skill_only_under_work_dir_is_not_recorded(context: AdapterContext) -> None:
+    """作業ディレクトリの直下の同名の SKILL.md を、Skill で使ったスキルの版として黙って記録する。"""
+    stray = context.work_dir / "localskill" / "SKILL.md"
+    stray.parent.mkdir(parents=True)
+    stray.write_text("---\nname: localskill\n---\nbody\n", encoding="utf-8")
+    use: dict[str, object] = {
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "model": "m",
+            "content": [{"type": "tool_use", "name": "Skill", "input": {"skill": "localskill"}}],
+        },
+    }
+    outcome = _collect(context, _init(), use, _result())
+    assert outcome.identity.skill_versions == {}
