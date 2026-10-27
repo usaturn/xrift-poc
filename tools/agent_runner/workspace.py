@@ -96,15 +96,6 @@ def git_common_dir(repository: Path) -> Path:
     return Path(os.fsdecode(result.rstrip(b"\n"))).resolve()
 
 
-def create_worktree(repository: Path, revision: str, destination: Path) -> Path:
-    """Create a new detached checkout; retain it even if creation fails partway."""
-    commit = resolve_revision(repository, revision)
-    if destination.exists() or destination.is_symlink():
-        raise WorkspaceError()
-    _git(repository, "worktree", "add", "--detach", "--", str(destination.absolute()), commit)
-    return destination
-
-
 # A concurrent `git worktree add` in the same repository creates its commondir before
 # writing it. Listing the registered worktrees in between reads it empty and dies with
 # "failed to read .../worktrees/<id>/commondir: Success" (exit 128) before creating

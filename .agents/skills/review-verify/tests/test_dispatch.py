@@ -467,9 +467,9 @@ def test_accept_does_not_attribute_an_unauditable_checkout_to_content_changes(
 ) -> None:
     """実行中に監査できなくなった既存の checkout を変更なしとして受け取ると、外部担当が他の checkout を消した・
     書き換えた run を合格として保存する。"""
-    from tools.agent_runner.workspace import create_worktree
+    from tools.test_support.repos import create_owned_worktree
 
-    external = create_worktree(scenario.root, "HEAD", tmp_path / "external")
+    external = create_owned_worktree(scenario.root, tmp_path, name="external")
 
     class Unauditable(PayloadAdapter):
         def collect(self, context: AdapterContext, stdout_path: Path, stderr_path: Path) -> AdapterOutcome:
