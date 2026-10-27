@@ -47,12 +47,11 @@ def sandbox(tmp_path: Path) -> tuple[Path, Path, Path]:
     cli.parent.mkdir(parents=True)
     cli.write_text(
         f"#!{sys.executable}\n"
-        "import json, os, sys\n"
-        "print(json.dumps({'args':sys.argv[1:], 'cwd':os.getcwd(), 'home':os.environ['HOME'],\n"
-        "'project':os.environ.get('GOOGLE_CLOUD_PROJECT'), 'location':os.environ.get('GOOGLE_CLOUD_LOCATION'),\n"
-        "'adc':os.environ.get('GOOGLE_APPLICATION_CREDENTIALS'), 'other':os.environ.get('TEST_UNRELATED'),\n"
+        "import json, os\n"
+        "print(json.dumps({'project':os.environ.get('GOOGLE_CLOUD_PROJECT'),\n"
+        "'location':os.environ.get('GOOGLE_CLOUD_LOCATION'),\n"
+        "'adc':os.environ.get('GOOGLE_APPLICATION_CREDENTIALS'),\n"
         "'cloud_key_present':'GOOGLE_CLOUD_API_KEY' in os.environ}))\n"
-        "sys.exit(int(os.environ.get('TEST_PI_EXIT', '0')))\n"
     )
     cli.chmod(0o755)
     (bin_dir / "pi").symlink_to(cli)
@@ -92,10 +91,10 @@ def _env(sandbox: tuple[Path, Path, Path]) -> dict[str, str]:
 
 
 def _run(
-    sandbox: tuple[Path, Path, Path], launcher: str, args: tuple[str, ...] = (), *, extra: dict[str, str] | None = None
+    sandbox: tuple[Path, Path, Path], launcher: str, *, extra: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["zsh", str(DEVCONTAINER / launcher), *args],
+        ["zsh", str(DEVCONTAINER / launcher)],
         cwd=sandbox[2],
         env={**_env(sandbox), **(extra or {})},
         capture_output=True,
@@ -239,7 +238,7 @@ def test_real_namespace_masks_auth_for_parent_and_child_preserving_saved_files(
     home, _, cwd = sandbox
     directory = home / ".pi/agent"
     if agent_dir is not None:
-        expanded = agent_dir.replace("~", str(home), 1) if agent_dir.startswith("~") else agent_dir
+        expanded = agent_dir.replace("~", str(home), 1)
         directory = (cwd / expanded).resolve()
     directory.mkdir(parents=True, exist_ok=True)
     auth = directory / "auth.json"
