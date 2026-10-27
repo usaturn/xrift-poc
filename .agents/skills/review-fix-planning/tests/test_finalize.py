@@ -143,6 +143,19 @@ def test_no_fix_result_requires_post_merge_confirmation_and_issue_update() -> No
     assert gh.calls[-1][1:3] == ("issue", "view")
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [pytest.param("isDraft", True, id="draft"), pytest.param("mergeable", "CONFLICTING", id="conflicting")],
+)
+def test_draft_or_conflicting_pr_stops_before_any_write(field: str, value: Any) -> None:
+    """draft・競合中の PR を通すと、未確定の状況を投稿し、マージや関連 Issue の更新まで進めてしまう。"""
+    gh = FakeGh()
+    gh.view[field] = value
+    result = mod.finalize(record(), "状況", checks(), runner=gh)
+    assert gh.writes() == []
+    assert result["outcome"] == "stopped" and result["merged"] is False
+
+
 @pytest.mark.parametrize("mutation", ["head", "missing", "failed"])
 def test_missing_or_wrong_verification_stops_before_network(mutation: str) -> None:
     """別の HEAD・失敗・空の検証記録を通すと、検証していない（または失敗した）HEAD を黙ってマージする。"""
@@ -259,6 +272,43 @@ def cli_args(tmp_path: Path, result: Path) -> list[str]:
         "--result-file",
         str(result),
     ]
+
+
+@pytest.mark.parametrize("destination_kind", ["symlink", "directory", "missing-parent"])
+def test_invalid_result_destination_stops_before_any_gh_call(
+    destination_kind: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """結果を保存できないまま外部操作すると、マージ済みの記録が欠け、既存データも置き換えられうる。"""
+    existing = tmp_path / "existing"
+    existing.mkdir()
+    preserved = existing / "prior.txt"
+    prior = "前の結果\n\t保存したデータ "
+    preserved.write_text(prior, encoding="utf-8")
+    destination = tmp_path / "result.json"
+    if destination_kind == "symlink":
+        destination.symlink_to(preserved)
+    elif destination_kind == "directory":
+        destination = existing
+    else:
+        destination = tmp_path / "missing" / "result.json"
+    gh = FakeGh()
+    monkeypatch.setattr(mod.poster, "GhRunner", lambda: gh)
+
+    status = mod.main(cli_args(tmp_path, destination))
+
+    assert gh.calls == []
+    assert status != 0
+    actual = json.loads(capsys.readouterr().out)
+    assert actual["outcome"] == "stopped" and actual["merged"] is False and actual["issues"] == []
+    assert preserved.read_text(encoding="utf-8") == prior
+    assert existing.is_dir()
+    if destination_kind == "symlink":
+        assert destination.is_symlink() and destination.resolve() == preserved
+    elif destination_kind == "missing-parent":
+        assert not destination.parent.exists()
 
 
 def test_post_operation_save_failure_preserves_observed_effects_in_stdout(

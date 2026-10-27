@@ -256,6 +256,24 @@ def test_records_post_requires_the_pull_request_head() -> None:
     assert_rejected(FakeGh(pr_view=pr_view(head=HEAD_1), comments=[]), pushed_record())
 
 
+def test_no_fix_needed_record_rejects_a_head_changed_since_review() -> None:
+    """修正なしの古いレビュー記録を別 HEAD に投稿すると、未レビューの HEAD を確認済みとして記録する。"""
+    assert_rejected(FakeGh(pr_view=pr_view(head=HEAD_2), comments=[]), record())
+
+
+@pytest.mark.parametrize("with_record", [False, True], ids=["record-less", "records"])
+def test_post_rejects_a_view_resolved_to_another_repository(with_record: bool) -> None:
+    """別リポジトリの PR 応答を採用すると、対象を取り違えた状況コメントの投稿や上書きを行う。"""
+    view = pr_view()
+    view["url"] = f"https://github.com/other/repo/pull/{PR}"
+    value = record() if with_record else None
+    existing = status_comment(7, value) if value is not None else comment(7, mod.compose_body(MODEL, BODY))
+    gh = FakeGh(pr_view=view, comments=[existing])
+    with pytest.raises(mod.CommentError):
+        mod.upsert(PR, REPO, MODEL, BODY, runner=gh, record=value)
+    assert gh.writes() == []
+
+
 def test_records_post_rejects_a_closed_pull_request() -> None:
     """マージの後の投稿を許すと、手動マージの後に記録を足して、finalize の Issue の更新の復旧を通せる。"""
     assert_rejected(FakeGh(pr_view=pr_view(state="MERGED"), comments=[]), awaiting_record())
