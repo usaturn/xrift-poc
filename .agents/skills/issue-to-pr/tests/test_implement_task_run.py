@@ -266,12 +266,64 @@ def test_committed_rename_out_of_disallowed_path_is_rejected(fx: Fixture) -> Non
     assert any("docs/x.md" in reason for reason in summary["reasons"]), summary["reasons"]
 
 
+def test_uncommitted_rename_out_of_disallowed_path_is_rejected(fx: Fixture) -> None:
+    """未 commit のリネーム元を確認しないと、helper の commit に担当外ファイルの削除が黙って入る。"""
+    original = (fx.feature / "docs/x.md").read_text(encoding="utf-8")
+    agent = fx.scenario(
+        "a",
+        done(commit=None, files=["docs/x.md", "src/new/x.md"]),
+        steps=[{"kind": "move", "from": "docs/x.md", "to": "src/new/x.md"}],
+    )
+
+    summary = fx.run(fx.config(("a", agent)))
+
+    assert summary["verdict"] == "rejected"
+    with pytest.raises(mod.AcceptRefused):
+        mod.accept(fx.output)
+    assert git(fx.feature, "rev-parse", "HEAD") == fx.revision
+    assert (fx.feature / "docs/x.md").read_text(encoding="utf-8") == original
+    assert not (fx.feature / "src/new/x.md").exists()
+
+
+def test_uncommitted_change_missing_from_changed_files_is_rejected(fx: Fixture) -> None:
+    """未 commit の変更と報告を照合しないと、報告にない変更まで helper が黙って commit して取り込む。"""
+    paths = ["src/a.py", "src/b.py"]
+    original = {path: (fx.feature / path).read_text(encoding="utf-8") for path in paths}
+    agent = fx.scenario(
+        "a", done(commit=None), steps=[WRITE_A, {"kind": "write", "path": "src/b.py", "content": "b = 2\n"}]
+    )
+
+    summary = fx.run(fx.config(("a", agent)), fx.request(allowed_files=paths))
+
+    assert summary["verdict"] == "rejected"
+    with pytest.raises(mod.AcceptRefused):
+        mod.accept(fx.output)
+    assert git(fx.feature, "rev-parse", "HEAD") == fx.revision
+    assert {path: (fx.feature / path).read_text(encoding="utf-8") for path in paths} == original
+
+
 # --- accept と cleanup ----------------------------------------------------------------------------------------------
 
 
 def registered(repo: Path) -> list[str]:
     output = git(repo, "worktree", "list", "--porcelain")
     return [line.removeprefix("worktree ") for line in output.splitlines() if line.startswith("worktree ")]
+
+
+def test_uncommitted_changes_are_committed_by_accept(fx: Fixture) -> None:
+    """accept が未 commit の変更を commit せずに完了扱いすると、担当の変更が feature の履歴に残らず失われる。"""
+    agent = fx.scenario("a", done(commit=None), steps=[WRITE_A])
+
+    summary = fx.run(fx.config(("a", agent)))
+    assert summary["verdict"] == "importable"
+    assert summary["helper_commit"] is True
+
+    accepted = mod.accept(fx.output)
+
+    assert accepted["helper_commit"] is True
+    assert accepted["commit"] != fx.revision
+    assert git(fx.feature, "rev-parse", "HEAD") == accepted["commit"]
+    assert git(fx.feature, "show", "HEAD:src/a.py") == WRITE_A["content"].rstrip("\n")
 
 
 def test_accept_refuses_non_importable(fx: Fixture) -> None:
