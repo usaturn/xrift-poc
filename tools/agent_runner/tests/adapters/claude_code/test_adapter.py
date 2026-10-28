@@ -88,7 +88,6 @@ def test_prepare_maps_effort_and_appends_agent_args(context: AdapterContext) -> 
     assert "effort-sentinel" in spec.argv
     assert spec.argv[-2:] == ("--arg-sentinel", "value-sentinel")
     assert spec.stdin == context.request.prompt.encode()
-    assert all(context.request.prompt not in argument for argument in spec.argv)
 
 
 def test_collect_success_extracts_identity_and_json_payload(context: AdapterContext) -> None:

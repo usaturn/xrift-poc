@@ -84,7 +84,6 @@ def test_prepare_write_role_uses_workspace_write_effort_and_args(tmp_path: Path)
         context.request.prompt = " \t日本語の依頼 '引用' $HOME; $(echo forbidden)\n二行目 & <>\n末尾 \t\n"
         spec = ADAPTER.prepare(context)
         assert spec.stdin.startswith(context.request.prompt.encode())
-        assert all(context.request.prompt not in argument for argument in spec.argv)
     read_only, writable = (ADAPTER.prepare(context).argv for context in contexts)
     assert "read-only" in read_only
     assert "read-only" not in writable

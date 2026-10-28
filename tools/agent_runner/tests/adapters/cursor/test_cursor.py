@@ -70,7 +70,6 @@ def test_prepare_write_role_forces_and_effort_uses_bracket(tmp_path: Path) -> No
     context.request.prompt = " \t日本語の依頼 '引用' $HOME; $(echo forbidden)\n二行目 & <>\n末尾 \t\n"
     spec = ADAPTER.prepare(context)
     assert spec.stdin.startswith(context.request.prompt.encode())
-    assert all(context.request.prompt not in argument for argument in spec.argv)
     assert any("auto" in argument for argument in spec.argv)
     assert any("high" in argument for argument in spec.argv)
     assert "--flag" in spec.argv

@@ -313,6 +313,25 @@ def test_request_preserves_scope_and_multiline_prompt(repository: Path, tmp_path
     assert isinstance(item.payload, dict) and item.payload["prompt"] == request.prompt
 
 
+def test_prompt_embedded_in_argv_is_refused_before_launch(repository: Path, tmp_path: Path) -> None:
+    """起動前の検査が外れると、依頼を argv に載せた担当が起動し、依頼がプロセス一覧から読めるまま黙って動く。"""
+
+    class PromptInArgv(FakeAdapter):
+        def prepare(self, context: AdapterContext) -> LaunchSpec:
+            spec = super().prepare(context)
+            return LaunchSpec((*spec.argv, f"--prompt={context.request.prompt}"), spec.stdin)
+
+    batch = run_workflow(
+        configuration(),
+        "audit",
+        "依頼の全文\n2 行目",
+        repository,
+        output_dir=tmp_path / "run",
+        adapter_loader=lambda _: PromptInArgv(),
+    )
+    assert [attempt.state for attempt in batch.results[0].attempts] == ["launch_failed"]
+
+
 def test_unavailable_registered_checkout_is_an_outside_change(repository: Path, tmp_path: Path) -> None:
     """監査できない登録済みの checkout が outside_changes から落ちると、呼び出し側が黙って受け入れる。"""
     external = create_owned_worktree(repository, tmp_path, name="unavailable")
