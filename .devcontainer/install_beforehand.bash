@@ -8,6 +8,10 @@ readonly GITLEAKS_ARCHIVE_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f
 readonly XRIFT_CLI_VERSION="0.25.0"
 # 2026-10-18 に npm の latest で確認した版。更新は README の手順で確かめてから変える。
 readonly CTX7_CLI_VERSION="0.8.0"
+# 2026-10-20 に公表された eMudhra の中間CA 8 件の秘密鍵の侵害に対する、Ubuntu 26.04 の修正版（#221）。
+# これより古いと、侵害された中間CA（EM DV TLS CA - G3B）につながる emSign ECC Root CA - G3 を
+# システムのトラストストアが信頼したままになる。更新は README の手順で確かめてから変える。
+readonly CA_CERTIFICATES_MIN_VERSION="20260816ubuntu0.26.04.1"
 
 # postCreate の出力は、途中でコンテナが止まると残らない。どのステップまで進んだかを
 # 後から追えるよう、各ステップの開始を必ず1行で出し、失敗は ERROR 行を残して
@@ -136,6 +140,22 @@ if ! sudo perl -pi -e 's@http://archive\.ubuntu\.com@https://archive.ubuntu.com@
 fi
 if ! sudo apt update; then
     fail "apt update failed."
+fi
+
+# システムのトラストストア（/etc/ssl/certs）は curl・git・Python などが使う。base image の版には頼らず、
+# 以降の curl での取得より前に修正版へ更新する。届かなければ、侵害された中間CAを信頼したまま進まないよう止める（#221）。
+upgrade_ca_certificates() {
+    local version
+    sudo apt install -y --only-upgrade ca-certificates || return 1
+    version="$(dpkg-query -W -f='${Version}' ca-certificates)" || return 1
+    if ! dpkg --compare-versions "$version" ge "$CA_CERTIFICATES_MIN_VERSION"; then
+        echo "ca-certificates ${version:-<empty>} is older than ${CA_CERTIFICATES_MIN_VERSION} after the upgrade." >&2
+        return 1
+    fi
+}
+step "Upgrading ca-certificates to the fixed version"
+if ! upgrade_ca_certificates; then
+    fail "ca-certificates must be ${CA_CERTIFICATES_MIN_VERSION} or later."
 fi
 
 step "Installing the base packages"

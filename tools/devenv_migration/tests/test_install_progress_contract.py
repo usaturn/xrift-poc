@@ -182,6 +182,13 @@ done
 exit 0
 """
 
+# ca-certificates の導入済みの版。実物は runner の OS の版を返し、Dev Container の版と比べられない。
+DPKG_QUERY = """\
+#!/bin/bash
+printf 'dpkg-query %s\\n' "$*" >> "${FAKE_CALLS}"
+printf '%s' "${FAKE_CA_CERTIFICATES_VERSION}"
+"""
+
 # curl はインストーラ本体を stdout へ流す。実インストーラの代わりに、必要な
 # 実行ファイルだけを作るスタブを流す。
 CURL = (
@@ -256,6 +263,7 @@ def _run_installer(
     fail_on: str | None = None,
     sudo_fix_chown: bool = False,
     home: Path | None = None,
+    ca_certificates_version: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     if root is None:
         root = _make_root(tmp_path)
@@ -286,6 +294,7 @@ def _run_installer(
         ("cp", CP),
         ("python3", PYTHON3),
         ("ctx7", CTX7),
+        ("dpkg-query", DPKG_QUERY),
     ):
         _write_executable(bin_dir / name, body)
     for name, tool in (
@@ -311,6 +320,12 @@ def _run_installer(
         "FAKE_XRIFT_VERSION": _pinned_version("XRIFT_CLI_VERSION"),
         # fake の `ctx7 --version` の出力。スクリプトが固定した版。
         "FAKE_CTX7_VERSION": _pinned_version("CTX7_CLI_VERSION"),
+        # fake の `dpkg-query` が返す ca-certificates の版。既定はスクリプトが求める最低版。
+        "FAKE_CA_CERTIFICATES_VERSION": (
+            ca_certificates_version
+            if ca_certificates_version is not None
+            else _pinned_version("CA_CERTIFICATES_MIN_VERSION")
+        ),
         # workspace cleanup は dry-run に固定し、テストから実ファイルを消させない。
         "XRIFT_POC_CLEANUP_TMP_ROOT": str(tmp_path / "cleanup"),
         "XRIFT_POC_CLEANUP_MIN_AGE_DAYS": "0",
@@ -335,6 +350,13 @@ def test_run_stops_when_the_xrift_skills_install_fails(tmp_path: Path) -> None:
     result, _ = _run_installer(tmp_path, fail_on="https://github.com/WebXR-JP/xrift-skills/tree/")
     # 注入が実際に起きたこと（fake の出力）。起きなければ、別の理由で止まっても通ってしまう。
     assert "injected failure: " in result.stderr, result.stderr
+    assert result.returncode != 0, result.stdout
+
+
+def test_run_stops_when_ca_certificates_stays_older_than_the_fixed_version(tmp_path: Path) -> None:
+    """ca-certificates の版の確認を握りつぶすと、侵害された中間CAにつながるルートを信頼したまま
+    postCreate が成功で終わる。"""
+    result, _ = _run_installer(tmp_path, ca_certificates_version="0")
     assert result.returncode != 0, result.stdout
 
 
