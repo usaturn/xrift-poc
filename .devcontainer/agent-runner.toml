@@ -130,7 +130,7 @@ after_run = [[
 # いつも使う構成は、個人設定のこの節の agents を書き換える。
 # 下の 4 人は指定が無いときの既定値で、性能の順位ではない。
 [workflows.review.assignments.inspect]
-agents = ["devin-swe", "pi-deepseek", "claude-opus"]
+agents = ["devin-swe", "pi-deepseek", "pi-gpt"]
 
 [workflows.fix.assignments.implement]
 agents = ["claude-opus"]
