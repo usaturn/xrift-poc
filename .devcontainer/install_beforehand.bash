@@ -6,8 +6,6 @@ readonly GITLEAKS_VERSION="8.30.1"
 readonly GITLEAKS_ARCHIVE_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
 # 2026-10-10 に npm の latest で確認した版。更新は README の手順で確かめてから変える。
 readonly XRIFT_CLI_VERSION="0.25.0"
-# 2026-10-18 に npm の latest で確認した版。更新は README の手順で確かめてから変える。
-readonly CTX7_CLI_VERSION="0.8.0"
 # 2026-10-20 に公表された eMudhra の中間CA 8 件の秘密鍵の侵害に対する、Ubuntu 26.04 の修正版（#221）。
 # これより古いと、侵害された中間CA（EM DV TLS CA - G3B）につながる emSign ECC Root CA - G3 を
 # システムのトラストストアが信頼したままになる。更新は README の手順で確かめてから変える。
@@ -457,22 +455,39 @@ if ! install_xrift_cli; then
     fail "XRift CLI installation failed."
 fi
 
-# Context7 CLI（find-docs スキルが使う）も版を固定して導入する。zsh の update() では更新しない
-# （README の更新手順を参照）。ctx7 setup は共有の ~/.claude・~/.claude.json・~/.codex などへ
+# Context7 CLI（find-docs スキルが使う）は、実行した時点の npm の latest を入れる。zsh の update() も
+# latest に上げる（#220）。latest は 1 回だけ解決し、その版を入れて照合する。engines を満たさない版は
+# --engine-strict で入れない。ctx7 setup は共有の ~/.claude・~/.claude.json・~/.codex などへ
 # MCP 設定やスキルを書き込み、find-docs とも重複するため実行しない（#49）。
 install_ctx7_cli() {
-    local version
-    if ! npm install -g "ctx7@${CTX7_CLI_VERSION}"; then
-        echo "npm install -g ctx7@${CTX7_CLI_VERSION} failed." >&2
+    local latest prefix ctx7_path version
+    if ! latest="$(npm view ctx7@latest version)" || [ -z "${latest}" ]; then
+        echo "npm view ctx7@latest version failed." >&2
         return 1
     fi
-    if ! command -v ctx7 >/dev/null 2>&1; then
+    if ! npm install -g --engine-strict "ctx7@${latest}"; then
+        echo "npm install -g --engine-strict ctx7@${latest} failed. If npm reported EBADENGINE, Node.js $(node --version 2>/dev/null) does not satisfy the engines of ctx7 ${latest}." >&2
+        return 1
+    fi
+    if ! prefix="$(npm prefix -g)" || [ -z "${prefix}" ]; then
+        echo "npm prefix -g failed." >&2
+        return 1
+    fi
+    if ! ctx7_path="$(command -v ctx7)"; then
         echo "ctx7 is not on PATH after the install." >&2
         return 1
     fi
-    version="$(ctx7 --version)" || return 1
-    if [ "${version//[[:space:]]/}" != "${CTX7_CLI_VERSION}" ]; then
-        echo "Unexpected ctx7 version: ${version} (expected ${CTX7_CLI_VERSION})." >&2
+    # PATH に nvm の current/bin のような symlink のディレクトリがあっても、実体で比べる
+    if [ "$(readlink -f "${ctx7_path}")" != "$(readlink -f "${prefix}/bin/ctx7")" ]; then
+        echo "ctx7 on PATH is ${ctx7_path}, not the npm global install (${prefix}/bin/ctx7)." >&2
+        return 1
+    fi
+    if ! version="$(ctx7 --version)"; then
+        echo "ctx7 --version failed after installing ctx7@${latest}." >&2
+        return 1
+    fi
+    if [ "${version//[[:space:]]/}" != "${latest}" ]; then
+        echo "Unexpected ctx7 version: ${version} (installed ${latest})." >&2
         return 1
     fi
 }

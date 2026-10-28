@@ -122,6 +122,10 @@ NPM = (
     + FAIL_HOOK
     + """\
 printf 'npm %s\\n' "$*" >> "${FAKE_CALLS}"
+case "$*" in
+"view ctx7@latest version") printf '%s\\n' "${FAKE_CTX7_VERSION}" ;;
+"prefix -g") printf '%s\\n' "${FAKE_NPM_PREFIX}" ;;
+esac
 exit 0
 """
 )
@@ -318,8 +322,10 @@ def _run_installer(
         "FAKE_CHOWNED": str(tmp_path / "chowned.log"),
         "FAKE_STUB_DIR": str(stub_dir),
         "FAKE_XRIFT_VERSION": _pinned_version("XRIFT_CLI_VERSION"),
-        # fake の `ctx7 --version` の出力。スクリプトが固定した版。
-        "FAKE_CTX7_VERSION": _pinned_version("CTX7_CLI_VERSION"),
+        # fake の `npm view ctx7@latest version` と `ctx7 --version` が返す版。スクリプトは両者の一致を確かめる。
+        "FAKE_CTX7_VERSION": "0.0.0-fake",
+        # fake の `npm prefix -g`。fake の ctx7（bin_dir/ctx7）を npm の global の実体として扱わせる。
+        "FAKE_NPM_PREFIX": str(bin_dir.parent),
         # fake の `dpkg-query` が返す ca-certificates の版。既定はスクリプトが求める最低版。
         "FAKE_CA_CERTIFICATES_VERSION": (
             ca_certificates_version
