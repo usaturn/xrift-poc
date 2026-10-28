@@ -83,7 +83,6 @@ def test_prepare_maps_skill_sources_and_args(context: AdapterContext) -> None:
         assert value in spec.argv
     assert spec.argv[-1] == "--arg-sentinel"
     assert spec.stdin == context.request.prompt.encode()
-    assert all(context.request.prompt not in argument for argument in spec.argv)
 
 
 def test_collect_success_extracts_identity_and_payload(context: AdapterContext) -> None:

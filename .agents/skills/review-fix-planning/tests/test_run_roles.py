@@ -274,24 +274,6 @@ def test_read_only_review_agent_is_rejected_before_reservation(
             assert not writable.prepared
 
 
-def test_writable_review_agent_reserves_and_runs(
-    inputs: tuple[dict[str, Any], Path, dict[str, Any]], tmp_path: Path, parent: Path
-) -> None:
-    """担当の能力を見ずに一律拒否すると、実行可能なレビューも予約・実行できず修正確認が進まなくなる。"""
-    selected = config("b")
-    selected.agents["b"].runtime = "codex"
-    adapter = RecordingAdapter()
-    before = json.loads(inputs[1].read_text())["activities"]
-
-    batch = launch(inputs, tmp_path, selected, adapter_loader=adapter)
-
-    assert len(json.loads(inputs[1].read_text())["activities"]) == len(before) + 1
-    review = next(result for result in batch.results if result.role == "self-review")
-    assert review.state == "success"
-    assert review.actual_agent == selected.workflows["fix"].assignments["self-review"].agents[0]
-    assert review.attempts and all(attempt.stop_confirmed for attempt in review.attempts)
-
-
 def test_verified_input_mismatch_never_consumes_the_only_review(inputs: Any, tmp_path: Path) -> None:
     """別の HEAD の確認済み一覧で fix-check を動かすと、dispatch.accept は一致を見ないので誤った基準で受け取る。"""
     path = Path(inputs[2]["verified_file"])

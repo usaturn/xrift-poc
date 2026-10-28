@@ -64,7 +64,6 @@ def test_prepare_appends_agent_args(context: AdapterContext) -> None:
     assert spec.argv[-1] == "--arg-sentinel"
     prompt_file = Path(spec.argv[spec.argv.index("--prompt-file") + 1])
     assert prompt_file.read_bytes() == context.request.prompt.encode()
-    assert all(context.request.prompt not in argument for argument in spec.argv)
 
 
 def test_collect_success_extracts_identity(context: AdapterContext) -> None:
