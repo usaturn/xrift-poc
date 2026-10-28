@@ -9,7 +9,7 @@ Context7 CLI（`ctx7`）を使って、任意のライブラリの最新のド�
 
 ## 前提: インストール済みの `ctx7` だけを使う
 
-`ctx7` は、Dev Container のセットアップ（`.devcontainer/install_beforehand.bash`）が `CTX7_CLI_VERSION` の固定した版で入れる。最初に、PATH にあることを確かめる。
+`ctx7` は、Dev Container のセットアップ（`.devcontainer/install_beforehand.bash`）が npm の latest で入れ、利用者が zsh の `update` で上げる。最初に、PATH にあることを確かめる。
 
 ```bash
 command -v ctx7
@@ -17,7 +17,7 @@ command -v ctx7
 
 - 何も表示されない（終了コード 1）ときは、そこで止める。`ctx7` が無いことと、Rebuild Container（`install_beforehand.bash` の再実行）または `.devcontainer/README.md` の「Context7 CLI（ctx7）」節の手順で入れることを利用者に伝える。自分で `npm install` しない
 - `npx ctx7`、Context7 の MCP Server、claude.ai の Context7 コネクタ、Pi の Context7 拡張（`resolve-library-id`・`query-docs`・`/c7-docs`）に切り替えない。xrift-poc では Context7 をこのスキルの `ctx7` だけで使う
-- `ctx7` が `Update available` と表示し、`ctx7 upgrade` や `npm install -g ctx7@latest` を勧めても従わない。版の更新は、`CTX7_CLI_VERSION` を変える PR で行う
+- `ctx7` が `Update available` と表示し、`ctx7 upgrade` や `npm install -g ctx7@latest` を勧めたら、利用者に zsh の `update` で上げられることを伝える。自分では `ctx7 upgrade`・`npm install -g` を実行しない（環境の更新は利用者が行う）
 - `ctx7 setup`・`ctx7 remove` を実行しない。共有の `~/.claude`・`~/.codex` などに MCP 設定やスキルを書き込む
 
 Bash などのシェルを使えないサブエージェントは `ctx7` を実行できない。親のエージェントか、シェルを使える worker に、ライブラリ名と質問を渡して取得を頼む。頼めないときは、取得できなかったことを結果に書く。学習データの知識で黙って代えない。

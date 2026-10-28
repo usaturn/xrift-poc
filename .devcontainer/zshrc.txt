@@ -364,6 +364,7 @@ function herdrstart(){
 function update(){
     claude update
     npm install -g @openai/codex@latest
+    npm install -g --engine-strict ctx7@latest
     pi update
     pi update --extensions
     agent update
