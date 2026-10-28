@@ -59,6 +59,8 @@ def make_minimal_parent_fixture(
     shutil.copy2(SOURCE_ROOT / "scripts/ci/verify-devenv.sh", root / "scripts/ci/verify-devenv.sh")
     shutil.copy2(SOURCE_ROOT / "tools/devenv/pyproject.toml", root / "tools/devenv/pyproject.toml")
     shutil.copy2(SOURCE_ROOT / "tools/devenv/uv.lock", root / "tools/devenv/uv.lock")
+    # pyproject.toml の addopts が -p で読み込むプラグイン
+    shutil.copy2(SOURCE_ROOT / "tools/test_support/explicit_paths.py", root / "tools/test_support/explicit_paths.py")
     log, env = make_fake_uv(tmp_path, failure=failure, pytest_python=pytest_python)
     return root, log, env
 
@@ -109,6 +111,28 @@ def test_runner_scopes_conftest_fixtures_to_their_directory(tmp_path: Path) -> N
     result = run_runner(root, env=env, cwd=root)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "2 passed" in result.stdout
+
+
+def test_pytest_without_paths_runs_no_tests(tmp_path: Path) -> None:
+    """パスを省略した pytest が、起動した場所によって別の checkout のテストや一部だけを集め、その合否で判断を誤る。"""
+    root, _, _ = make_minimal_parent_fixture(tmp_path)
+    ran = tmp_path / "ran"
+    (root / "tools/agent_runner/tests/test_marker.py").write_text(
+        f"from pathlib import Path\n\n\ndef test_marker() -> None:\n    Path({str(ran)!r}).touch()\n"
+    )
+    command = [sys.executable, "-m", "pytest", "-c", "tools/devenv/pyproject.toml", "--rootdir", "."]
+    command += ["-p", "no:cacheprovider"]
+
+    def run_pytest(*paths: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run([*command, *paths], cwd=root, text=True, capture_output=True, check=False)
+
+    omitted = run_pytest()
+    assert omitted.returncode != 0, omitted.stdout
+    assert not ran.exists()
+    # 同じ設定でもパスを明示すれば実行する。止まったのが設定やプラグインの読み込みの失敗ではないことを確かめる
+    explicit = run_pytest("tools/agent_runner/tests")
+    assert explicit.returncode == 0, explicit.stdout + explicit.stderr
+    assert ran.exists()
 
 
 def test_formal_collection_includes_every_tracked_test_file(tmp_path: Path) -> None:

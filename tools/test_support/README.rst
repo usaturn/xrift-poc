@@ -49,6 +49,11 @@ issue-queue の CLI と XRift のツールの導入のテストのために、�
     Codex の中でモデルを読む挙動を確かめるテストは、テストの中で一時の ``CODEX_HOME`` と rollout を作って設定し直す。
     どの fixture も autouse ではない。test module で読み込んだプラグインの fixture はテスト一式から見えるため、autouse にすると読み込んだ後に収集したモジュールにも効く。
 
+``tools.test_support.explicit_paths``
+    テストのパスを省略した pytest を、何も集めずに止める pytest プラグイン。 ``tools/devenv/pyproject.toml`` の ``addopts`` が ``-p`` で読み込む。
+    パスを省略すると、pytest は起動した場所によって、別の checkout のテストや一部だけを集めるためである（#215）。
+    パスは ``scripts/ci/verify-devenv.sh`` と AGENTS.md「親の検証」の形で指定する。
+
 .. _test_support_usage:
 
 利用方法
