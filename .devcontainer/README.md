@@ -183,20 +183,28 @@ Context7 のドキュメントの取得は、`ctx7` CLI と `find-docs` スキ�
 
 ### 導入
 
-- `install_beforehand.bash` は、Context7 CLI（`ctx7`）を 0.8.0 に固定して導入し、`ctx7 --version` が一致することを確かめる。導入の失敗・PATH に無い・版の不一致は、セットアップの失敗として止まる
+- `install_beforehand.bash` は、実行した時点の npm の latest の Context7 CLI（`ctx7`）を導入する（#220）。`npm view ctx7@latest version` で版を 1 回だけ解決し、その版を `npm install -g --engine-strict` で入れてから、次を確かめる。導入の失敗と、次のどれかに反したときは、理由を出してセットアップの失敗として止まる
+  - PATH 上の `ctx7` の実体（`readlink -f`）が、npm のグローバルの `$(npm prefix -g)/bin/ctx7` の実体と同じ。PATH の前のほうに別の `ctx7` があると止まる
+  - `ctx7 --version` が成功し、解決した版と一致する
+- Node.js が latest の `engines` を満たさないときは、npm が `EBADENGINE` で導入を止める（`--engine-strict`）
 - 実体は npm のグローバルの `node_modules` の下に入る。`~/.npm/_npx` の一時展開物は使わない
+- 「最新」は、リビルドと zsh の `update` を実行した時点の latest である。エージェントや `find-docs` の実行のたびには取り直さない（`npx ctx7@latest` は使わない）
 - `ctx7 setup` は実行しない。ctx7 0.8.0 の `ctx7 setup` は、`~/.claude`・`~/.claude.json`・`~/.codex/config.toml`・`~/.codex/AGENTS.md`・`~/.agents/skills` などに MCP 設定やスキルを書き込む。その多くはホストから bind mount した共有の場所で、ホストや他のコンテナにも影響する。生成されるスキルは `find-docs` とも重複する
-- zsh の `update` では更新しない
 
 ### 更新
 
-1. `npm view ctx7 version engines` で新しい版と、必要な Node.js の版を確かめる
-2. `install_beforehand.bash` の `CTX7_CLI_VERSION` を変える
-3. 新しい版に入れ替える。`npm install -g ctx7@<新しい版>` を実行するか、Rebuild Container する。PATH 上の `ctx7` は、入れ替えるまで古い版のままである
-4. `ctx7 --version` が新しい版と一致し、下の「動作確認」が通ることを確かめる
-5. PR で取り込む
+- zsh の `update` が `npm install -g --engine-strict ctx7@latest` を実行する。Rebuild Container でも、その時点の latest になる
+- Node.js が新しい latest の `engines` を満たさないときは、npm が `EBADENGINE` で止まり、それまでの版が残る
+- 上げた後は、下の「動作確認」で確かめる。新しい版が動かなければ、次の「前の版に戻す」に従う
 
-`ctx7` は新しい版があると、対話的な端末で `Update available` と表示し、`ctx7 upgrade` や `npm install -g ctx7@latest` を勧める。この案内には従わず、上の手順で版を変える。
+`ctx7` は新しい版があると、対話的な端末で `Update available` と表示し、`ctx7 upgrade` や `npm install -g ctx7@latest` を勧める。上げるときは、`engines` を確かめる zsh の `update` か、Rebuild Container を使う。
+
+### 前の版に戻す
+
+新しい latest が起動しない・壊れているときに使う。リポジトリには版を固定しないので、戻した版は次の `update`・リビルドで latest に上がる。
+
+- 動いているコンテナでは、`npm view ctx7 versions --json` で前の版を探し、`npm install -g --engine-strict ctx7@<前の版>` で入れ直す。直った版が出るまでは、`update` の後にもう一度入れ直す
+- リビルドが `Installing the Context7 CLI (ctx7)` の手順で止まったときは、後の手順（XRift スキル・uv・Herdr など）が実行されていない。直った版が出てからリビルドし直す。待てないときは、`install_beforehand.bash` の `npm view ctx7@latest version` の `ctx7@latest` を `ctx7@<前の版>` に書き換えて（commit しない）リビルドし、終わったら書き換えを戻す
 
 ### MCP と Pi の拡張からの移行
 
@@ -255,7 +263,8 @@ test -e .pi/npm && echo ".pi/npm exists" || echo ".pi/npm is absent"
 node --version
 command -v ctx7
 readlink -f "$(command -v ctx7)"   # .../lib/node_modules/ctx7/dist/index.js（~/.npm/_npx ではない）
-ctx7 --version                     # CTX7_CLI_VERSION と一致する
+npm view ctx7 version
+ctx7 --version                     # リビルド・update の直後は、npm view ctx7 version と一致する
 node -e 'console.log(process.env.CONTEXT7_API_KEY ? "CONTEXT7_API_KEY: set" : "CONTEXT7_API_KEY: not set")'
 ctx7 library react "How to clean up useEffect with async operations"
 ctx7 docs /react/react "useEffect cleanup"
@@ -267,11 +276,13 @@ ctx7 docs /react/react "useEffect cleanup"
 
 | 症状 | 対応 |
 |---|---|
-| `ctx7: command not found` | Rebuild Container するか、`npm install -g "ctx7@<CTX7_CLI_VERSION の値>"` を実行する。`npx ctx7` で代えない |
-| セットアップが `Unexpected ctx7 version` で止まる | `command -v ctx7` で、PATH の前のほうに別の `ctx7` が無いかを確かめる |
+| `ctx7: command not found` | Rebuild Container するか、`npm install -g --engine-strict ctx7@latest` を実行する。`npx ctx7` で代えない |
+| セットアップが `ctx7 on PATH is ...` で止まる | PATH の前のほうに、npm のグローバルではない `ctx7` がある。表示されたパスの `ctx7` を消すか、PATH の順を直す |
+| セットアップが `npm install -g --engine-strict ctx7@... failed` で止まり、npm が `EBADENGINE` を出す | Node.js が latest の `ctx7` の `engines` を満たさない。`devcontainer.json` の node の feature の `version` を上げるか、「前の版に戻す」に従う |
+| セットアップが `ctx7 --version failed`・`Unexpected ctx7 version` で止まる | 入れた版が起動しないか、`--version` の出力が版の 1 行でない。「前の版に戻す」に従う |
 | `⚠ Library has been redirected` と出て終了コード 1 | 表示された新しい ID でやり直す（例: `/facebook/react` → `/react/react`） |
 | `Monthly quota reached`・`quota exceeded` | `CONTEXT7_API_KEY` を設定するか、`ctx7 login` を実行する |
-| `Update available` と表示される | 従わない。「更新」の手順で版を変える |
+| `Update available` と表示される | zsh の `update` を実行するか、Rebuild Container する |
 | `context7` が `Failed to reconnect`・`CONNECTION_CLOSED` のまま一覧に残る | 古い設定を読んでいる。親の main checkout を `origin/main` に更新し、エージェントを起動し直す。親の中に置いた worktree（`.claude/worktrees/` など）では、Claude Code が祖先の main checkout の `.mcp.json` も読む。ユーザースコープの設定（前の表）も確かめる |
 | xrift-poc の Pi に `resolve-library-id`・`/c7-docs` が出る | ユーザー設定（`~/.pi/agent/settings.json`）に `npm:@upstash/context7-pi` が残っている。xrift-poc は project の設定で止めていない（#54）。外し方は前の表 |
 | Pi が起動しない（`npm error code ECONNREFUSED`）、または checkout に `.pi/npm/` ができる | その checkout の `.pi/settings.json` に context7-pi の項目が残っている（#54 より前の commit）。`origin/main` を取り込む。急ぐときは `--offline` か `PI_OFFLINE=1` を付けて起動する。できた `.pi/npm/` の扱いは「Pi の Context7 拡張（共有の `~/.pi` から外した後）」 |
