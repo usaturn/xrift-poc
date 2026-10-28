@@ -79,6 +79,49 @@ postCreate が成功したことを確かめる。個人設定の移行後、親
 - bind mount したホームのファイルは、コンテナ内のどのプロセスからも読み書きできる。コンテナに入れただけでは認証情報は隔離されない
 - `userEnvProbe: loginShell` は、`~/.zshrc` の `herdrstart` が環境の取得中に Herdr を起動してハングし、Herdr の作業ディレクトリを汚すのを避けるために指定している
 
+## システムの CA 証明書（ca-certificates）
+
+2026-10-20 に、eMudhra の中間CA 8 件の秘密鍵が侵害されたと公表された（[日本語の要約](https://emudhra.we-have-a-problem.com/ja.html)、[Issue #221](https://github.com/usaturn/xrift-poc/issues/221)）。`ca-certificates` が `20260816ubuntu0.26.04.1` より古いと、システムのトラストストア（`/etc/ssl/certs/ca-certificates.crt`）は、侵害された中間CA `EM DV TLS CA - G3B` につながるルート `emSign ECC Root CA - G3` を信頼したままになる。このストアを使う curl・git・Python の標準ライブラリは、その中間CAで署名された任意のホストの証明書を受け入れるので、取得するインストーラやパッケージを差し替えられ得る。
+
+### セットアップでの保証
+
+- `install_beforehand.bash` は、`apt update` の直後（curl での最初の取得より前）に `sudo apt install -y --only-upgrade ca-certificates` を実行し、導入済みの版がスクリプト冒頭の `CA_CERTIFICATES_MIN_VERSION` より古ければ止まる
+- base image（`mcr.microsoft.com/devcontainers/base:ubuntu26.04`）が含む版には頼らず、digest も固定しない。固定すると image のセキュリティ更新も止まり、固定しなければどの image が来るかで結果が変わるため、リビルドのたびにセットアップで版を確かめる
+- 残る範囲: features（`github-cli`・`node`）は postCreate より前に、image のストアで取得する。base image が修正版を含むまで、この段階は保護されない。独自の CA バンドルを持つツールは、システムのストアを更新しても変わらない（下の表）
+
+### 既存のコンテナを直す
+
+リビルドしないコンテナでは、次を実行する。
+
+```bash
+sudo apt-get update && sudo apt-get install --only-upgrade ca-certificates
+```
+
+### 確かめる
+
+既存のコンテナを直した後と、リビルドした直後に実行する。リビルドは利用者が行う。
+
+```bash
+dpkg-query -W -f='${Version}\n' ca-certificates                         # 20260816ubuntu0.26.04.1 以降
+curl -sS -o /dev/null https://dv-g3b-emudhra.we-have-a-problem.com/       # curl: (60) で失敗すること
+curl -sS -o /dev/null https://dv-g3b-noct-emudhra.we-have-a-problem.com/  # curl: (60) で失敗すること
+```
+
+2 つ目のホストのリーフ証明書は CT ログに記録されていない。CT を必須としないクライアントが、侵害された中間CAを信頼していると接続できる。
+
+クライアントによって使うストアと判定が違うので、判定は実際に使うクライアントで行う。2026-10-28 に、上の 2 ホストで確かめた結果は次のとおり。
+
+| クライアント | 使うストア | 更新前 | 更新後 |
+|---|---|---|---|
+| curl 8.18.0・git 2.55.0・Python 3.14.4 の `urllib` | システムのストア | 受け入れた | 拒否した（`unable to get local issuer certificate`） |
+| gh 2.103.3 | システムのストア（Go） | 拒否した（`x509: no valid chains built`） | 拒否した（`x509: certificate signed by unknown authority`） |
+| uv 0.13.6 | 同梱の Mozilla のルート（`--system-certs` でシステムのストア） | どちらでも拒否した（`CertDistrusted`） | 同じ |
+| Node.js 24.22.1 の `fetch` | 同梱のルート | 拒否した（`CERT_REVOKED`） | 同じ |
+
+### 最低版を上げる
+
+新しい侵害などで Ubuntu の修正版が出たら、公表された修正版の版番号と `apt-cache policy ca-certificates` の Candidate が一致することを確かめてから、`CA_CERTIFICATES_MIN_VERSION` を変える。版は `dpkg --compare-versions` で比べる。
+
 ## ポート
 
 | ポート | 用途 |
