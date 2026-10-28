@@ -11,8 +11,7 @@ package = false
 dev = ["pytest", "ruff", "pyright", "pyyaml", "types-pyyaml", "playwright"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "../devenv_migration/tests", "../../.agents", "../agent_runner/tests", "../test_support/tests"]
-addopts = ["--import-mode=importlib"]
+addopts = ["--import-mode=importlib", "-p", "tools.test_support.explicit_paths"]
 pythonpath = ["../.."]
 
 [tool.pyright]
