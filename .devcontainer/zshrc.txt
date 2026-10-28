@@ -371,6 +371,13 @@ function update(){
     devin plugins update superpowers
 }
 
+function agent-runner-update(){
+    git switch -c update/agent_runner_config
+    git add .devcontainer/agent-runner.toml
+    git status
+    git commit -m "update agent runner"
+    gh pr create -f
+}
 
 # ディスクを圧迫する使い捨て debris を間引いて掃除する（#146。詳細は
 # cleanup-workspace.bash を参照）。
