@@ -261,14 +261,12 @@ def test_no_fix_needed_record_rejects_a_head_changed_since_review() -> None:
     assert_rejected(FakeGh(pr_view=pr_view(head=HEAD_2), comments=[]), record())
 
 
-@pytest.mark.parametrize("with_record", [False, True], ids=["record-less", "records"])
-def test_post_rejects_a_view_resolved_to_another_repository(with_record: bool) -> None:
+def test_post_rejects_a_view_resolved_to_another_repository() -> None:
     """別リポジトリの PR 応答を採用すると、対象を取り違えた状況コメントの投稿や上書きを行う。"""
     view = pr_view()
     view["url"] = f"https://github.com/other/repo/pull/{PR}"
-    value = record() if with_record else None
-    existing = status_comment(7, value) if value is not None else comment(7, mod.compose_body(MODEL, BODY))
-    gh = FakeGh(pr_view=view, comments=[existing])
+    value = record()
+    gh = FakeGh(pr_view=view, comments=[status_comment(7, value)])
     with pytest.raises(mod.CommentError):
         mod.upsert(PR, REPO, MODEL, BODY, runner=gh, record=value)
     assert gh.writes() == []

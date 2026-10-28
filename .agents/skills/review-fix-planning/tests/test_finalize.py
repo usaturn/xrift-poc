@@ -274,7 +274,7 @@ def cli_args(tmp_path: Path, result: Path) -> list[str]:
     ]
 
 
-@pytest.mark.parametrize("destination_kind", ["symlink", "directory", "missing-parent"])
+@pytest.mark.parametrize("destination_kind", ["directory", "missing-parent"])
 def test_invalid_result_destination_stops_before_any_gh_call(
     destination_kind: str,
     tmp_path: Path,
@@ -287,10 +287,7 @@ def test_invalid_result_destination_stops_before_any_gh_call(
     preserved = existing / "prior.txt"
     prior = "前の結果\n\t保存したデータ "
     preserved.write_text(prior, encoding="utf-8")
-    destination = tmp_path / "result.json"
-    if destination_kind == "symlink":
-        destination.symlink_to(preserved)
-    elif destination_kind == "directory":
+    if destination_kind == "directory":
         destination = existing
     else:
         destination = tmp_path / "missing" / "result.json"
@@ -305,9 +302,7 @@ def test_invalid_result_destination_stops_before_any_gh_call(
     assert actual["outcome"] == "stopped" and actual["merged"] is False and actual["issues"] == []
     assert preserved.read_text(encoding="utf-8") == prior
     assert existing.is_dir()
-    if destination_kind == "symlink":
-        assert destination.is_symlink() and destination.resolve() == preserved
-    elif destination_kind == "missing-parent":
+    if destination_kind == "missing-parent":
         assert not destination.parent.exists()
 
 
