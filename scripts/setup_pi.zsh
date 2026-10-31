@@ -47,7 +47,7 @@ def object_fields(value: object) -> dict[str, Any]:
 staging = None
 backup = None
 try:
-    path = Path(sys.argv[1])
+    path = Path(sys.argv[1]).resolve()
     source = json.loads(Path(sys.argv[2]).read_text())
     definition = source["providers"]["deepinfra"]
     original = path.read_bytes() if path.exists() else None

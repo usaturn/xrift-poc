@@ -22,13 +22,6 @@ if [[ -z "${PI_SUPERAGENTS_HELPER}" ]]; then
 fi
 source "${PI_SUPERAGENTS_HELPER}"
 
-typeset PI_DIR="${PI_CODING_AGENT_DIR:-${HOME}/.pi/agent}"
-if [[ "${PI_DIR}" == "~" ]]; then
-    PI_DIR="${HOME}"
-elif [[ "${PI_DIR}" == "~/"* ]]; then
-    PI_DIR="${HOME}/${PI_DIR#'~/'}"
-fi
-readonly MODELS_JSON="${PI_DIR}/models.json"
 readonly PROVIDER="deepinfra"
 readonly MODEL="deepseek-ai/DeepSeek-V4.1-Flash-1017"
 
@@ -39,32 +32,12 @@ if [[ -z "${DEEPINFRA_TOKEN:-}" ]]; then
 fi
 
 # deepinfra は独自 provider。旧雛形だけの環境ではモデルを解決できない。
-# 読めない・壊れた定義でもチェックを省略しない。例外や入力内容は表示せず止める。
-if ! node -e '
-const fs = require("node:fs");
-try {
-    const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-    const models = data.providers?.[process.argv[2]]?.models;
-    if (!Array.isArray(models) || !models.some((model) => model?.id === process.argv[3])) {
-        process.exit(1);
-    }
-} catch {
-    process.exit(1);
-}
-' "${MODELS_JSON}" "${PROVIDER}" "${MODEL}" >/dev/null 2>&1; then
-    print -ru2 -- "[pidid] ERROR: models.json の DeepInfra モデル登録を確認できません。起動を中止します。"
-    print -ru2 -- "DEEPINFRA_TOKEN を export し、リポジトリのルートで zsh scripts/setup_pi.zsh を実行してください。"
+# BOM・コメントを含む形式も Pi の実効一覧で判断し、独自の JSON 解析は重ねない。
+# dry-run も同じ読み取り専用検査を使う。入力値の表示・カタログ更新・資格情報の取得はしない。
+if ! pi_require_exact_model "${PROVIDER}" "${MODEL}"; then
+    print -ru2 -- "DeepInfra の定義は zsh scripts/setup_pi.zsh で明示更新してください。"
     print -ru2 -- "PI_CODING_AGENT_DIR を指定している場合は、同じ設定先で更新してください。"
     exit 1
-fi
-
-# ID がファイルにあっても、スキーマ不正なら Pi の実効一覧には登録されない。
-# 共通ヘルパは診断から入力値を除き、カタログ更新や資格情報の取得もしない。
-if [[ "${PI_SUPERAGENTS_LAUNCHER_DRY_RUN:-}" != "1" ]]; then
-    if ! pi_require_exact_model "${PROVIDER}" "${MODEL}"; then
-        print -ru2 -- "DeepInfra の定義は zsh scripts/setup_pi.zsh で明示更新してください。"
-        exit 1
-    fi
 fi
 
 pi_superagents_exec pidid \

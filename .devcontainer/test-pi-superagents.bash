@@ -518,6 +518,31 @@ PY_PRESERVE
     assert_eq "$(<"$config")" '{"custom-tier":"keep me"}' "existing pidid tier must stay untouched"
 }
 
+# このテストが無いと、更新が設定のリンクを外し、利用者が管理するリンク先を黙って古いまま残す。
+test_setup_pi_updates_relative_symlink_target() {
+    local home="${TEST_ROOT}/deepinfra-symlink" agent target
+    agent="${home}/.pi/agent"
+    target="${home}/.pi/dotfiles/models.json"
+    mkdir -p "$agent" "$(dirname "$target")"
+    printf '%s\n' '{"providers":{}}' > "$target"
+    ln -s ../dotfiles/models.json "${agent}/models.json"
+
+    env HOME="$home" PI_CODING_AGENT_DIR="$agent" DEEPINFRA_TOKEN=dummy \
+        zsh "$SETUP_DEEPINFRA" >"${home}/out" 2>&1 || fail "linked DeepInfra setup must succeed"
+    [ -L "${agent}/models.json" ] || fail "setup must preserve the models.json symlink"
+    python3 - "${agent}/models.json" "$target" "$PI_MODELS" <<'PY_SYMLINK' || fail "setup did not update the managed target"
+import json
+import sys
+from pathlib import Path
+
+link, target, source = (Path(p) for p in sys.argv[1:])
+assert link.resolve() == target.resolve()
+updated = json.loads(target.read_text())
+expected = json.loads(source.read_text())["providers"]["deepinfra"]
+assert updated["providers"]["deepinfra"] == expected
+PY_SYMLINK
+}
+
 # このテストが無いと、同じ秒に再実行した更新が前のバックアップを上書きし、利用者の設定を復元できなくなる。
 test_setup_pi_keeps_each_backup_when_timestamp_collides() {
     local home="${TEST_ROOT}/deepinfra-backup" bin models backup found_one=0 found_two=0
@@ -682,6 +707,7 @@ test_install_fails_when_new_missing_after() {
 }
 
 test_setup_pi_preserves_user_data_in_custom_agent_dir
+test_setup_pi_updates_relative_symlink_target
 test_setup_pi_keeps_each_backup_when_timestamp_collides
 test_setup_pi_invalid_input_is_private_and_stops_placement
 test_setup_pi_command_failure_stops_placement
