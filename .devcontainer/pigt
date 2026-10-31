@@ -26,8 +26,13 @@ source "${PI_SUPERAGENTS_HELPER}"
 
 pi_openai_codex_require_oauth || exit 1
 
+typeset PI_PARENT_MODEL="gpt-6.1-terra"
+if [[ "${PI_SUPERAGENTS_LAUNCHER_DRY_RUN:-}" != "1" ]]; then
+    pi_require_exact_model openai-codex "${PI_PARENT_MODEL}" || exit 1
+fi
+
 pi_superagents_exec pigt \
     --provider openai-codex \
-    --model gpt-6.1-terra \
+    --model "${PI_PARENT_MODEL}" \
     --thinking xhigh \
     "$@" || exit 1

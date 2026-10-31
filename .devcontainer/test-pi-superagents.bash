@@ -5,7 +5,8 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HELPER="${REPO_ROOT}/.devcontainer/pi-superagents-exec.zsh"
 TEST_ROOT="$(mktemp -d)"
 ZSH_BIN="$(command -v zsh)"
-trap 'rm -rf "${TEST_ROOT}"' EXIT
+PI_PACKAGE="$(dirname "$(dirname "$(dirname "$(readlink -f "$(command -v pi)")")")")"
+trap 'rm -rf "${TEST_ROOT:?}"' EXIT
 
 # 呼び出し側の PI_CODING_AGENT_DIR で結果が変わらないよう、スイート全体で
 # 無効化する。必要なテストは呼び出し単位で明示的に設定する。
@@ -250,6 +251,101 @@ test_pixg_rejects_non_oauth_xai_credentials() {
     assert_eq "$(run_launcher "$home" pixg | sed -n 1p)" "bwrap" "valid xAI OAuth must reach argv"
 }
 
+# このテストが無いと、親モデルが未登録でも ID・表示名の部分一致や別 provider の同じ ID で別モデルを黙って起動する。
+test_pigt_requires_exact_effective_catalog_model() {
+    local root="${TEST_ROOT}/pigt-catalog" home agent package bin out provider model status source
+    local -a own
+    home="${root}/home with spaces"
+    package="${root}/pi-package"
+    bin="${root}/bin"
+    mkdir -p "$bin" "${home}/.pi/agent/extensions/subagent.d/pigt"
+    cp "${CONFIG_DIR}/pigt.json" "${home}/.pi/agent/extensions/subagent.d/pigt/config.json"
+    write_oauth_auth "$home"
+    out="$(run_launcher "$home" pigt)"
+    mapfile -t own < <(pi_args_of "$out")
+    provider="$(option_value --provider "${own[@]}")"
+    model="$(option_value --model "${own[@]}")"
+
+    # モデル解決は実際の Pi SDK を使う。TUI/API と mount だけを記録用 shim に置き換え、
+    # npm package のコピーのカタログを編集する（インストール済みファイルには触れない）。
+    cp -a --reflink=auto "$PI_PACKAGE" "$package"
+    rm -f -- "${package:?}/dist/bundle/cli.js"
+    printf '#!/bin/bash\nprintf "%%s\\0" "$@" > "${FAKE_PI_ARGV:?}"\n' > "${package}/dist/bundle/cli.js"
+    chmod +x "${package}/dist/bundle/cli.js"
+    ln -s "${package}/dist/bundle/cli.js" "${bin}/pi"
+    cat > "${bin}/bwrap" <<'CATALOG_BWRAP_EOF'
+#!/bin/bash
+while [ "$#" -gt 0 ] && [ "$1" != -- ]; do shift; done
+shift
+exec "$@"
+CATALOG_BWRAP_EOF
+    chmod +x "${bin}/bwrap"
+    # 対照の forward テストは既定の agent dir。こちらは ~ 展開と空白を含む別ディレクトリ。
+    agent="${home}/.catalog agent"
+    mkdir -p "$agent"
+    cp "${home}/.pi/agent/auth.json" "${agent}/auth.json"
+
+    python3 - "$package" "$provider" "$model" <<'PY_CATALOG'
+import json
+import sys
+from pathlib import Path
+
+package, provider, model = sys.argv[1:]
+data = Path(package) / "node_modules/@earendil-works/pi-ai/dist/providers/data"
+path = data / f"{provider}.json"
+catalog = json.loads(path.read_text())
+api, entries = next(iter(catalog.items()))
+example = next(iter(entries.values()))
+# 部分一致する ID と表示名だけを残す。同じ ID も別 provider にしか存在しない。
+partial = {**example, "id": model + "-preview", "name": model}
+path.write_text(json.dumps({api: {f"chat:{partial['id']}": partial}}))
+other = data / "openai.json"
+other_catalog = json.loads(other.read_text())
+other_entries = next(entries for entries in other_catalog.values()
+                     if any(entry.get("type", "chat") == "chat" for entry in entries.values()))
+other_example = next(entry for entry in other_entries.values() if entry.get("type", "chat") == "chat")
+other_entries[f"chat:{model}"] = {**other_example, "id": model}
+other.write_text(json.dumps(other_catalog))
+(Path(package).parent / "exact-model.json").write_text(json.dumps({**example, "id": model, "name": model}))
+PY_CATALOG
+
+    set +e
+    env HOME="$home" PI_CODING_AGENT_DIR="~/.catalog agent" PATH="${bin}:${PATH}" \
+        PI_SUPERAGENTS_LAUNCHER_DRY_RUN=0 FAKE_PI_ARGV="${root}/argv" \
+        "${ZSH_BIN}" "${REPO_ROOT}/.devcontainer/pigt" >"${root}/stdout" 2>"${root}/stderr"
+    status=$?
+    set -e
+    [ ! -e "${root}/argv" ] || fail "pigt must not start a partial-match model or a model from another provider"
+    [ "$status" -ne 0 ] || fail "pigt must reject a missing exact provider/model"
+
+    # 対照: キャッシュだけ／models.json だけで完全一致登録した場合も実効一覧から受け付ける。
+    for source in cache config; do
+        python3 - "$agent" "$provider" "${root}/exact-model.json" "$source" <<'PY_EXACT'
+import json
+import sys
+from pathlib import Path
+
+directory, provider, fixture, source = sys.argv[1:]
+agent = Path(directory)
+model = json.loads(Path(fixture).read_text())
+if source == "cache":
+    content = {provider: {"models": [model], "checkedAt": 4102444800000, "lastModified": 4102444800000}}
+    (agent / "models-store.json").write_text(json.dumps(content))
+else:
+    (agent / "models-store.json").unlink()
+    model.pop("provider")
+    model.pop("type", None)
+    (agent / "models.json").write_text(json.dumps({"providers": {provider: {"models": [model]}}}))
+PY_EXACT
+        env HOME="$home" PI_CODING_AGENT_DIR="~/.catalog agent" PATH="${bin}:${PATH}" \
+            PI_SUPERAGENTS_LAUNCHER_DRY_RUN=0 FAKE_PI_ARGV="${root}/argv" \
+            "${ZSH_BIN}" "${REPO_ROOT}/.devcontainer/pigt" \
+            || fail "pigt must accept an exact model from ${source}"
+        [ -f "${root}/argv" ] || fail "pigt did not reach Pi with an exact model from ${source}"
+        rm -f -- "${root:?}/argv"
+    done
+}
+
 # このテストが無いと、ランチャーかヘルパが利用者の引数（空文字・改行・空白・日本語を含む）を落とす・分割する変更が入っても、Pi が別の引数のまま黙って起動する。
 test_launchers_forward_user_arguments_to_pi() {
     local root="${TEST_ROOT}/forward-pi" launcher home record i offset
@@ -272,6 +368,11 @@ FORWARD_BWRAP_EOF
 printf '%s\0' "$@" > "${FAKE_PI_ARGV:?}"
 FORWARD_PI_EOF
     chmod +x "${bin}/bwrap" "${bin}/pi"
+    # pigt の事前検査には実際の SDK を使い、TUI/API だけを上の shim に置き換える。
+    printf '{"name":"@earendil-works/pi-coding-agent"}\n' > "${bin}/package.json"
+    mkdir -p "${bin}/dist"
+    ln -s "${PI_PACKAGE}/dist/core" "${bin}/dist/core"
+    ln -s "${PI_PACKAGE}/dist/config.js" "${bin}/dist/config.js"
 
     # Vertex のランチャーは起動の前に、pi の実体の近くの bundled catalog で model ID を確かめる。
     # ID はヘルパの定義から求め、テストに写さない
@@ -295,6 +396,27 @@ PY
         printf '{"superagents":{"modelTiers":{}}}\n' \
             > "${home}/.pi/agent/extensions/subagent.d/${launcher}/config.json"
         write_oauth_auth "$home"
+        if [ "$launcher" = pigt ]; then
+            local out provider model
+            local -a own
+            out="$(run_launcher "$home" "$launcher")"
+            mapfile -t own < <(pi_args_of "$out")
+            provider="$(option_value --provider "${own[@]}")"
+            model="$(option_value --model "${own[@]}")"
+            python3 - "${home}/.pi/agent/models.json" "$provider" "$model" "$PI_PACKAGE" <<'PY_PARENT'
+import json
+import sys
+from pathlib import Path
+
+file, provider, model, package = sys.argv[1:]
+catalog = json.loads((Path(package) / f"node_modules/@earendil-works/pi-ai/dist/providers/data/{provider}.json").read_text())
+example = next(iter(next(iter(catalog.values())).values()))
+parent = {**example, "id": model}
+parent.pop("provider")
+parent.pop("type", None)
+Path(file).write_text(json.dumps({"providers": {provider: {"models": [parent]}}}))
+PY_PARENT
+        fi
         rm -f "$record"
         env HOME="$home" PI_CODING_AGENT_DIR="${home}/.pi/agent" \
             COMMANDCODE_API_KEY=dummy-for-forward OPENCODE_API_KEY=dummy-for-forward \
@@ -429,6 +551,7 @@ test_only_vertex_launchers_overlay_auth
 test_pigs_opencode_key_reaches_child_process
 test_pixg_rejects_non_oauth_xai_credentials
 test_launchers_forward_user_arguments_to_pi
+test_pigt_requires_exact_effective_catalog_model
 test_setup_backs_up_modified_config
 test_setup_if_absent_preserves_user_edits
 make_fake_pi
