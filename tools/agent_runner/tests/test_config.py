@@ -113,6 +113,39 @@ def test_duplicate_models_are_rejected_across_all_candidates(template: Path, tmp
         load_config(template, personal)
 
 
+def test_shared_model_key_rejects_provider_aliases(template: Path, tmp_path: Path) -> None:
+    """同じモデルの provider 別名を通すと、独立したレビュアーの数が黙って減る。"""
+    overlay = (
+        '[agents.first]\nprovider = "alpha"\nmodel = "model-a"\n'
+        '[agents.second]\nprovider = "beta"\nmodel = "model-b"\n'
+        '[workflows.audit.assignments.inspect]\nagents = ["first"]\nfallback = ["second"]\n'
+    )
+    load_config(template, personal_config(tmp_path, overlay))
+    overlay = overlay.replace("provider =", 'model_key = "shared-identity"\nprovider =')
+
+    with pytest.raises(ConfigError) as error:
+        load_config(template, personal_config(tmp_path, overlay))
+
+    assert error.value.category == "duplicate_model"
+
+
+def test_diversity_constraint_uses_model_key_across_providers(template: Path, tmp_path: Path) -> None:
+    """provider 別の同じモデルを見逃すと、実装担当が別名で self-review を黙って担う。"""
+    overlay = (
+        '[agents.first]\nprovider = "alpha"\nmodel = "model-a"\n'
+        '[agents.second]\nprovider = "beta"\nmodel = "model-b"\n'
+        '[workflows.audit.assignments.inspect]\nagents = ["first"]\nfallback = []\n'
+        '[workflows.audit.exclude_same_model_as]\ninspect = "implement"\n'
+    )
+    load_config(template, personal_config(tmp_path, overlay))
+    overlay = overlay.replace("provider =", 'model_key = "shared-identity"\nprovider =')
+
+    with pytest.raises(ConfigError) as error:
+        load_config(template, personal_config(tmp_path, overlay))
+
+    assert error.value.category == "duplicate_model"
+
+
 def test_duplicate_agent_names_are_rejected(template: Path, tmp_path: Path) -> None:
     """同じ担当を 2 回通すと、同じモデルの結果が 2 人分として数えられ独立したレビューが黙って減る。"""
     personal = personal_config(

@@ -60,6 +60,60 @@ process.exit(credential?.type === "oauth" &&
     return 1
 }
 
+# fuzzy な CLI 検索ではなく、Pi と同じ実効一覧で provider / ID の完全一致を確かめる。
+# カタログ更新・認証更新・!command の実行はしない。キャッシュは読み取り専用の
+# snapshot として渡し、FileModelsStore が読み取り時に作るファイルや lock も残さない。
+pi_require_exact_model() {
+    local provider="$1" model="$2"
+    if ! node --input-type=module -e '
+import fs from "node:fs";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+try {
+    let dir = path.dirname(fs.realpathSync(process.argv[1]));
+    while (true) {
+        const file = path.join(dir, "package.json");
+        if (fs.existsSync(file) && JSON.parse(fs.readFileSync(file, "utf8")).name === "@earendil-works/pi-coding-agent") break;
+        const parent = path.dirname(dir);
+        if (parent === dir) throw new Error();
+        dir = parent;
+    }
+    const load = (file) => import(pathToFileURL(path.join(dir, file)).href);
+    const { ModelRuntime } = await load("dist/core/model-runtime.js");
+    const { AuthStorage } = await load("dist/core/auth-storage.js");
+    const { getAgentDir } = await load("dist/config.js");
+    let cache = {};
+    try {
+        cache = JSON.parse(fs.readFileSync(path.join(getAgentDir(), "models-store.json"), "utf8").replace(/^\uFEFF/, ""));
+    } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+    }
+    const runtime = await ModelRuntime.create({
+        credentials: AuthStorage.inMemory(),
+        refreshOnCreate: false,
+        modelsStore: {
+            read: async (provider) => cache[provider],
+            write: async () => { throw new Error(); },
+            delete: async () => { throw new Error(); },
+        },
+    });
+    const [provider, id] = process.argv.slice(2);
+    const result = await runtime.refresh({ providers: [provider], allowNetwork: false });
+    if (result.errors.size || runtime.getError() ||
+        !runtime.getModels(provider).some((model) => model.provider === provider && model.id === id)) {
+        throw new Error();
+    }
+} catch {
+    // パーサーや SDK の例外には個人設定の値が含まれ得るため表示しない。
+    process.exit(1);
+}
+' "$(command -v pi)" "${provider}" "${model}" >/dev/null 2>&1; then
+        print -ru2 -- "ERROR: ${provider}/${model} の完全一致登録を実効モデル一覧で確認できません。起動を中止します。"
+        print -ru2 -- "利用者自身で pi update --models を実行し、provider / model ID の登録を確認してください。"
+        return 1
+    fi
+}
+
 pi_xai_require_oauth() {
     local agent_dir="${PI_CODING_AGENT_DIR:-${HOME}/.pi/agent}"
     if [[ "${agent_dir}" == "~" ]]; then

@@ -141,9 +141,10 @@ def _validate_references(config: Config) -> None:
                 agent = config.agents.get(agent_name)
                 if agent is None:
                     raise ConfigError("invalid_reference")
-                if agent.model in models:
+                model_identity = agent.model_key if agent.model_key is not None else agent.model
+                if model_identity in models:
                     raise ConfigError("duplicate_model")
-                models.add(agent.model)
+                models.add(model_identity)
             models_by_role[role] = models
         for role, other in workflow.exclude_same_model_as.items():
             if role not in models_by_role or other not in models_by_role:

@@ -35,7 +35,7 @@ Herdr の復元手順は `.devcontainer/docs/herdr-session-cwd-restore.md` を�
 ## Grok Build 撤去後の移行（#162）
 
 Grok Build（`grok` コマンド）は導入・更新・mount の対象から外した。
-Pi の `pixg`、Cursor CLI の `cursor-grok47` と alias `cur`、
+Pi の `pi_xai_grok4_xhigh`（ランチャー `pixg`）、Cursor CLI の `cursor_grok4_xhigh` と alias `cur`、
 Grok のモデル名は引き続き使える。
 
 1. **マージ前でも実施できる個人設定の移行:** 有効な agent-runner の個人設定
@@ -414,19 +414,77 @@ uv run --project tools/devenv python -m tools.agent_runner \
 プロンプトはファイルから読み、adapter が stdin または依頼ファイルで渡す。
 コマンド引数へ本文を埋め込まない。
 
+### agent の命名規則
+
+雛形の agent 名は `<runtime>_<provider>_<model>_<effort>` とする。段の区切りは `_`、
+段の中は `-` を使う。個人設定の agent 名にはこの規則を強制しない。
+
+- runtime は設定の `runtime` の値をそのまま使う。
+- provider は設定されているときだけ、その値をそのまま使う。未指定なら段を省く。
+- model は系列名＋メジャー版＋tier を小文字で書く（`gpt6-sol`・`deepseek4-flash` など）。
+  マイナー版・ベンダー接頭辞・日付は省き、それらの更新時は `model` の値だけを変える。
+  メジャー版が変わったら別の agent を追加する。Claude Code の `opus`・`sonnet` は
+  CLI の別名が最新モデルを指すため、そのまま使う。
+- effort は設定値、または Cursor の model slug に含まれる実効値を使う。
+  どちらも無ければ `default`（runtime の既定値に任せる）とする。
+
+たとえば `pi_openai-codex_gpt6-sol_xhigh` は Pi / openai-codex / GPT-6 Sol / xhigh、
+`claude-code_opus_default` は Claude Code / Opus / effort 未指定を表す。
+名前だけを変更した既存 agent の command・model・provider・effort・env・approval・
+skill_sources・args は変更していない。
+
+同一モデルかの比較には、agent の任意項目 `model_key` を使える。
+**指定があれば `model_key`、無ければ `model`** を比較値とし、文字列の完全一致で判定する。
+同じ役割の `agents`・`fallback` の全候補と `exclude_same_model_as` に同じ規則を適用する。
+provider・effort の違いは区別せず、provider ごとの表記を自動では正規化しない。
+雛形では DeepSeek V4.1 Flash の commandcode・opencode-go・deepinfra の3 agent に
+同じ `model_key = "deepseek-v4.1-flash"` を設定している。
+`model_key` は比較専用で、CLI に渡すモデルや実行結果の観測値は変えない。
+
+### 旧 agent 名を使っていた個人設定の移行
+
+雛形は個人設定に重なるため、旧名の `[agents.*]` を書いた個人設定は、改名後も
+その旧名を個人定義として残せる。alias は追加せず、既存の個人設定も自動では書き換えない。
+旧名の定義を持たず割り当てだけを保存した個人設定では、新名への変更が必要である。
+
+設定ファイルをバックアップしてから、次の順に移行する。
+
+1. 下表の旧名の `[agents.*]` の節を削除し、新名の雛形を継承する。
+   独自の command・env などを設定している場合は、新名の節へ必要な差分だけ移す。
+   旧名を残す場合も、provider 別の同一モデルには共通の `model_key` を明示する。
+2. `workflows.*.assignments.*` の `agents` と `fallback` を下表の新名に書き換える。
+3. 上記の `check` と `list` を実行し、読み込み成功と使う agent の表示を確認する。
+
+| 旧名 | 新名 |
+|---|---|
+| `claude-opus` | `claude-code_opus_default` |
+| `devin-swe` | `devin_swe2-max_default` |
+| `pi-deepseek` | `pi_commandcode_deepseek4-flash_max` |
+| `pi-gpt` | `pi_openai-codex_gpt6-sol_xhigh` |
+| `pixg` | `pi_xai_grok4_xhigh` |
+| `pi-go-glmf` | `pi_opencode-go_glm5-flash_max` |
+| `pigod` | `pi_opencode-go_deepseek4-flash_max` |
+| `pi-gemf` | `pi_google-vertex_gemini3-flash_high` |
+| `codex` | `codex_openai_gpt6-sol_default` |
+| `cursor` | `cursor_auto_default` |
+| `cursor-grok47` | `cursor_grok4_xhigh` |
+
+ランチャーのコマンド名（`pixg`・`pigod` など）は変更しない。
+過去のレビュー・実行記録・runtime の観測記録の agent 名も書き換えない。
+
 ### レビュアーの選び方
 
 PR レビュー（workflow `review` の role `inspect`）のレビュアーは固定しない。
 雛形の `[workflows.review.assignments.inspect]` は、指定が無いときの既定値であり、
 性能を評価して決めた順位ではない。
 
-- 依頼ごとに選ぶ: `run --workflow review` に `--assign inspect=claude-opus,pi-gpt` を付ける
+- 依頼ごとに選ぶ: `run --workflow review` に `--assign inspect=claude-code_opus_default,pi_openai-codex_gpt6-sol_xhigh` を付ける
 - いつも使う構成を変える: 個人設定の同じ節の `agents` を書き換える。
   個人設定を新しく書く場合は、この節だけ書けば雛形に重なる（配列は置換）
 
 ```toml
 [workflows.review.assignments.inspect]
-agents = ["claude-opus", "pi-gpt"]
+agents = ["claude-code_opus_default", "pi_openai-codex_gpt6-sol_xhigh"]
 ```
 
 runner は親の main checkout と共有の Git 管理領域を担当から読み取り専用にする。CLI の `run --workflow review` で
@@ -439,28 +497,30 @@ PR 修正ループと `run_roles.py` は同じ許可を自分で渡す。
 mkdir -p "$PARENT/reviews/<owner>/<repo>" "$PARENT/tmp/agents"
 uv run --project tools/devenv python -m tools.agent_runner run --workflow review \
   --repository "$PARENT" --revision HEAD --prompt-file /path/to/prompt.txt \
-  --assign inspect=claude-opus,pi-gpt \
+  --assign inspect=claude-code_opus_default,pi_openai-codex_gpt6-sol_xhigh \
   --write-exception "$PARENT/reviews: the pr-review helper's saved review" \
   --writable-path "$PARENT/reviews/<owner>/<repo>" --writable-path "$PARENT/tmp/agents" \
   --writable-path "$PARENT/.git/pr-review-save.lock" --writable-path "$PARENT/tools/devenv/.venv" \
   --private-review-refs
 ```
 
-同じ役割に、同じ `model` の agent は並べられない。例えば `pi-gpt` と同じモデルの担当を
-個人設定で別名にしても、`pi-gpt` と同時には割り当てられない。
+同じ役割に、比較値（指定があれば `model_key`、無ければ `model`）が同じ agent は並べられない。
+例えば `codex_openai_gpt6-sol_default` と `pi_openai-codex_gpt6-sol_xhigh` は
+どちらも `model = "gpt-6.1-sol"` なので並べられない。effort の違いでは別モデルにしない。
+DeepSeek V4.1 Flash の provider 別3 agent も、共通の `model_key` により並べられない。
 
-`codex` は、レビュアー（inspect）にも、レビュー修正の self-review・fix-check にも割り当てられない（#52）。
+runtime が `codex` の担当（雛形の `codex_openai_gpt6-sol_default` など）は、レビュアー（inspect）にも、レビュー修正の self-review・fix-check にも割り当てられない（#52）。
 codex の adapter は writes=false の役割を `codex exec -s read-only` で起動し、OS の sandbox がすべての書き込みを拒否する。
 PR レビューの helper は writes=false でも保存・uv のキャッシュ・Git の worktree の登録に書くので、codex では動かない。
 PR 修正ループの `check-options`・`start` と `run_roles.py` は、この割り当て（fallback を含む）を終了コード 2 で止める。
 runner も、`--write-exception` を付けた `run` を何も作らずに `invalid_input` で止める。
 `--write-exception` を付けない `run` は止まらず、レビューが失敗する。
-GPT をレビュアーにするときは `pi-gpt` を使う。codex は implement（writes=true の役割）には割り当てられる。
+GPT をレビュアーにするときは `pi_openai-codex_gpt6-sol_xhigh` を使う。codex は implement（writes=true の役割）には割り当てられる。
 理由と、書き込みを許可しない判断は `tools/agent_runner/runtimes/codex.rst` に記録した。
 雛形に無い agent は、個人設定の `[agents.<name>]` に定義してから指定する。
 雛形の既定値を変えても、既存の個人設定には反映されない。
 
-runtime が `cursor` の担当（雛形の `cursor`・`cursor-grok47`）は、writes=false の役割
+runtime が `cursor` の担当（雛形の `cursor_auto_default`・`cursor_grok4_xhigh`）は、writes=false の役割
 （`inspect`・`self-review`・`fix-check`）も `-f --sandbox disabled` で起動する（#75。writes=true の役割は今までどおり `-f` だけ）。
 シェルを使えるので、PR レビューの役割でも pr-review・review-verify の helper を実行できる。
 writes=false は claude-code・devin・pi と同じく runner の指示であり、sandbox ではない。
@@ -576,14 +636,16 @@ Dev Container を使わないローカル環境のみ、以下を手動で順に
 8. `install -m 0755 .devcontainer/pigod ~/.local/bin/pigod`
 9. `install -m 0755 .devcontainer/piccg ~/.local/bin/piccg`
 10. `install -m 0755 .devcontainer/piccd ~/.local/bin/piccd`
-11. `install -m 0755 .devcontainer/piga ~/.local/bin/piga`
-12. `install -m 0755 .devcontainer/pigs ~/.local/bin/pigs`
-13. `install -m 0755 .devcontainer/pigl ~/.local/bin/pigl`
-14. `install -m 0755 .devcontainer/pixg ~/.local/bin/pixg`
-15. `install -m 0755 .devcontainer/pigemf ~/.local/bin/pigemf`
-16. `install -m 0755 .devcontainer/pigemp ~/.local/bin/pigemp`
-17. `install -m 0755 .devcontainer/pigema ~/.local/bin/pigema`
-18. `zsh scripts/setup_pi_superagents.zsh`
+11. `install -m 0755 .devcontainer/pidid ~/.local/bin/pidid`
+12. `install -m 0755 .devcontainer/piga ~/.local/bin/piga`
+13. `install -m 0755 .devcontainer/pigt ~/.local/bin/pigt`
+14. `install -m 0755 .devcontainer/pigs ~/.local/bin/pigs`
+15. `install -m 0755 .devcontainer/pigl ~/.local/bin/pigl`
+16. `install -m 0755 .devcontainer/pixg ~/.local/bin/pixg`
+17. `install -m 0755 .devcontainer/pigemf ~/.local/bin/pigemf`
+18. `install -m 0755 .devcontainer/pigemp ~/.local/bin/pigemp`
+19. `install -m 0755 .devcontainer/pigema ~/.local/bin/pigema`
+20. `zsh scripts/setup_pi_superagents.zsh`
 
 `--with-deps` は sudo を使うため、エージェントではなく人間が実行する。
 OS 依存を省くと `libglib-2.0.so.0` が見つからず起動に失敗する
@@ -598,7 +660,8 @@ OS 依存を省くと `libglib-2.0.so.0` が見つからず起動に失敗する
 （`~/.pi/agent/auth.json`）とモデル定義（`~/.pi/agent/models.json`）が
 ホスト側に残るため、リビルド後に `scripts/setup_pi.zsh`、
 `scripts/setup_pi_opencode_go.zsh`、`scripts/setup_pi_commandcode_goat.zsh`
-を実行し直す必要はない。
+を実行し直す必要はない。ただし、新しいモデル定義の追加・更新は明示的な setup が必要である
+（既存の `models.json` はリビルドでは更新しない）。
 
 `install_beforehand.bash` は次のものを配置する。挙動が異なるのは、
 models.json だけが bind mount の内側で、他が外側にあるためである。
@@ -611,7 +674,8 @@ models.json だけが bind mount の内側で、他が外側にあるためで�
 - `.devcontainer/pigod` → `~/.local/bin/pigod`。pigo と同じ理由で毎回上書き
 - `.devcontainer/piccg` → `~/.local/bin/piccg`。pigo と同じ理由で毎回上書き
 - `.devcontainer/piccd` → `~/.local/bin/piccd`。pigo と同じ理由で毎回上書き
-- `.devcontainer/piga`・`pigs`・`pigl` → `~/.local/bin/`。同様に毎回上書き
+- `.devcontainer/pidid` → `~/.local/bin/pidid`。pigo と同じ理由で毎回上書き
+- `.devcontainer/piga`・`pigt`・`pigs`・`pigl` → `~/.local/bin/`。同様に毎回上書き
 - `.devcontainer/pixg` → `~/.local/bin/pixg`。同様に毎回上書き
 - `.devcontainer/pigemf`・`pigemp`・`pigema` → `~/.local/bin/`。同様に毎回上書き
 - `.devcontainer/pi-superagents/<launcher>.json` → `~/.pi/agent/extensions/subagent.d/<launcher>/config.json`、
@@ -711,15 +775,91 @@ ID と表示名が一致しないモデルなので注意する。カタログ�
 `No models matching "deepseek/deepseek-v4.1-flash"` で落ちるためである。
 `piccd` はこの場合も setup スクリプトの実行を案内する。
 
+### DeepInfra の DeepSeek V4.1 Flash 1017 ランチャー
+
+`pidid` は `--provider deepinfra --model deepseek-ai/DeepSeek-V4.1-Flash-1017`
+で Pi を起動する。`--models` も同じ 1 モデル、`--thinking high` を指定し、
+子 Pi の全 tier も同じ provider・モデル・`high` を使う。
+DeepInfra は独自 provider のため、`.devcontainer/pi-models.json` に定義する。
+旧 `deepseek-ai/DeepSeek-V4-Flash-0731` と他 provider の定義は残している。
+
+設定の根拠は次の公開資料（2026-10-31 確認）である。
+
+- [DeepInfra のモデル metadata](https://api.deepinfra.com/v1/openai/models?filter=with_meta&sort_by=pi):
+  1017 の `context_length`・`max_tokens` はともに 1,048,576、vision・reasoning に対応。
+  Pi では `contextWindow: 1048576`、`input: ["text", "image"]`、`reasoning: true` とする
+- [Pi 連携手順](https://docs.deepinfra.com/integrations/pi):
+  `baseUrl: https://api.deepinfra.com/v1/openai`、`api: openai-completions`、
+  `authHeader: true`、`apiKey: $DEEPINFRA_TOKEN`。
+  `compat.supportsDeveloperRole: false`、`thinkingFormat: deepseek` を指定する。
+  `maxTokens: 65536` はこの連携で採用する**運用上限**で、サービスの最大値ではない
+- 価格は 100 万 token あたり input 0.2・output 0.6・cache read 0.006 USD。
+  metadata の `discount: 0.51` は適用条件・期間が未確認なので、割引前の値を
+  Pi の費用表示用に登録する。実際の課金額を保証する値ではない。
+  cache write は未確認のため、既存パターンと同じく 0 とする（無料という意味ではない）
+- [Reasoning の資料](https://docs.deepinfra.com/chat/reasoning)に `high` の指定例がある。
+  `thinkingLevelMap` は `minimal -> low`、`low/medium/high` は同じ値、
+  `xhigh/max` は `null`（未対応）とする。1017 固有の全許容値や、指定を省略したときの
+  推論状態は未確定なので断定しない
+
+#### 新規環境
+
+Dev Container の作成・リビルドでは、`install_beforehand.bash` が無い場合だけ
+`models.json` の雛形と tier 設定を置き、ランチャーと共通ヘルパは毎回配置する。
+トークンは利用者自身で用意し、起動するシェルで指定する。認証の作成・取得・保存は行わない。
+
+```bash
+export DEEPINFRA_TOKEN="..."
+pidid
+```
+
+`pidid` はトークン・対象モデルの登録・専用 tier 設定が不足していれば案内して止まり、
+別モデルへ黙って切り替えない。壊れたモデル定義も起動前に拒否し、内容や例外の入力値は
+診断へ出さない。実起動では Pi の実効モデル一覧でも provider / ID の完全一致を確認する。
+
+#### 既存環境・明示更新
+
+旧雛形のある環境では、リビルドだけでは 1017 が追加されない。親リポジトリのルートで
+次を実行する。個人設定の更新なので、利用者が実行の要否を判断する。
+
+```bash
+export DEEPINFRA_TOKEN="..."
+zsh scripts/setup_pi.zsh
+pi --list-models deepinfra
+pidid
+```
+
+`setup_pi.zsh` は既存の `models.json` を世代別にバックアップしてから更新する。
+同じ秒の再実行でも前のバックアップを失わない。DeepInfra の接続設定と雛形にある
+モデル ID の定義は更新し、利用者追加モデル・独自フィールド・他 provider・top-level の
+情報を保持する。不正な入力や更新失敗では成功表示や後続の配置へ進まない。
+`pidid` を配置し、`setup_pi_superagents.zsh --if-absent` で共通ヘルパを更新する。
+既存の全ランチャーの tier 設定（`pidid` を含む）は保持し、未配置のものだけを追加する。
+
+`PI_CODING_AGENT_DIR` を使っている場合は、更新・確認・起動すべてに同じ値を渡す。
+`~` と `~/` は HOME へ展開する。たとえば次の形で更新できる。
+
+```bash
+PI_CODING_AGENT_DIR='~/custom-agent' zsh scripts/setup_pi.zsh
+PI_CODING_AGENT_DIR='~/custom-agent' pi --list-models deepinfra
+PI_CODING_AGENT_DIR='~/custom-agent' pidid
+```
+
+この変数で移るのは Pi 本体の `models.json` などである。pi-superagents 拡張の読み先は
+HOME 固定なので、tier は引き続き `~/.pi/agent/extensions/subagent.d/pidid/config.json`
+に置く。tier を雛形へ明示的に揃え直す場合だけ `zsh scripts/setup_pi_superagents.zsh`
+を実行する（他ランチャーの変更分もバックアップして置き直す）。
+
 ### ChatGPT Pro の GPT-6 ランチャー
 
 | launcher | Provider / Model |
 |---|---|
 | `piga` | `openai-codex/gpt-6-astra` |
+| `pigt` | `openai-codex/gpt-6.1-terra` |
 | `pigs` | `openai-codex/gpt-6.1-sol` |
 | `pigl` | `openai-codex/gpt-6-luna` |
 
-3 つとも親 Pi は ChatGPT Pro サブスクリプションの Codex OAuth 認証を使う。
+4 つとも親 Pi は ChatGPT Pro サブスクリプションの Codex OAuth 認証を使う。
 `OPENAI_API_KEY` は不要で、OpenAI API のキー課金用 provider には接続しない。
 初回だけ素の `pi` を起動して `/login openai-codex` を実行し、ログインする。
 OAuth 情報は `~/.pi/agent/auth.json` に保存される。`~/.pi` は Dev Container に bind mount
@@ -739,16 +879,42 @@ GPT-6.1 Sol のため Pi 0.99.1 以上が必要（GPT-6 Astra / Luna もこの�
 ```bash
 pi --version
 pi --list-models gpt-6-astra
+pi --list-models gpt-6.1-terra
 pi --list-models gpt-6.1-sol
 pi --list-models gpt-6-luna
 ```
 
 モデル行が無い場合は Pi を更新する。`pi --list-models` は利用可能なモデルを
 表示するため、未認証時には Pi がモデル定義を持っていても `openai-codex` 行は
-表示されない。3 ランチャーは `--thinking xhigh` で起動する。子 Pi の
+表示されない。4 ランチャーは `--thinking xhigh` で起動する。子 Pi の
 `cheap` / `balanced` / `max` tier はランチャーごとに GPT-6 Luna / GPT-6.1
-Sol / GPT-6 Astra を割り当てる（`pigs` の `cheap` だけは OpenCode Go の
+Sol / GPT-6 Astra / GPT-6.1 Terra を割り当てる（`pigs` の `cheap` だけは OpenCode Go の
 `deepseek-v4.1-flash`。下表を参照）。
+
+#### `pigt` を初めて使う前に
+
+GPT-6.1 Terra は Pi の版によっては同梱カタログに無いため、利用者自身が
+`pi update --models` で pi.dev のモデルカタログを更新する。
+対象を付けない `pi update` は Pi 本体だけを更新し、カタログは更新しない。
+保存済みのカタログ（`~/.pi/agent/models-store.json`）に Terra が無ければ、リビルド後も必要である。
+ランチャーやセットアップはカタログ・認証・既存の個人設定を自動更新しない。
+`pigt` は起動前に、同梱カタログ・更新キャッシュ・`models.json` を反映した実効モデル一覧で
+provider / ID の完全一致登録を検査し、確認できなければ停止する。似た ID や表示名のモデルでは起動しない。
+
+リビルドしない既存環境では、更新済みの親リポジトリのルートで次を実行する。
+`--if-absent` は新しい `pigt` の tier 設定を配置し、既存の tier 設定は保持する。
+
+```bash
+mkdir -p ~/.local/bin
+install -m 0755 .devcontainer/pigt ~/.local/bin/pigt
+zsh scripts/setup_pi_superagents.zsh --if-absent
+pi update --models
+pi --list-models gpt-6.1-terra
+```
+
+`pi --list-models` の検索は fuzzy search なので、provider が `openai-codex`、ID が
+`gpt-6.1-terra` と完全に一致する行があることを確認してから `pigt` を使う。
+似た ID の行では足りない。行が無い場合は、ログイン（`/login openai-codex`）と Pi の版を確認する。
 
 ### SuperGrok / X Premium の Grok 4.7 ランチャー
 
@@ -917,11 +1083,15 @@ zsh scripts/setup_pi_superagents.zsh --if-absent
 - `pi-models.json` を編集し、既存の `~/.pi/agent/models.json` へ反映したいとき
   （`install_beforehand.bash` は既存ファイルを上書きしないため）
 
-いずれも冪等で、`providers` のうち対象プロバイダのエントリだけを置き換える。
+いずれも冪等で、`providers` のうち対象プロバイダを更新する。
+`setup_pi.zsh` は DeepInfra の利用者追加モデルと独自フィールドを保持して統合し、
+他の 2 本は対象プロバイダのエントリを置き換える。
 `setup_pi_opencode_go.zsh` は `.devcontainer/pigo` と `.devcontainer/pigod` を、
 `setup_pi_commandcode_goat.zsh` は
-`.devcontainer/piccg` と `.devcontainer/piccd` をそのまま配置するため、
+`.devcontainer/piccg` と `.devcontainer/piccd` を、`setup_pi.zsh` は
+`.devcontainer/pidid` をそのまま配置するため、
 実行してもランチャの内容は `install_beforehand.bash` の配置結果と一致する。
+`setup_pi.zsh` は続けて `setup_pi_superagents.zsh --if-absent` を呼ぶ。
 
 commandcode の 2 つのランチャを `setup_pi_commandcode_goat.zsh` が同居して
 受け持つのは、両者が同じ `providers.commandcode` エントリを共有するためで
@@ -939,6 +1109,7 @@ commandcode の 2 つのランチャを `setup_pi_commandcode_goat.zsh` が同�
   `setup_pi_opencode_go.zsh` でキーを更新するときだけ必要になる
 - `DEEPINFRA_TOKEN` は `models.json` の `apiKey` が `$DEEPINFRA_TOKEN` を
   参照するため、deepinfra を使うシェルで export しておく必要がある。
+  `pidid` と `setup_pi.zsh` は未設定・空のときに案内して止まる。
   `ccdd` / `ccddg`（Claude Code を DeepInfra の Anthropic エンドポイントへ
   向けるラッパー）もこの値を読む
 - `COMMANDCODE_API_KEY` は `DEEPINFRA_TOKEN` と同じ方式である。`models.json`
@@ -1016,7 +1187,7 @@ Pi 1.0.0 から、対話 TUI の既定モードは `fullscreen` になった。�
 代替画面を使って会話履歴を Pi 内で管理するため、Herdr の通常のスクロール履歴に
 過去の出力が残らず、コピーモードでさかのぼれない。
 
-このリポジトリが管理する `pigo`・`pigod`・`piccg`・`piccd`・`piga`・
+このリポジトリが管理する `pigo`・`pigod`・`piccg`・`piccd`・`pidid`・`piga`・`pigt`・
 `pigs`・`pigl`・`pixg`・`pigemf`・`pigemp`・`pigema` は、共通ヘルパ `pi-superagents-exec.zsh` から
 `pi --tui-mode regular` を起動する。regular は通常画面と端末のスクロール履歴を
 使うため、画面高を超えた出力も Herdr のコピーモードで読める。
@@ -1058,7 +1229,9 @@ zsh scripts/setup_pi_superagents.zsh --if-absent
 | `pigod` | `opencode-go/muse-spark-1.3-contributor` | `opencode-go/deepseek-v4.1-flash` | `opencode-go/deepseek-v4.1-flash` |
 | `piccg` | `commandcode/meta/muse-spark-1.3-contributor` | `commandcode/meta/muse-spark-1.3-contributor` | `commandcode/deepseek/deepseek-v4.1-flash` |
 | `piccd` | `commandcode/meta/muse-spark-1.3-contributor` | `commandcode/deepseek/deepseek-v4.1-flash` | `commandcode/deepseek/deepseek-v4.1-flash` |
+| `pidid` | `deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017` | `deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017` | `deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017` |
 | `piga` | `openai-codex/gpt-6-luna` | `openai-codex/gpt-6.1-sol` | `openai-codex/gpt-6-astra` |
+| `pigt` | `openai-codex/gpt-6-luna` | `openai-codex/gpt-6.1-sol` | `openai-codex/gpt-6.1-terra` |
 | `pigs` | `opencode-go/deepseek-v4.1-flash` | `openai-codex/gpt-6.1-sol` | `openai-codex/gpt-6.1-sol` |
 | `pigl` | `openai-codex/gpt-6-luna` | `openai-codex/gpt-6.1-sol` | `openai-codex/gpt-6.1-sol` |
 | `pixg` | `opencode-go/deepseek-v4.1-flash` | `opencode-go/deepseek-v4.1-flash` | `xai/grok-4.7` |
@@ -1066,7 +1239,8 @@ zsh scripts/setup_pi_superagents.zsh --if-absent
 | `pigemp` | `google-vertex/gemini-3.8-flash` | `google-vertex/gemini-3.1-pro-preview` | `google-vertex/gemini-3.1-pro-preview` |
 | `pigema` | `google-vertex/gemini-3.8-flash` | `google-vertex/gemini-4-argon` | `google-vertex/gemini-4-argon` |
 
-`piga` の子 Pi は `cheap` / `balanced` が `xhigh`、`max` が `max`。
+`pidid` の子 Pi は全 tier が `high`。
+`piga`・`pigt` の子 Pi は `cheap` / `balanced` が `xhigh`、`max` が `max`。
 `pigs` の子 Pi は `cheap` が `max`、`balanced` が `xhigh`、`max` が `max`。
 `pigl` の子 Pi は全 tier が `xhigh`。`pixg` の子 Pi は DeepSeek の
 `cheap` / `balanced` が `max`、Grok の `max` が `xhigh`。
@@ -1145,9 +1319,9 @@ bash .devcontainer/test-pi-superagents.bash
 ## DSH 撤去後の移行（#123）
 
 DeepSeek Harness（DSH）の導入・ランチャー・runner runtime は撤去した。
-Pi の DeepSeek 担当（`pi-deepseek`・`pigod`）とランチャー（`piccd`・`pigod`）、
+Pi の DeepSeek 担当（`pi_commandcode_deepseek4-flash_max`・`pi_opencode-go_deepseek4-flash_max`）とランチャー（`piccd`・`pigod`）、
 Claude Code の `ccdd`・`ccddg` は引き続き使える。既定の inspect は
-`devin-swe`・`pi-deepseek`・`claude-opus`・`pi-gpt` の 4 人である。
+`devin_swe2-max_default`・`pi_commandcode_deepseek4-flash_max`・`pi_openai-codex_gpt6-sol_xhigh` の 3 人である。
 
 ### 個人設定の更新
 
@@ -1157,7 +1331,7 @@ Claude Code の `ccdd`・`ccddg` は引き続き使える。既定の inspect �
 
 1. `[agents.dsh-ccd]`・`[agents.dsh-go]` と、個人で定義した `runtime = "dsh"` の担当の節を削除する。
 2. workflow の `agents`・`fallback` などにある DSH 担当の割り当てを削除する。
-   同じモデルを使う場合は `dsh-ccd` を `pi-deepseek` に置き換えられる。
+   同じモデルを使う場合は `dsh-ccd` を `pi_commandcode_deepseek4-flash_max` に置き換えられる。
 3. `[workflows.review]` の `after_run` から `review_run.py finalize-parent` を呼ぶコマンドだけを外し、
    `attach-runner` は残す。配列は雛形とマージせず丸ごと置き換わるため、古い配列を残すと
    撤去済みのコマンドを呼び続ける。雛形と同じ後処理を使うなら、個人設定の `after_run` 自体を外す。

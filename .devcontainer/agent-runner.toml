@@ -1,28 +1,30 @@
-# 汎用の非対話エージェント実行器。資格情報の値は書かない。
+# 汎用の非対話エージェント実行ツール。資格情報の値は書かない。
+# agent 名の規則: .devcontainer/README.md「agent の命名規則」を参照。
 schema_version = 1
 
 # codex / cursor の agent は #566 が追加する。
-[agents.claude-opus]
+[agents.claude-code_opus_default]
 runtime = "claude-code"
 command = ["claude"]
 model = "opus"
 env = ["HOME", "PATH"]
 
-[agents.devin-swe]
+[agents.devin_swe2-max_default]
 runtime = "devin"
 command = ["devin"]
 model = "swe-2-max"
 env = ["HOME", "PATH"]
 
-[agents.pi-deepseek]
+[agents.pi_commandcode_deepseek4-flash_max]
 runtime = "pi"
 command = ["piccd"]
 model = "deepseek/deepseek-v4.1-flash"
+model_key = "deepseek-v4.1-flash"
 provider = "commandcode"
 effort = "max"
 env = ["HOME", "PATH", "COMMANDCODE_API_KEY"]
 
-[agents.pi-gpt]
+[agents.pi_openai-codex_gpt6-sol_xhigh]
 runtime = "pi"
 command = ["pigs"]
 model = "gpt-6.1-sol"
@@ -30,7 +32,7 @@ provider = "openai-codex"
 effort = "xhigh"
 env = ["HOME", "PATH", "OPENCODE_GO_API_KEY"]
 
-[agents.pixg]
+[agents.pi_xai_grok4_xhigh]
 runtime = "pi"
 command = ["pixg"]
 model = "grok-4.7"
@@ -38,7 +40,7 @@ provider = "xai"
 effort = "xhigh"
 env = ["HOME", "PATH"]
 
-[agents.pi-go-glmf]
+[agents.pi_opencode-go_glm5-flash_max]
 runtime = "pi"
 command = ["pi"]
 model = "glm-5.3-flash"
@@ -46,15 +48,16 @@ provider = "opencode-go"
 effort = "max"
 env = ["HOME", "PATH", "OPENCODE_API_KEY"]
 
-[agents.pigod]
+[agents.pi_opencode-go_deepseek4-flash_max]
 runtime = "pi"
 command = ["pigod"]
 model = "deepseek-v4.1-flash"
+model_key = "deepseek-v4.1-flash"
 provider = "opencode-go"
 effort = "max"
 env = ["HOME", "PATH", "OPENCODE_GO_API_KEY"]
 
-[agents.pi-gemf]
+[agents.pi_google-vertex_gemini3-flash_high]
 runtime = "pi"
 command = ["pigemf"]
 model = "gemini-3.8-flash"
@@ -62,9 +65,48 @@ provider = "google-vertex"
 effort = "high"
 env = ["HOME", "PATH", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"]
 
+[agents.pi_openai-codex_gpt6-terra_xhigh]
+runtime = "pi"
+command = ["pigt"]
+model = "gpt-6.1-terra"
+provider = "openai-codex"
+effort = "xhigh"
+env = ["HOME", "PATH"]
+
+[agents.pi_openai-codex_gpt6-astra_xhigh]
+runtime = "pi"
+command = ["piga"]
+model = "gpt-6-astra"
+provider = "openai-codex"
+effort = "xhigh"
+env = ["HOME", "PATH"]
+
+[agents.claude-code_sonnet_default]
+runtime = "claude-code"
+command = ["claude"]
+model = "sonnet"
+env = ["HOME", "PATH"]
+
+[agents.pi_google-vertex_gemini4-argon_high]
+runtime = "pi"
+command = ["pigema"]
+model = "gemini-4-argon"
+provider = "google-vertex"
+effort = "high"
+env = ["HOME", "PATH", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"]
+
+[agents.pi_deepinfra_deepseek4-flash_high]
+runtime = "pi"
+command = ["pidid"]
+model = "deepseek-ai/DeepSeek-V4.1-Flash-1017"
+model_key = "deepseek-v4.1-flash"
+provider = "deepinfra"
+effort = "high"
+env = ["HOME", "PATH", "DEEPINFRA_TOKEN"]
+
 # codex exec --json。実測既定モデルは gpt-6.1-sol（openai）。
 # writes=false を -s read-only で起動するので、inspect・self-review・fix-check には割り当てられない（#52）。
-[agents.codex]
+[agents.codex_openai_gpt6-sol_default]
 runtime = "codex"
 command = ["codex", "exec"]
 model = "gpt-6.1-sol"
@@ -75,7 +117,7 @@ env = ["HOME", "PATH"]
 
 # Cursor Agent（agent/cursor-agent は同一バイナリへの symlink）。model は slug、auto は実測の既定。
 # writes=false の役割も -f --sandbox disabled で起動するので、inspect・self-review・fix-check に割り当てられる（#75）。
-[agents.cursor]
+[agents.cursor_auto_default]
 runtime = "cursor"
 command = ["agent"]
 model = "auto"
@@ -84,7 +126,7 @@ skill_sources = [".cursor/skills", ".claude/skills", ".agents/skills", ".codex/s
 env = ["HOME", "PATH"]
 
 # Grok-4.7 を Cursor CLI 側で明示する agent。grok-4.7-xhigh は --list-models の実在 slug。起動は上の cursor と同じ。
-[agents.cursor-grok47]
+[agents.cursor_grok4_xhigh]
 runtime = "cursor"
 command = ["agent"]
 model = "grok-4.7-xhigh"
@@ -128,12 +170,12 @@ after_run = [[
 # workflow の割り当て既定値（#565）。
 # review の inspect（レビュアー）は固定しない。依頼ごとに --assign inspect=agent-a,agent-b で選ぶ。
 # いつも使う構成は、個人設定のこの節の agents を書き換える。
-# 下の 4 人は指定が無いときの既定値で、性能の順位ではない。
+# 下の 3 人は指定が無いときの既定値で、性能の順位ではない。
 [workflows.review.assignments.inspect]
-agents = ["devin-swe", "pi-deepseek", "pi-gpt"]
+agents = ["devin_swe2-max_default", "pi_commandcode_deepseek4-flash_max", "pi_openai-codex_gpt6-sol_xhigh"]
 
 [workflows.fix.assignments.implement]
-agents = ["claude-opus"]
+agents = ["claude-code_opus_default"]
 
 [workflows.fix.assignments.self-review]
 agents = ["self"]
