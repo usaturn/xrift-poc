@@ -131,6 +131,7 @@ test_actual_and_dry_run_argv_match() {
 }
 
 CONFIG_DIR="${REPO_ROOT}/.devcontainer/pi-superagents"
+PI_MODELS="${REPO_ROOT}/.devcontainer/pi-models.json"
 
 # ランチャーは .devcontainer/pi-superagents/<launcher>.json の tier 設定と 1 対 1 に対応する。
 # 一覧をテストへ書き写さず、設定ファイルから導く。
@@ -142,7 +143,12 @@ mapfile -t LAUNCHERS < <(find "$CONFIG_DIR" -maxdepth 1 -name '*.json' -printf '
 # 元ファイルを直接叩く。ヘルパの探索がリポジトリ相対で解決できることも同時に見る。
 run_launcher() {
     local home="$1" launcher="$2"; shift 2
+    mkdir -p "${home}/.pi/agent"
+    if [ ! -e "${home}/.pi/agent/models.json" ]; then
+        cp "$PI_MODELS" "${home}/.pi/agent/models.json"
+    fi
     env HOME="$home" \
+        DEEPINFRA_TOKEN=dummy-for-dry-run \
         PI_CODING_AGENT_DIR="${home}/.pi/agent" \
         COMMANDCODE_API_KEY="dummy-for-dry-run" \
         OPENCODE_API_KEY="dummy-for-dry-run" \
@@ -396,6 +402,7 @@ PY
         printf '{"superagents":{"modelTiers":{}}}\n' \
             > "${home}/.pi/agent/extensions/subagent.d/${launcher}/config.json"
         write_oauth_auth "$home"
+        cp "$PI_MODELS" "${home}/.pi/agent/models.json"
         if [ "$launcher" = pigt ]; then
             local out provider model
             local -a own
@@ -420,6 +427,7 @@ PY_PARENT
         rm -f "$record"
         env HOME="$home" PI_CODING_AGENT_DIR="${home}/.pi/agent" \
             COMMANDCODE_API_KEY=dummy-for-forward OPENCODE_API_KEY=dummy-for-forward \
+            DEEPINFRA_TOKEN=dummy-for-forward \
             PATH="${bin}:${PATH}" PI_SUPERAGENTS_LAUNCHER_DRY_RUN=0 FAKE_PI_ARGV="$record" \
             "${ZSH_BIN}" "${REPO_ROOT}/.devcontainer/${launcher}" "${user_args[@]}" \
             || fail "${launcher} must start pi"
@@ -475,6 +483,136 @@ test_setup_if_absent_preserves_user_edits() {
     run_setup "$home" --if-absent >/dev/null
     grep -q '"x/y"' "$config" || fail "--if-absent must not overwrite an existing config"
     cmp -s "$HELPER" "$helper" || fail "--if-absent must refresh the shared helper from the repository"
+}
+
+SETUP_DEEPINFRA="${REPO_ROOT}/scripts/setup_pi.zsh"
+
+# このテストが無いと、明示更新が利用者追加モデル・独自フィールドを消すか、別の設定先を書き換えて古いモデル定義を黙って使い続ける。
+test_setup_pi_preserves_user_data_in_custom_agent_dir() {
+    local home="${TEST_ROOT}/deepinfra-preserve" agent original config
+    agent="${home}/custom agent"
+    config="${home}/.pi/agent/extensions/subagent.d/pidid/config.json"
+    mkdir -p "$agent" "$(dirname "$config")" "${home}/.pi/agent"
+    printf '%s\n' '{"default-home":"untouched"}' > "${home}/.pi/agent/models.json"
+    printf '%s\n' '{"custom-tier":"keep me"}' > "$config"
+    original="${home}/original.json"
+    printf '%s\n' '{"custom-top":{"memo":"日本語"},"providers":{"deepinfra":{"custom-provider":{"keep":true},"models":[{"id":"user/added","custom-model":{"keep":"value"}}]},"other":{"apiKey":"fake-other-secret","models":[]}}}' > "$original"
+    cp "$original" "${agent}/models.json"
+
+    env HOME="$home" PI_CODING_AGENT_DIR="$agent" DEEPINFRA_TOKEN=dummy \
+        zsh "$SETUP_DEEPINFRA" >"${home}/out" 2>&1 || fail "DeepInfra setup must succeed"
+    python3 - "$original" "${agent}/models.json" <<'PY_PRESERVE' || fail "setup lost user model data"
+import json
+import sys
+from pathlib import Path
+
+before, after = (json.loads(Path(p).read_text()) for p in sys.argv[1:])
+assert after["custom-top"] == before["custom-top"]
+assert after["providers"]["other"] == before["providers"]["other"]
+old = before["providers"]["deepinfra"]
+new = after["providers"]["deepinfra"]
+assert new.get("custom-provider") == old["custom-provider"]
+assert old["models"][0] in new["models"]
+PY_PRESERVE
+    assert_eq "$(<"${home}/.pi/agent/models.json")" '{"default-home":"untouched"}' "default models must stay untouched"
+    assert_eq "$(<"$config")" '{"custom-tier":"keep me"}' "existing pidid tier must stay untouched"
+}
+
+# このテストが無いと、同じ秒に再実行した更新が前のバックアップを上書きし、利用者の設定を復元できなくなる。
+test_setup_pi_keeps_each_backup_when_timestamp_collides() {
+    local home="${TEST_ROOT}/deepinfra-backup" bin models backup found_one=0 found_two=0
+    bin="${home}/bin"
+    models="${home}/.pi/agent/models.json"
+    mkdir -p "$bin" "$(dirname "$models")"
+    printf '#!/bin/sh\nprintf "same-second\\n"\n' > "${bin}/date"
+    chmod +x "${bin}/date"
+    printf '%s\n' '{"providers":{},"previous":"first generation"}' > "${home}/first"
+    printf '%s\n' '{"providers":{},"previous":"second generation"}' > "${home}/second"
+    cp "${home}/first" "$models"
+    env HOME="$home" PI_CODING_AGENT_DIR="${home}/.pi/agent" DEEPINFRA_TOKEN=dummy PATH="${bin}:${PATH}" \
+        zsh "$SETUP_DEEPINFRA" >"${home}/out-first" 2>&1 || fail "first setup must succeed"
+    cp "${home}/second" "$models"
+    env HOME="$home" PI_CODING_AGENT_DIR="${home}/.pi/agent" DEEPINFRA_TOKEN=dummy PATH="${bin}:${PATH}" \
+        zsh "$SETUP_DEEPINFRA" >"${home}/out-second" 2>&1 || fail "second setup must succeed"
+    for backup in "${models}".bak.*; do
+        cmp -s "$backup" "${home}/first" && found_one=1
+        cmp -s "$backup" "${home}/second" && found_two=1
+    done
+    [ "$found_one" = 1 ] && [ "$found_two" = 1 ] || fail "both original generations must remain in backups"
+}
+
+# このテストが無いと、パーサー例外で秘密が表示され、壊れた入力でも setup が成功表示や外部配置へ進む。
+test_setup_pi_invalid_input_is_private_and_stops_placement() {
+    local home="${TEST_ROOT}/deepinfra-invalid" models output status=0 secret='fake-secret-DO-NOT-PRINT'
+    models="${home}/.pi/agent/models.json"
+    mkdir -p "$(dirname "$models")"
+    # JSON の構造が壊れた場合も、Python の例外が入力値を含みうる。
+    printf '{"%s":\n' "$secret" > "$models"
+    cp "$models" "${home}/original"
+    output="$(env HOME="$home" DEEPINFRA_TOKEN="$secret" zsh "$SETUP_DEEPINFRA" 2>&1)" || status=$?
+    if [[ "$output" == *"$secret"* ]]; then
+        fail "setup must not print input values or secrets"
+    fi
+    cmp -s "$models" "${home}/original" || fail "invalid input must remain unchanged"
+    [ ! -e "${home}/.local/bin" ] || fail "failed setup must not continue to external placement"
+    [ "$status" -ne 0 ] || fail "failed setup must not claim success"
+}
+
+# このテストが無いと、更新コマンドの失敗が無視され、配置済みのランチャーで古い定義を黙って使う。
+test_setup_pi_command_failure_stops_placement() {
+    local home="${TEST_ROOT}/deepinfra-command-failure" bin models status=0
+    bin="${home}/bin"
+    models="${home}/.pi/agent/models.json"
+    mkdir -p "$bin" "$(dirname "$models")"
+    printf '%s\n' '{"providers":{},"user":"keep"}' > "$models"
+    cp "$models" "${home}/original"
+    printf '#!/bin/sh\nexit 1\n' > "${bin}/python3"
+    chmod +x "${bin}/python3"
+    env HOME="$home" DEEPINFRA_TOKEN=dummy PATH="${bin}:${PATH}" zsh "$SETUP_DEEPINFRA" >/dev/null 2>&1 || status=$?
+    cmp -s "$models" "${home}/original" || fail "failed update must not overwrite models"
+    [ ! -e "${home}/.local/bin" ] || fail "failed update must not continue to placement"
+    [ "$status" -ne 0 ] || fail "failed update must not claim success"
+}
+
+# このテストが無いと、壊れたモデル定義の入力値を診断に表示したり、不完全な登録を無視して別モデルを黙って起動する。
+test_pidid_does_not_launch_or_leak_invalid_models() {
+    local home="${TEST_ROOT}/pidid-invalid" bin out secret='fake-secret-PRIVATE' payload agent
+    agent="${home}/custom agent"
+    bin="${home}/bin"
+    mkdir -p "$bin" "${home}/.pi/agent/extensions/subagent.d/pidid"
+    printf '{}\n' > "${home}/.pi/agent/extensions/subagent.d/pidid/config.json"
+    printf '#!/bin/sh\ntouch "${LAUNCH_MARKER:?}"\n' > "${bin}/bwrap"
+    chmod +x "${bin}/bwrap"
+    mkdir -p "$agent"
+    cp "$PI_MODELS" "${home}/.pi/agent/models.json"
+    # JSON としては読めても、実効モデル一覧に登録されない定義は起動しない。
+    local invalid_schema
+    invalid_schema="$(python3 - "$PI_MODELS" "${CONFIG_DIR}/pidid.json" "$secret" <<'PY_INVALID_MODEL'
+import json
+import sys
+from pathlib import Path
+
+models = json.loads(Path(sys.argv[1]).read_text())
+config = json.loads(Path(sys.argv[2]).read_text())
+provider, model_id = config["superagents"]["modelTiers"]["cheap"]["model"].split("/", 1)
+model = next(model for model in models["providers"][provider]["models"] if model["id"] == model_id)
+model["cost"]["input"] = sys.argv[3]
+print(json.dumps(models))
+PY_INVALID_MODEL
+)"
+    for payload in "{\"$secret\":" '{"providers":{"deepinfra":{"models":[]}}}' "$invalid_schema"; do
+        printf '%s\n' "$payload" > "${agent}/models.json"
+        out="$(env HOME="$home" PI_CODING_AGENT_DIR='~/custom agent' PATH="${bin}:${PATH}" DEEPINFRA_TOKEN="$secret" LAUNCH_MARKER="${home}/launched" \
+            zsh "${REPO_ROOT}/.devcontainer/pidid" 2>&1)" || true
+        [[ "$out" != *"$secret"* ]] || fail "pidid leaked a secret"
+        [ ! -e "${home}/launched" ] || fail "pidid must not launch with invalid or unregistered models"
+    done
+    # 対照: 同じ設定先に完全なモデル定義があれば実際の exec 境界まで進む。
+    cp "$PI_MODELS" "${agent}/models.json"
+    env HOME="$home" PI_CODING_AGENT_DIR='~/custom agent' PATH="${bin}:${PATH}" DEEPINFRA_TOKEN=dummy \
+        LAUNCH_MARKER="${home}/launched" zsh "${REPO_ROOT}/.devcontainer/pidid" >"${home}/valid-out" 2>&1 \
+        || fail "pidid must accept valid models under the expanded agent dir"
+    [ -f "${home}/launched" ] || fail "valid pidid must reach exec"
 }
 
 INSTALL_SCRIPT="${REPO_ROOT}/.devcontainer/install_beforehand.bash"
@@ -543,6 +681,11 @@ test_install_fails_when_new_missing_after() {
     [ "$status" -ne 0 ] || fail "install_pi_extensions must fail when the extension is missing after install"
 }
 
+test_setup_pi_preserves_user_data_in_custom_agent_dir
+test_setup_pi_keeps_each_backup_when_timestamp_collides
+test_setup_pi_invalid_input_is_private_and_stops_placement
+test_setup_pi_command_failure_stops_placement
+test_pidid_does_not_launch_or_leak_invalid_models
 test_bind_target_ignores_pi_coding_agent_dir
 test_missing_config_fails_closed
 test_actual_and_dry_run_argv_match

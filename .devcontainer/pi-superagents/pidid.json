@@ -1,0 +1,9 @@
+{
+  "superagents": {
+    "modelTiers": {
+      "cheap": { "model": "deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017", "thinking": "high" },
+      "balanced": { "model": "deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017", "thinking": "high" },
+      "max": { "model": "deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017", "thinking": "high" }
+    }
+  }
+}

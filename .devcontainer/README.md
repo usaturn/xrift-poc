@@ -636,15 +636,16 @@ Dev Container を使わないローカル環境のみ、以下を手動で順に
 8. `install -m 0755 .devcontainer/pigod ~/.local/bin/pigod`
 9. `install -m 0755 .devcontainer/piccg ~/.local/bin/piccg`
 10. `install -m 0755 .devcontainer/piccd ~/.local/bin/piccd`
-11. `install -m 0755 .devcontainer/piga ~/.local/bin/piga`
-12. `install -m 0755 .devcontainer/pigt ~/.local/bin/pigt`
-13. `install -m 0755 .devcontainer/pigs ~/.local/bin/pigs`
-14. `install -m 0755 .devcontainer/pigl ~/.local/bin/pigl`
-15. `install -m 0755 .devcontainer/pixg ~/.local/bin/pixg`
-16. `install -m 0755 .devcontainer/pigemf ~/.local/bin/pigemf`
-17. `install -m 0755 .devcontainer/pigemp ~/.local/bin/pigemp`
-18. `install -m 0755 .devcontainer/pigema ~/.local/bin/pigema`
-19. `zsh scripts/setup_pi_superagents.zsh`
+11. `install -m 0755 .devcontainer/pidid ~/.local/bin/pidid`
+12. `install -m 0755 .devcontainer/piga ~/.local/bin/piga`
+13. `install -m 0755 .devcontainer/pigt ~/.local/bin/pigt`
+14. `install -m 0755 .devcontainer/pigs ~/.local/bin/pigs`
+15. `install -m 0755 .devcontainer/pigl ~/.local/bin/pigl`
+16. `install -m 0755 .devcontainer/pixg ~/.local/bin/pixg`
+17. `install -m 0755 .devcontainer/pigemf ~/.local/bin/pigemf`
+18. `install -m 0755 .devcontainer/pigemp ~/.local/bin/pigemp`
+19. `install -m 0755 .devcontainer/pigema ~/.local/bin/pigema`
+20. `zsh scripts/setup_pi_superagents.zsh`
 
 `--with-deps` は sudo を使うため、エージェントではなく人間が実行する。
 OS 依存を省くと `libglib-2.0.so.0` が見つからず起動に失敗する
@@ -659,7 +660,8 @@ OS 依存を省くと `libglib-2.0.so.0` が見つからず起動に失敗する
 （`~/.pi/agent/auth.json`）とモデル定義（`~/.pi/agent/models.json`）が
 ホスト側に残るため、リビルド後に `scripts/setup_pi.zsh`、
 `scripts/setup_pi_opencode_go.zsh`、`scripts/setup_pi_commandcode_goat.zsh`
-を実行し直す必要はない。
+を実行し直す必要はない。ただし、新しいモデル定義の追加・更新は明示的な setup が必要である
+（既存の `models.json` はリビルドでは更新しない）。
 
 `install_beforehand.bash` は次のものを配置する。挙動が異なるのは、
 models.json だけが bind mount の内側で、他が外側にあるためである。
@@ -672,6 +674,7 @@ models.json だけが bind mount の内側で、他が外側にあるためで�
 - `.devcontainer/pigod` → `~/.local/bin/pigod`。pigo と同じ理由で毎回上書き
 - `.devcontainer/piccg` → `~/.local/bin/piccg`。pigo と同じ理由で毎回上書き
 - `.devcontainer/piccd` → `~/.local/bin/piccd`。pigo と同じ理由で毎回上書き
+- `.devcontainer/pidid` → `~/.local/bin/pidid`。pigo と同じ理由で毎回上書き
 - `.devcontainer/piga`・`pigt`・`pigs`・`pigl` → `~/.local/bin/`。同様に毎回上書き
 - `.devcontainer/pixg` → `~/.local/bin/pixg`。同様に毎回上書き
 - `.devcontainer/pigemf`・`pigemp`・`pigema` → `~/.local/bin/`。同様に毎回上書き
@@ -771,6 +774,81 @@ ID と表示名が一致しないモデルなので注意する。カタログ�
 実行済みの環境がこれに当たる）では、pi が
 `No models matching "deepseek/deepseek-v4.1-flash"` で落ちるためである。
 `piccd` はこの場合も setup スクリプトの実行を案内する。
+
+### DeepInfra の DeepSeek V4.1 Flash 1017 ランチャー
+
+`pidid` は `--provider deepinfra --model deepseek-ai/DeepSeek-V4.1-Flash-1017`
+で Pi を起動する。`--models` も同じ 1 モデル、`--thinking high` を指定し、
+子 Pi の全 tier も同じ provider・モデル・`high` を使う。
+DeepInfra は独自 provider のため、`.devcontainer/pi-models.json` に定義する。
+旧 `deepseek-ai/DeepSeek-V4-Flash-0731` と他 provider の定義は残している。
+
+設定の根拠は次の公開資料（2026-10-31 確認）である。
+
+- [DeepInfra のモデル metadata](https://api.deepinfra.com/v1/openai/models?filter=with_meta&sort_by=pi):
+  1017 の `context_length`・`max_tokens` はともに 1,048,576、vision・reasoning に対応。
+  Pi では `contextWindow: 1048576`、`input: ["text", "image"]`、`reasoning: true` とする
+- [Pi 連携手順](https://docs.deepinfra.com/integrations/pi):
+  `baseUrl: https://api.deepinfra.com/v1/openai`、`api: openai-completions`、
+  `authHeader: true`、`apiKey: $DEEPINFRA_TOKEN`。
+  `compat.supportsDeveloperRole: false`、`thinkingFormat: deepseek` を指定する。
+  `maxTokens: 65536` はこの連携で採用する**運用上限**で、サービスの最大値ではない
+- 価格は 100 万 token あたり input 0.2・output 0.6・cache read 0.006 USD。
+  metadata の `discount: 0.51` は適用条件・期間が未確認なので、割引前の値を
+  Pi の費用表示用に登録する。実際の課金額を保証する値ではない。
+  cache write は未確認のため、既存パターンと同じく 0 とする（無料という意味ではない）
+- [Reasoning の資料](https://docs.deepinfra.com/chat/reasoning)に `high` の指定例がある。
+  `thinkingLevelMap` は `minimal -> low`、`low/medium/high` は同じ値、
+  `xhigh/max` は `null`（未対応）とする。1017 固有の全許容値や、指定を省略したときの
+  推論状態は未確定なので断定しない
+
+#### 新規環境
+
+Dev Container の作成・リビルドでは、`install_beforehand.bash` が無い場合だけ
+`models.json` の雛形と tier 設定を置き、ランチャーと共通ヘルパは毎回配置する。
+トークンは利用者自身で用意し、起動するシェルで指定する。認証の作成・取得・保存は行わない。
+
+```bash
+export DEEPINFRA_TOKEN="..."
+pidid
+```
+
+`pidid` はトークン・対象モデルの登録・専用 tier 設定が不足していれば案内して止まり、
+別モデルへ黙って切り替えない。壊れたモデル定義も起動前に拒否し、内容や例外の入力値は
+診断へ出さない。実起動では Pi の実効モデル一覧でも provider / ID の完全一致を確認する。
+
+#### 既存環境・明示更新
+
+旧雛形のある環境では、リビルドだけでは 1017 が追加されない。親リポジトリのルートで
+次を実行する。個人設定の更新なので、利用者が実行の要否を判断する。
+
+```bash
+export DEEPINFRA_TOKEN="..."
+zsh scripts/setup_pi.zsh
+pi --list-models deepinfra
+pidid
+```
+
+`setup_pi.zsh` は既存の `models.json` を世代別にバックアップしてから更新する。
+同じ秒の再実行でも前のバックアップを失わない。DeepInfra の接続設定と雛形にある
+モデル ID の定義は更新し、利用者追加モデル・独自フィールド・他 provider・top-level の
+情報を保持する。不正な入力や更新失敗では成功表示や後続の配置へ進まない。
+`pidid` を配置し、`setup_pi_superagents.zsh --if-absent` で共通ヘルパを更新する。
+既存の全ランチャーの tier 設定（`pidid` を含む）は保持し、未配置のものだけを追加する。
+
+`PI_CODING_AGENT_DIR` を使っている場合は、更新・確認・起動すべてに同じ値を渡す。
+`~` と `~/` は HOME へ展開する。たとえば次の形で更新できる。
+
+```bash
+PI_CODING_AGENT_DIR='~/custom-agent' zsh scripts/setup_pi.zsh
+PI_CODING_AGENT_DIR='~/custom-agent' pi --list-models deepinfra
+PI_CODING_AGENT_DIR='~/custom-agent' pidid
+```
+
+この変数で移るのは Pi 本体の `models.json` などである。pi-superagents 拡張の読み先は
+HOME 固定なので、tier は引き続き `~/.pi/agent/extensions/subagent.d/pidid/config.json`
+に置く。tier を雛形へ明示的に揃え直す場合だけ `zsh scripts/setup_pi_superagents.zsh`
+を実行する（他ランチャーの変更分もバックアップして置き直す）。
 
 ### ChatGPT Pro の GPT-6 ランチャー
 
@@ -1005,11 +1083,15 @@ zsh scripts/setup_pi_superagents.zsh --if-absent
 - `pi-models.json` を編集し、既存の `~/.pi/agent/models.json` へ反映したいとき
   （`install_beforehand.bash` は既存ファイルを上書きしないため）
 
-いずれも冪等で、`providers` のうち対象プロバイダのエントリだけを置き換える。
+いずれも冪等で、`providers` のうち対象プロバイダを更新する。
+`setup_pi.zsh` は DeepInfra の利用者追加モデルと独自フィールドを保持して統合し、
+他の 2 本は対象プロバイダのエントリを置き換える。
 `setup_pi_opencode_go.zsh` は `.devcontainer/pigo` と `.devcontainer/pigod` を、
 `setup_pi_commandcode_goat.zsh` は
-`.devcontainer/piccg` と `.devcontainer/piccd` をそのまま配置するため、
+`.devcontainer/piccg` と `.devcontainer/piccd` を、`setup_pi.zsh` は
+`.devcontainer/pidid` をそのまま配置するため、
 実行してもランチャの内容は `install_beforehand.bash` の配置結果と一致する。
+`setup_pi.zsh` は続けて `setup_pi_superagents.zsh --if-absent` を呼ぶ。
 
 commandcode の 2 つのランチャを `setup_pi_commandcode_goat.zsh` が同居して
 受け持つのは、両者が同じ `providers.commandcode` エントリを共有するためで
@@ -1027,6 +1109,7 @@ commandcode の 2 つのランチャを `setup_pi_commandcode_goat.zsh` が同�
   `setup_pi_opencode_go.zsh` でキーを更新するときだけ必要になる
 - `DEEPINFRA_TOKEN` は `models.json` の `apiKey` が `$DEEPINFRA_TOKEN` を
   参照するため、deepinfra を使うシェルで export しておく必要がある。
+  `pidid` と `setup_pi.zsh` は未設定・空のときに案内して止まる。
   `ccdd` / `ccddg`（Claude Code を DeepInfra の Anthropic エンドポイントへ
   向けるラッパー）もこの値を読む
 - `COMMANDCODE_API_KEY` は `DEEPINFRA_TOKEN` と同じ方式である。`models.json`
@@ -1104,7 +1187,7 @@ Pi 1.0.0 から、対話 TUI の既定モードは `fullscreen` になった。�
 代替画面を使って会話履歴を Pi 内で管理するため、Herdr の通常のスクロール履歴に
 過去の出力が残らず、コピーモードでさかのぼれない。
 
-このリポジトリが管理する `pigo`・`pigod`・`piccg`・`piccd`・`piga`・`pigt`・
+このリポジトリが管理する `pigo`・`pigod`・`piccg`・`piccd`・`pidid`・`piga`・`pigt`・
 `pigs`・`pigl`・`pixg`・`pigemf`・`pigemp`・`pigema` は、共通ヘルパ `pi-superagents-exec.zsh` から
 `pi --tui-mode regular` を起動する。regular は通常画面と端末のスクロール履歴を
 使うため、画面高を超えた出力も Herdr のコピーモードで読める。
@@ -1146,6 +1229,7 @@ zsh scripts/setup_pi_superagents.zsh --if-absent
 | `pigod` | `opencode-go/muse-spark-1.3-contributor` | `opencode-go/deepseek-v4.1-flash` | `opencode-go/deepseek-v4.1-flash` |
 | `piccg` | `commandcode/meta/muse-spark-1.3-contributor` | `commandcode/meta/muse-spark-1.3-contributor` | `commandcode/deepseek/deepseek-v4.1-flash` |
 | `piccd` | `commandcode/meta/muse-spark-1.3-contributor` | `commandcode/deepseek/deepseek-v4.1-flash` | `commandcode/deepseek/deepseek-v4.1-flash` |
+| `pidid` | `deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017` | `deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017` | `deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017` |
 | `piga` | `openai-codex/gpt-6-luna` | `openai-codex/gpt-6.1-sol` | `openai-codex/gpt-6-astra` |
 | `pigt` | `openai-codex/gpt-6-luna` | `openai-codex/gpt-6.1-sol` | `openai-codex/gpt-6.1-terra` |
 | `pigs` | `opencode-go/deepseek-v4.1-flash` | `openai-codex/gpt-6.1-sol` | `openai-codex/gpt-6.1-sol` |
@@ -1155,6 +1239,7 @@ zsh scripts/setup_pi_superagents.zsh --if-absent
 | `pigemp` | `google-vertex/gemini-3.8-flash` | `google-vertex/gemini-3.1-pro-preview` | `google-vertex/gemini-3.1-pro-preview` |
 | `pigema` | `google-vertex/gemini-3.8-flash` | `google-vertex/gemini-4-argon` | `google-vertex/gemini-4-argon` |
 
+`pidid` の子 Pi は全 tier が `high`。
 `piga`・`pigt` の子 Pi は `cheap` / `balanced` が `xhigh`、`max` が `max`。
 `pigs` の子 Pi は `cheap` が `max`、`balanced` が `xhigh`、`max` が `max`。
 `pigl` の子 Pi は全 tier が `xhigh`。`pixg` の子 Pi は DeepSeek の
