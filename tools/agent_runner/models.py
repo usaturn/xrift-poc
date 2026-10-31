@@ -102,6 +102,7 @@ class Agent(StrictModel):
     runtime: Runtime
     command: list[Argument] = Field(min_length=1)
     model: Nonblank
+    model_key: Nonblank | None = None
     provider: Nonblank | None = None
     effort: Nonblank | None = None
     approval: Literal["noninteractive"] = "noninteractive"
