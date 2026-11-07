@@ -24,11 +24,11 @@ set -euo pipefail
 # 2 本が providers.commandcode を全置換し合い、片方だけ実行した時点で
 # 他方のモデルが models.json から消える。
 #
-# Running this script is NOT required after a container rebuild:
-# ~/.pi is bind mounted and .devcontainer/install_beforehand.bash
-# places piccg and piccd. Use it when the host side ~/.pi has to be
-# rebuilt from scratch, or when the model definition in the repository
-# changed and the existing models.json needs to converge on it.
+# 契約停止中は通常のセットアップで piccg / piccd を配置しない。
+# 再契約後に明示的にこのスクリプトを実行すると、モデル定義と両ランチャーを
+# 再有効化できる。~/.pi は bind mount で残るが ~/.local/bin は残らないため、
+# 再有効化して使う場合はコンテナ再作成後にも実行する。
+# ホスト側の ~/.pi を作り直したときやモデル定義の更新にも使う。
 #
 
 readonly PROVIDER="commandcode"
@@ -54,8 +54,8 @@ readonly PI_DIR="${PI_CODING_AGENT_DIR:-${HOME}/.pi/agent}"
 readonly MODELS_JSON="${PI_DIR}/models.json"
 
 #
-# The model definition and the launchers are kept in the repository so
-# that install_beforehand.bash and this script cannot drift apart.
+# モデル定義とランチャーはリポジトリのファイルから読み、再有効化する。
+# 通常の install_beforehand.bash はモデル定義の初回配置のみ行う。
 #
 readonly DEVCONTAINER_DIR="${0:A:h}/../.devcontainer"
 readonly MODELS_SOURCE="${DEVCONTAINER_DIR}/pi-models.json"
@@ -236,9 +236,8 @@ log "models.json: ${PROVIDER} definition applied."
 # ----------------------------------------------------------------------
 # 3. Install ~/.local/bin/piccg and ~/.local/bin/piccd
 #
-# The launchers are copied verbatim from .devcontainer/, which are the
-# same files .devcontainer/install_beforehand.bash places on rebuild.
-# Generating them here instead would let the two drift apart.
+# 通常の install_beforehand.bash はこの2本を配置しない。
+# 再有効化用のこのスクリプトが .devcontainer/ からそのままコピーする。
 #
 # ~/.local/bin is already added to PATH by .devcontainer/zshrc.txt, so
 # this script does not touch ~/.zshrc.

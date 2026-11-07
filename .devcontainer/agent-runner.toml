@@ -172,7 +172,7 @@ after_run = [[
 # いつも使う構成は、個人設定のこの節の agents を書き換える。
 # 下の 3 人は指定が無いときの既定値で、性能の順位ではない。
 [workflows.review.assignments.inspect]
-agents = ["devin_swe2-max_default", "pi_commandcode_deepseek4-flash_max", "pi_openai-codex_gpt6-sol_xhigh"]
+agents = ["devin_swe2-max_default", "pi_opencode-go_deepseek4-flash_max", "pi_openai-codex_gpt6-sol_xhigh"]
 
 [workflows.fix.assignments.implement]
 agents = ["claude-code_opus_default"]
