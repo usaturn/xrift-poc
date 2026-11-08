@@ -476,3 +476,28 @@ Issue #59 の対応として、5174〜5179 も `forwardPorts` に追加した。
   - 動作の確認: 移植元の確認結果は写さず、xrift-poc の commit 58d7aef の定義で
     2026-11-08（Claude Code 2.1.319）に実 API でやり直した。
 - 取り込まなかったもの: 移植元の README の「動作の確認」の結果の記述。
+
+## Devin の agent 名の取り込み（2026-11、Issue #232）
+
+- 移植元: `usaturn/agent-workspace` の PR #859（Issue #858）、
+  commit `fa2a6038790e9ece9c130ae915fb9027223c3b15`（PR の commit はこの 1 件）、
+  マージ commit `b7bd40743b76716801be184cb4401efb9b664256`。
+  必要な差分だけを現行の `.devcontainer/agent-runner.toml`・`.devcontainer/README.md` へ取り込み、
+  ファイル全体は置き換えていない。
+- 取り込んだ差分: `devin_swe2-max_default` → `devin_swe2_max` の改名、
+  `devin_swe2_medium`（`swe-2-medium`）の追加、2 つに共通の `model_key = "swe-2"`
+  （移植元の Issue の本文には無く、PR で足したもの）、既定の inspect の名前、
+  README の命名規則（effort の軸の tier を effort の段に置く）・`model_key` の説明・
+  移行の表・レビュアーの選び方。
+- xrift-poc に合わせた点: xrift-poc の `tools/agent_runner/config.py` は `model_key` があればそれを、
+  無ければ `model` を比較値にする（移植元は `model` と `model_key` の集合で比べる）。
+  旧名の節を個人設定に残すと、`devin_swe2_medium` だけでなく新しい `devin_swe2_max` と並べても
+  拒否されないので、README の注意をこの比較方法に合わせて書き、旧名の節を残す場合は
+  `model_key = "swe-2"` を明示するよう案内した。参照だけの個人設定が `invalid_reference` で止まることも書いた。
+  移行の表の前置きを、2 回改名した `devin-swe` を現在の名前に対応させる形に直した。
+- 取り込まなかったもの: PR #859 の README の差分に含まれる、移植元で先に行った他の改名
+  （`claude-code_opus_default` → `claude-code_opus_xhigh`、
+  `claude-code_sonnet_default` → `claude-code_sonnet_xhigh` など）。
+  xrift-poc の README に該当の記述が無い箇所（`--spec-review` の割り当ての例、
+  旧設定からの移行の表の「起動コマンド」の行）。
+  `model_key` の比較方法の変更（Issue #232 の対象外）。
