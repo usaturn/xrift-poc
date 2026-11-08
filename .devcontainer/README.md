@@ -1203,7 +1203,7 @@ commandcode の 2 つのランチャを `setup_pi_commandcode_goat.zsh` が同�
 
 ### API トークン
 
-`OPENCODE_API_KEY`、`DEEPINFRA_TOKEN` は永続化せず、必要なときに手動で export する。
+`OPENCODE_API_KEY`、`DEEPINFRA_TOKEN`、`OLLAMA_API_KEY` は永続化せず、必要なときに手動で export する。
 `COMMANDCODE_API_KEY` は契約停止中は export せず、再契約後の明示利用時だけ渡す。
 
 - `OPENCODE_API_KEY` は `pigo`・`pigod` の実行には不要である。bind mount した
@@ -1215,6 +1215,12 @@ commandcode の 2 つのランチャを `setup_pi_commandcode_goat.zsh` が同�
   `pidid` と `setup_pi.zsh` は未設定・空のときに案内して止まる。
   `ccdd` / `ccddg`（Claude Code を DeepInfra の Anthropic エンドポイントへ
   向けるラッパー）もこの値を読む
+- `OLLAMA_API_KEY` は `claude-ollama` / `ccdol`（Claude Code を Ollama Cloud の Anthropic
+  互換 API へ向けるラッパー）だけが読む。使うシェルで export しておく。子の `claude` には
+  `ANTHROPIC_AUTH_TOKEN` としてだけ渡し、`ccdd` / `ccddg` の子には渡さない。
+  未設定・空・空白だけなら、値を表示せずにエラーを出して終了する。キーは
+  `https://ollama.com/settings/keys` で作る。詳しくは
+  「Ollama Cloud の DeepSeek V4.1 Flash 1017 で Claude Code を起動する（移植元の agent-workspace #852）」を参照
 - 再契約後に使う `COMMANDCODE_API_KEY` は `DEEPINFRA_TOKEN` と同じ方式である。`models.json`
   の `apiKey` が `$COMMANDCODE_API_KEY` を参照するため、`piccg` と `piccd` を
   使うシェルで export しておく必要がある。未設定のまま実行すると
@@ -1421,6 +1427,156 @@ pi-superagents 1.14.3 / Pi loader 0.85.1 / Superpowers 6.4.1 について、
 ```bash
 bash .devcontainer/test-pi-superagents.bash
 ```
+
+## Ollama Cloud の DeepSeek V4.1 Flash 1017 で Claude Code を起動する（移植元の agent-workspace #852）
+
+`claude-ollama` / `ccdol`（`zshrc.txt` の関数）は、Claude Code の接続先を
+Ollama Cloud の Anthropic 互換 API に切り替えて起動する。ローカルの Ollama は使わず、
+`https://ollama.com` に直接つなぐ。`ccdol` は `--dangerously-skip-permissions` を付けて
+起動し、`claude-ollama` は付けない。後ろに書いた引数（`-p` やプロンプト）は
+そのまま `claude` に渡す。
+
+| 項目 | 値 |
+| --- | --- |
+| 接続先（`ANTHROPIC_BASE_URL`） | `https://ollama.com` |
+| 認証 | `ANTHROPIC_AUTH_TOKEN` に `OLLAMA_API_KEY` を入れる（Bearer 認証。Ollama の連携手順に従う。`x-api-key` だけの要求は 401 になる。下の「追加の確認」） |
+| model ID | `deepseek-v4.1-flash:1017`（fable・opus・sonnet・haiku の 4 つの tier すべて） |
+| effort（`CLAUDE_CODE_EFFORT_LEVEL`） | `max` |
+| 出力上限（`CLAUDE_CODE_MAX_OUTPUT_TOKENS`） | 65,536 |
+| claude.ai の MCP コネクタ（`ENABLE_CLAUDEAI_MCP_SERVERS`） | `false` |
+| API キーの作成 | `https://ollama.com/settings/keys` |
+
+model ID は、直接接続で使う名前（`https://ollama.com/api/tags` の一覧）のうち、
+版を固定した `deepseek-v4.1-flash:1017` を使う。無印の `deepseek-v4.1-flash` は
+2026-11-08 の時点で既に別の digest を指しており、今後も別の版に移りうる。
+`:cloud`・`:1017-cloud` は Ollama の CLI・アプリ向けの名前で、直接接続では使わない（移植元の README の記述。xrift-poc では確かめていない）。
+
+親シェルの認証情報やモデルの指定は、`ccdd` / `ccddg` と共通の `cc_launcher_unsets` で
+外してから起動する。`OLLAMA_API_KEY` は `ANTHROPIC_AUTH_TOKEN` としてだけ子に渡り、
+`ccdd` / `ccddg` の子には渡らない。`ANTHROPIC_API_KEY` も子に渡さない
+（Ollama の連携手順が空文字を指定しているのと同じく、子は API key を持たない）。
+
+### 起動
+
+```bash
+export OLLAMA_API_KEY="..."
+ccdol
+```
+
+`zshrc.txt` は、Dev Container の作成時に `install_beforehand.bash` が
+`scripts/write_shell_block.py` で `~/.zshrc` の管理ブロック
+（`# >>> xrift-poc shell setup >>>`〜`# <<< xrift-poc shell setup <<<`）として書く。
+この変更を取り込む前に作ったコンテナには `claude-ollama` / `ccdol` が無いので、
+Rebuild Container で反映する。
+
+`OLLAMA_API_KEY` が未設定・空・空白だけなら、key の値を表示せずにエラーを出し、
+`claude` を起動しない（終了コード 1）。別の接続先で起動して成功扱いにはしない。
+`zshrc.txt` のコメントによると、Claude Code は `ANTHROPIC_AUTH_TOKEN` が空か空白だけだと、
+保存済みの claude.ai の OAuth トークンを接続先へ送る。そのため起動の前に止めている
+（この送信の挙動は xrift-poc では確かめていない）。
+
+### 接続先の確認
+
+起動したら `/status` で次を確かめる。
+
+- `Anthropic base URL: https://ollama.com`
+- `Model: opus (deepseek-v4.1-flash:1017[1m])`
+- `Auth token: ANTHROPIC_AUTH_TOKEN`
+
+`~/.claude/settings.json` やプロジェクトの `.claude/settings.json`・`.claude/settings.local.json`
+の `env` に `ANTHROPIC_BASE_URL`・`ANTHROPIC_AUTH_TOKEN`・`ANTHROPIC_DEFAULT_*_MODEL` などが
+あると、シェルの値より優先される（Ollama の連携手順にも書かれている）。`/status` が上と
+違うときは、まず `settings.json` の `env` を確かめる。
+
+### 1M のコンテキスト
+
+この小節は、移植元の README と Ollama の資料に基づく。xrift-poc で確かめたのは、下の「動作の確認」
+と「追加の確認」の範囲だけである。
+
+このモデルのコンテキスト長は 1,048,576（`https://ollama.com/api/show`）である。
+Claude Code は知らないモデル名を 200K と見なすため、4 つの tier の変数すべてに `[1m]` を
+付けて `deepseek-v4.1-flash:1017[1m]` にしている。Claude Code は `[1m]` を 1M の
+コンテキストとして扱う印に使い、Ollama へ送る model ID からは外す。`/status`・`/context`・
+起動画面のモデル名に付く `[1m]` はこの印である。`[1m]` は変数ごとに読まれるので、
+どれか 1 つでも外すと、その tier だけ 200K として扱われる。
+
+- `/context` は 1M を分母にする。`ccdol -p /context` で `Tokens: 26.6k / 1m (3%)` と表示されることを確かめた
+- 自動の compact は、会話が 1M に近づいたときに起きるはずだが、xrift-poc では確かめていない
+- 会話が長くなるほど毎回の入力が大きくなる（Ollama の資料は prompt caching を非対応としている。
+  下の「追加の確認」では、同じ前置きの繰り返しでキャッシュ読み取りのトークンが増えた）。
+  早めに compact したいときは、Claude Code の `CLAUDE_CODE_AUTO_COMPACT_WINDOW`
+  （compact の計算に使う窓の大きさ。Claude Code のドキュメントの環境変数）を前に付ける
+  （例: `CLAUDE_CODE_AUTO_COMPACT_WINDOW=300000 ccdol`。移植元の案内で、xrift-poc では未確認）
+
+### effort と出力上限
+
+この小節は、移植元の README と Ollama の資料に基づく。
+
+- effort は `max` で起動する。Ollama は、モデルのメタデータにある名前（このモデルは
+  `low`・`high`・`max`）ならそのまま適用し、無い名前はモデルの既定（`high`）にする。
+  `/effort` で `medium`・`xhigh` などに変えると、`high` として扱われるはずだが、
+  資料からの推論で、xrift-poc では確かめていない
+- 出力上限 65,536 は運用上の上限で、サービスの最大値ではない。モデルの最大出力トークン数は
+  `/api/show` に無く、確かめられていない。指定しないと Claude Code は 32,000 を送る（移植元の観測）。
+  `max` の effort では thinking も上限に数えるため、長い出力が途中で切れうる。
+  `CLAUDE_CODE_MAX_OUTPUT_TOKENS=65536` を指定した起動で要求が成功したことは、
+  下の「動作の確認」で確かめた
+
+### 対応していない機能
+
+Ollama の資料（Anthropic compatibility）は、次に対応していないとしている。
+
+- `/v1/messages/count_tokens`。`https://ollama.com` への直接の要求で 404 を確かめた。
+  Claude Code が推定に切り替えるか（`/context` などが推定値になるか）は、移植元の観測で、
+  xrift-poc では確かめていない
+- prompt caching（`cache_control`）。`cache_control` を付けた要求は拒否されなかった。
+  効くかどうかは「追加の確認」を参照
+- `tool_choice`、`metadata`、Batches API、citations、PDF の `document` ブロック、
+  URL で指定した画像（Base64 の画像は使える）、ストリーミング中の `error` イベント
+- thinking の `budget_tokens`（受け付けるが、上限として効かない）
+
+Ollama の Claude Code 連携手順には「Hosted WebSearch and advanced tool controls are not fully
+supported」とある。WebSearch などのサーバー側のツールは、期待どおりに動かないことがある。
+
+`-p` で起動すると、標準エラーに
+`[claude-code:unrecognized_model] {"model":"deepseek-v4.1-flash:1017[1m]",...}` が 1 行出る。
+Claude Code が知らないモデル名を使ったことの通知で、応答は成功する。
+
+### 動作の確認（2026-11-08、Claude Code 2.1.319）
+
+`.devcontainer/zshrc.txt` の `cc_launcher_unsets` と `claude-ollama` / `ccdol` の定義だけを
+取り出して source した zsh（`zsh -f`）で、実 API を使って次を確かめた。キーは環境変数の
+`OLLAMA_API_KEY` のまま渡し、ログにキーの値が出ていないことも確かめた（出現 0 件）。
+
+| 項目 | 方法 | 結果 |
+| --- | --- | --- |
+| 通常の応答 | `ccdol -p`（改行・字下げの空白・日本語を含むプロンプト） | 成功。標準エラーに上記の `unrecognized_model` の通知が 1 行出た |
+| ストリーミング・thinking | `--output-format stream-json --verbose --include-partial-messages` | 成功。`thinking` のブロックと `thinking_delta`、`text_delta` を受けた。API の `message_start` の model は `deepseek-v4.1-flash:1017`（`[1m]` は外れて送られた） |
+| ツールの結果を受けた会話の継続 | Read で一時ファイルを読み、Bash で `wc -l` を実行して答えさせる | 成功（ファイルのトークンと行数が一致） |
+| サブエージェントの起動 | Agent ツール（general-purpose）で、指定した文字列を返させる | 成功。サブエージェントのモデルも `deepseek-v4.1-flash:1017[1m]` |
+| `/status` | `claude-ollama` を擬似端末で起動して画面を読む | `Auth token: ANTHROPIC_AUTH_TOKEN`、`Anthropic base URL: https://ollama.com`、`Model: opus (deepseek-v4.1-flash:1017[1m])` |
+| 引数の受け渡し | 引数を 1 つずつ書き出す `claude` のスタブで、複数行・連続空白・日本語の引数を渡す | `--model opus` と引数がそのまま届いた。`--dangerously-skip-permissions` は `ccdol` にだけ付く |
+
+### 追加の確認（2026-11-08、`curl` で `https://ollama.com` に直接）
+
+キーは curl の設定を標準入力から渡し、コマンドラインに出していない。ログにキーの値は出ていない（出現 0 件）。
+
+| 項目 | 方法 | 結果 |
+| --- | --- | --- |
+| `x-api-key` だけの認証 | `POST /v1/messages` に `x-api-key` ヘッダだけを付ける | HTTP 401（`authentication_error`） |
+| Bearer 認証と出力上限 | `Authorization: Bearer` と `max_tokens: 65536` | HTTP 200 |
+| `/v1/messages/count_tokens` | Bearer で POST | HTTP 404 |
+| `cache_control` | system のブロックに `cache_control: {type: ephemeral}` を付ける | HTTP 200（拒否されない） |
+| 同じ前置きの繰り返し | 約 1,500〜2,000 トークンの system で同じ要求を 2 回。`cache_control` あり・なし | どちらも 2 回目で `cache_read_input_tokens` が増え、`input_tokens` が減った。`cache_control` の有無で違いは見られなかった（サーバー側で前置きを再利用しているとみられる。料金への影響は確かめていない） |
+
+確かめていない範囲:
+
+- Rebuild Container の後の `~/.zshrc` での起動。この確認は関数の定義だけを source した（利用者が確かめる）
+- Claude Code が送った要求そのもの（`Authorization` の Bearer だけで `x-api-key` が無いこと、
+  `max_tokens` の値）。要求を記録する経路を用意していない。`/status` の認証の表示と、
+  `CLAUDE_CODE_MAX_OUTPUT_TOKENS=65536` の起動で要求が成功したことまでを確かめた
+- 1M に近い長さの会話、自動の compact、`CLAUDE_CODE_AUTO_COMPACT_WINDOW`
+- `/effort` で `medium`・`xhigh` に変えたときの扱い、WebSearch などのサーバー側のツール
 
 ## DSH 撤去後の移行（#123）
 
