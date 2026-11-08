@@ -1,0 +1,89 @@
+#!/bin/bash -p
+# Ollama Cloud の Anthropic 互換 API で Claude Code を起動する。
+# shebang の -p は、継承した BASH_ENV・ENV を読まず、環境の関数（BASH_FUNC_*）を取り込まないための指定である。
+# 呼び出し元は zshrc.txt の claude-ollama / ccdol と、agent-runner の claude-code_ollama_*
+# （.devcontainer/agent-runner.toml）である。--model と --dangerously-skip-permissions は
+# 呼び出し側が引数で渡す。
+set -euo pipefail
+
+# zshrc.txt の cc_launcher_unsets と同じ名前。片方を変えたら両方を変える。
+# 資格情報が子へ渡らないことは test-herdr-migration.bash の test_cc_launcher_env_unsets が、
+# この一覧から独立に選んだ名前で確かめる。
+unsets=(
+    -u ANTHROPIC_AUTH_TOKEN
+    -u ANTHROPIC_API_KEY
+    -u DEEPINFRA_TOKEN
+    -u OLLAMA_API_KEY
+    -u COMMANDCODE_API_KEY
+    -u OPENCODE_API_KEY
+    -u OPENCODE_GO_API_KEY
+    -u ANTHROPIC_AWS_API_KEY
+    -u ANTHROPIC_FOUNDRY_API_KEY
+    -u ANTHROPIC_FOUNDRY_AUTH_TOKEN
+    -u ANTHROPIC_IDENTITY_TOKEN
+    -u ANTHROPIC_IDENTITY_TOKEN_FILE
+    -u ANTHROPIC_CUSTOM_HEADERS
+    -u ANTHROPIC_MODEL
+    -u ANTHROPIC_DEFAULT_MODEL
+    -u ANTHROPIC_SMALL_FAST_MODEL
+    -u ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION
+    -u ANTHROPIC_CUSTOM_MODEL_OPTION
+    -u ANTHROPIC_CUSTOM_MODEL_OPTION_NAME
+    -u ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION
+    -u ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES
+    -u CLAUDE_CODE_OAUTH_TOKEN
+    -u CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR
+    -u CLAUDE_CODE_OAUTH_REFRESH_TOKEN
+    -u CLAUDE_CODE_SESSION_ACCESS_TOKEN
+    -u CLAUDE_CODE_HFI_BEARER_TOKEN
+    -u CLAUDE_CODE_CLIENT_KEY
+    -u CLAUDE_CODE_CLIENT_KEY_PASSPHRASE
+    -u CLAUDE_CODE_GATEWAY_TOKEN
+    -u CLAUDE_CODE_GATEWAY_TOKEN_FILE_DESCRIPTOR
+    -u CLAUDE_CODE_WEBSOCKET_AUTH_FILE_DESCRIPTOR
+    -u CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR
+    -u CLAUDE_CODE_USE_BEDROCK
+    -u CLAUDE_CODE_USE_FOUNDRY
+    -u CLAUDE_CODE_USE_GATEWAY
+    -u CLAUDE_CODE_USE_ANTHROPIC_AWS
+    -u CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD
+    -u CLAUDE_CODE_USE_MANTLE
+    -u CLAUDE_CODE_USE_VERTEX
+    -u CLAUDE_CODE_MAX_CONTEXT_TOKENS
+    -u CLAUDE_CODE_SUBAGENT_MODEL
+    -u CLAUDE_CODE_SUBAGENT_MODEL_FORCE
+    -u CLAUDE_CODE_AUTO_MODE_MODEL
+    -u CLAUDE_CODE_BG_CLASSIFIER_MODEL
+    -u ANTHROPIC_BETAS
+)
+
+# [1m] は Claude Code に 1M のコンテキストとして扱わせる印で、Ollama へ送る model ID からは外れる。
+# 付けないと未知のモデルとして 200K と見なす。変数ごとに読むので 4 つの tier すべてに付ける。
+# opus と sonnet を別のモデルにしたら、agent-runner.toml の claude-code_ollama_* の model_key も分ける。
+fable='deepseek-v4.1-flash:1017[1m]'
+opus='deepseek-v4.1-flash:1017[1m]'
+sonnet='deepseek-v4.1-flash:1017[1m]'
+haiku='deepseek-v4.1-flash:1017[1m]'
+
+# Claude Code は ANTHROPIC_AUTH_TOKEN が空か空白だけだと、保存済みの claude.ai の OAuth トークンを
+# 接続先へ送る。runner の子は LANG・LC_* を受け取らず、C locale では全角空白を空白と見なさない。
+# そのため空白の集合ではなく、見える ASCII 文字（0x21〜0x7E）の有無で判定する。値は表示しない。
+key="${OLLAMA_API_KEY-}"
+if ! (LC_ALL=C; [[ "$key" == *[[:graph:]]* ]]); then
+    echo "claude-ollama-exec: OLLAMA_API_KEY is not set or empty; create a key at https://ollama.com/settings/keys and export it before starting ccdol or agent-runner" >&2
+    exit 1
+fi
+
+# env は -u を先に処理するので、一覧にある ANTHROPIC_AUTH_TOKEN も後の代入が勝つ。
+# OLLAMA_API_KEY は一覧で外れ、子には残らない。
+exec env "${unsets[@]}" \
+    ANTHROPIC_BASE_URL=https://ollama.com \
+    ANTHROPIC_AUTH_TOKEN="$key" \
+    ANTHROPIC_DEFAULT_FABLE_MODEL="$fable" \
+    ANTHROPIC_DEFAULT_OPUS_MODEL="$opus" \
+    ANTHROPIC_DEFAULT_SONNET_MODEL="$sonnet" \
+    ANTHROPIC_DEFAULT_HAIKU_MODEL="$haiku" \
+    ENABLE_CLAUDEAI_MCP_SERVERS=false \
+    CLAUDE_CODE_EFFORT_LEVEL=max \
+    CLAUDE_CODE_MAX_OUTPUT_TOKENS=65536 \
+    claude "$@"
