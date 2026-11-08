@@ -545,12 +545,14 @@ def test_failed_retirement_keeps_unsaved_session_data(
 ) -> None:
     """draft・前回のレビュー・未知のファイル・未 commit の変更・symlink の候補を失敗の退役が見逃すと、
     成果のあるセッションを理由付き再判定でも黙って消す。"""
+    earlier_review: Path | None = None
     if artifact == "previous":
         # state["previous_review"] が入るセッションにするため、保存先にレビューを置いてから prepare し直す。
         first = review_run.prepare(prepared["args"])
-        destination = prepared["parent"] / first["destination"]
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text("earlier review", encoding="utf-8")
+        saved_earlier = prepared["parent"] / first["destination"]
+        saved_earlier.parent.mkdir(parents=True, exist_ok=True)
+        saved_earlier.write_text("earlier review", encoding="utf-8")
+        earlier_review = saved_earlier
         review_run.workspace.cleanup(failed_cleanup_args(first, operator_confirmed_stopped="停止を確認した"))
         assert not Path(first["state_file"]).parent.exists()
     result = stopped_review(prepared, tmp_path, capsys)
@@ -558,14 +560,13 @@ def test_failed_retirement_keeps_unsaved_session_data(
     if artifact == "draft":
         retained = Path(result["draft"])
         retained.write_text("finished review", encoding="utf-8")
-        destination = prepared["parent"] / result["destination"]
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(retained.read_bytes())
+        saved = prepared["parent"] / result["destination"]
+        saved.parent.mkdir(parents=True, exist_ok=True)
+        saved.write_bytes(retained.read_bytes())
     elif artifact == "previous":
         assert json.loads(Path(result["state_file"]).read_text())["previous_review"] is not None
         retained = session / "review-backup" / "previous-review.md"
         assert retained.read_text(encoding="utf-8") == "earlier review"
-        destination = prepared["parent"] / result["destination"]
     elif artifact == "dirty":
         retained = Path(result["worktree"]) / "README.md"
         retained.write_text("unsaved edit", encoding="utf-8")
@@ -581,8 +582,8 @@ def test_failed_retirement_keeps_unsaved_session_data(
     with pytest.raises(review_run.workspace.WorkspaceError):
         review_run.workspace.cleanup(failed_cleanup_args(result, operator_confirmed_stopped="子プロセスの終了を確認"))
     assert retained.read_bytes() == before
-    if artifact == "previous":
-        assert destination.read_bytes() == b"earlier review"
+    if earlier_review is not None:
+        assert earlier_review.read_bytes() == b"earlier review"
     assert Path(result["state_file"]).exists()
     assert result["worktree"] in registrations(prepared)
 
