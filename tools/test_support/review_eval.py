@@ -104,3 +104,12 @@ def put_revisions_worker(store_root: str, revisions: Sequence[bytes]) -> list[bo
         sha = store.put_blob(data)
         created.append(store.put_observation(make_observation(sha, len(data))))
     return created
+
+
+def append_times_worker(store_root: str, who: str, count: int) -> list[int]:
+    """spawn されたプロセスで台帳に `time.add` を `count` 件追記し、受け取った seq を返す。"""
+    from tools.review_eval.ledger import Ledger
+    from tools.review_eval.store import Store
+
+    ledger = Ledger(Store.open(Path(store_root)), lock_timeout=60)
+    return [ledger.append({"op": "time.add", "stage": "other", "seconds": 1}, by=who) for _ in range(count)]
