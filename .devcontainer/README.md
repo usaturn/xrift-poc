@@ -1422,7 +1422,7 @@ Ollama Cloud の Anthropic 互換 API に切り替えて起動する。ローカ
 | 項目 | 値 |
 | --- | --- |
 | 接続先（`ANTHROPIC_BASE_URL`） | `https://ollama.com` |
-| 認証 | `ANTHROPIC_AUTH_TOKEN` に `OLLAMA_API_KEY` を入れる（Bearer 認証。cloud endpoint は `x-api-key` だけでは受け付けない） |
+| 認証 | `ANTHROPIC_AUTH_TOKEN` に `OLLAMA_API_KEY` を入れる（Bearer 認証。Ollama の連携手順に従う。`x-api-key` だけの要求は 401 になる。下の「追加の確認」） |
 | model ID | `deepseek-v4.1-flash:1017`（fable・opus・sonnet・haiku の 4 つの tier すべて） |
 | effort（`CLAUDE_CODE_EFFORT_LEVEL`） | `max` |
 | 出力上限（`CLAUDE_CODE_MAX_OUTPUT_TOKENS`） | 65,536 |
@@ -1432,7 +1432,7 @@ Ollama Cloud の Anthropic 互換 API に切り替えて起動する。ローカ
 model ID は、直接接続で使う名前（`https://ollama.com/api/tags` の一覧）のうち、
 版を固定した `deepseek-v4.1-flash:1017` を使う。無印の `deepseek-v4.1-flash` は
 2026-11-08 の時点で既に別の digest を指しており、今後も別の版に移りうる。
-`:cloud`・`:1017-cloud` は Ollama の CLI・アプリ向けの名前で、直接接続では使わない。
+`:cloud`・`:1017-cloud` は Ollama の CLI・アプリ向けの名前で、直接接続では使わない（移植元の README の記述。xrift-poc では確かめていない）。
 
 親シェルの認証情報やモデルの指定は、`ccdd` / `ccddg` と共通の `cc_launcher_unsets` で
 外してから起動する。`OLLAMA_API_KEY` は `ANTHROPIC_AUTH_TOKEN` としてだけ子に渡り、
@@ -1454,8 +1454,9 @@ Rebuild Container で反映する。
 
 `OLLAMA_API_KEY` が未設定・空・空白だけなら、key の値を表示せずにエラーを出し、
 `claude` を起動しない（終了コード 1）。別の接続先で起動して成功扱いにはしない。
-Claude Code は `ANTHROPIC_AUTH_TOKEN` が空か空白だけだと、保存済みの claude.ai の
-OAuth トークンを接続先へ送るため、起動の前に止めている。
+`zshrc.txt` のコメントによると、Claude Code は `ANTHROPIC_AUTH_TOKEN` が空か空白だけだと、
+保存済みの claude.ai の OAuth トークンを接続先へ送る。そのため起動の前に止めている
+（この送信の挙動は xrift-poc では確かめていない）。
 
 ### 接続先の確認
 
@@ -1472,6 +1473,9 @@ OAuth トークンを接続先へ送るため、起動の前に止めている�
 
 ### 1M のコンテキスト
 
+この小節は、移植元の README と Ollama の資料に基づく。xrift-poc で確かめたのは、下の「動作の確認」
+と「追加の確認」の範囲だけである。
+
 このモデルのコンテキスト長は 1,048,576（`https://ollama.com/api/show`）である。
 Claude Code は知らないモデル名を 200K と見なすため、4 つの tier の変数すべてに `[1m]` を
 付けて `deepseek-v4.1-flash:1017[1m]` にしている。Claude Code は `[1m]` を 1M の
@@ -1479,33 +1483,39 @@ Claude Code は知らないモデル名を 200K と見なすため、4 つの ti
 起動画面のモデル名に付く `[1m]` はこの印である。`[1m]` は変数ごとに読まれるので、
 どれか 1 つでも外すと、その tier だけ 200K として扱われる。
 
-- `/context` は 1M を分母にする（例: `37k/1m tokens`）
-- 自動の compact は、会話が 1M に近づいたときに起きる
-- Ollama は prompt caching に対応していないので、会話が長くなるほど毎回の入力が大きくなる。
+- `/context` は 1M を分母にする。`ccdol -p /context` で `Tokens: 26.6k / 1m (3%)` と表示されることを確かめた
+- 自動の compact は、会話が 1M に近づいたときに起きるはずだが、xrift-poc では確かめていない
+- 会話が長くなるほど毎回の入力が大きくなる（Ollama の資料は prompt caching を非対応としている。
+  下の「追加の確認」では、同じ前置きの繰り返しでキャッシュ読み取りのトークンが増えた）。
   早めに compact したいときは、Claude Code の `CLAUDE_CODE_AUTO_COMPACT_WINDOW`
-  （compact の計算に使う窓の大きさ。Claude Code のドキュメントの環境変数）を前に付けて起動する
-  （例: `CLAUDE_CODE_AUTO_COMPACT_WINDOW=300000 ccdol`）
+  （compact の計算に使う窓の大きさ。Claude Code のドキュメントの環境変数）を前に付ける
+  （例: `CLAUDE_CODE_AUTO_COMPACT_WINDOW=300000 ccdol`。移植元の案内で、xrift-poc では未確認）
 
 ### effort と出力上限
 
+この小節は、移植元の README と Ollama の資料に基づく。
+
 - effort は `max` で起動する。Ollama は、モデルのメタデータにある名前（このモデルは
   `low`・`high`・`max`）ならそのまま適用し、無い名前はモデルの既定（`high`）にする。
-  `/effort` で `medium`・`xhigh` などに変えると、`high` として扱われる
+  `/effort` で `medium`・`xhigh` などに変えると、`high` として扱われるはずだが、
+  資料からの推論で、xrift-poc では確かめていない
 - 出力上限 65,536 は運用上の上限で、サービスの最大値ではない。モデルの最大出力トークン数は
-  `/api/show` に無く、確かめられていない。指定しないと Claude Code は 32,000 を送るが、
+  `/api/show` に無く、確かめられていない。指定しないと Claude Code は 32,000 を送る（移植元の観測）。
   `max` の effort では thinking も上限に数えるため、長い出力が途中で切れうる。
-  65,536 を指定した起動で要求が成功することは、下の「動作の確認」で確かめてある
+  `CLAUDE_CODE_MAX_OUTPUT_TOKENS=65536` を指定した起動で要求が成功したことは、
+  下の「動作の確認」で確かめた
 
 ### 対応していない機能
 
-Ollama の Anthropic 互換 API（Anthropic compatibility）は、次に対応していない。
+Ollama の資料（Anthropic compatibility）は、次に対応していないとしている。
 
-- `/v1/messages/count_tokens`。Claude Code は 404 を受けて推定に切り替えるので、
-  `/context` などのトークン数は推定値になる
-- prompt caching（`cache_control`）。送っても拒否されないが、効かない
+- `/v1/messages/count_tokens`。`https://ollama.com` への直接の要求で 404 を確かめた。
+  Claude Code が推定に切り替えるか（`/context` などが推定値になるか）は、移植元の観測で、
+  xrift-poc では確かめていない
+- prompt caching（`cache_control`）。`cache_control` を付けた要求は拒否されなかった。
+  効くかどうかは「追加の確認」を参照
 - `tool_choice`、`metadata`、Batches API、citations、PDF の `document` ブロック、
   URL で指定した画像（Base64 の画像は使える）、ストリーミング中の `error` イベント
-  （エラーは HTTP のステータスで返る）
 - thinking の `budget_tokens`（受け付けるが、上限として効かない）
 
 Ollama の Claude Code 連携手順には「Hosted WebSearch and advanced tool controls are not fully
@@ -1530,11 +1540,23 @@ Claude Code が知らないモデル名を使ったことの通知で、応答�
 | `/status` | `claude-ollama` を擬似端末で起動して画面を読む | `Auth token: ANTHROPIC_AUTH_TOKEN`、`Anthropic base URL: https://ollama.com`、`Model: opus (deepseek-v4.1-flash:1017[1m])` |
 | 引数の受け渡し | 引数を 1 つずつ書き出す `claude` のスタブで、複数行・連続空白・日本語の引数を渡す | `--model opus` と引数がそのまま届いた。`--dangerously-skip-permissions` は `ccdol` にだけ付く |
 
+### 追加の確認（2026-11-08、`curl` で `https://ollama.com` に直接）
+
+キーは curl の設定を標準入力から渡し、コマンドラインに出していない。ログにキーの値は出ていない（出現 0 件）。
+
+| 項目 | 方法 | 結果 |
+| --- | --- | --- |
+| `x-api-key` だけの認証 | `POST /v1/messages` に `x-api-key` ヘッダだけを付ける | HTTP 401（`authentication_error`） |
+| Bearer 認証と出力上限 | `Authorization: Bearer` と `max_tokens: 65536` | HTTP 200 |
+| `/v1/messages/count_tokens` | Bearer で POST | HTTP 404 |
+| `cache_control` | system のブロックに `cache_control: {type: ephemeral}` を付ける | HTTP 200（拒否されない） |
+| 同じ前置きの繰り返し | 約 1,500〜2,000 トークンの system で同じ要求を 2 回。`cache_control` あり・なし | どちらも 2 回目で `cache_read_input_tokens` が増え、`input_tokens` が減った。`cache_control` の有無で違いは見られなかった（サーバー側で前置きを再利用しているとみられる。料金への影響は確かめていない） |
+
 確かめていない範囲:
 
 - Rebuild Container の後の `~/.zshrc` での起動。この確認は関数の定義だけを source した（利用者が確かめる）
-- 送った要求そのもの（`Authorization` の Bearer だけで `x-api-key` が無いこと、`max_tokens` の値）。
-  要求を記録する経路を用意していない。`/status` の認証の表示と、
+- Claude Code が送った要求そのもの（`Authorization` の Bearer だけで `x-api-key` が無いこと、
+  `max_tokens` の値）。要求を記録する経路を用意していない。`/status` の認証の表示と、
   `CLAUDE_CODE_MAX_OUTPUT_TOKENS=65536` の起動で要求が成功したことまでを確かめた
 - 1M に近い長さの会話、自動の compact、`CLAUDE_CODE_AUTO_COMPACT_WINDOW`
 - `/effort` で `medium`・`xhigh` に変えたときの扱い、WebSearch などのサーバー側のツール
