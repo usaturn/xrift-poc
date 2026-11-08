@@ -1055,7 +1055,10 @@ def _validate_reapable_session(
         failed = False
         if allow_failed and "run_context" in state:
             document = _bound_run_record(repo, state, session_dir)
-            failed = document["status"] != "success"
+            # 保存の後に後片付けだけ失敗したセッションも、PR の前と同じく保存済みとして回収する。
+            # draft がある限り保存済みの判定に回し、未保存の draft は require_saved_review が拒否して残す。
+            draft_path = Path(state["draft"])
+            failed = document["status"] != "success" and not (draft_path.is_file() and not draft_path.is_symlink())
             if failed:
                 retirement = {
                     "retirement": "failed",

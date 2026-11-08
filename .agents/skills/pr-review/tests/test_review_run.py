@@ -562,9 +562,7 @@ def test_failed_retirement_keeps_unsaved_session_data(
     if artifact == "draft":
         retained = Path(result["draft"])
         retained.write_text("finished review", encoding="utf-8")
-        saved = prepared["parent"] / result["destination"]
-        saved.parent.mkdir(parents=True, exist_ok=True)
-        saved.write_bytes(retained.read_bytes())
+        # 保存先は作らない（未保存の draft）。保存先と一致する draft は保存済みとして消えるのが正しい。
     elif artifact == "previous":
         assert json.loads(Path(result["state_file"]).read_text())["previous_review"] is not None
         retained = session / "review-backup" / "previous-review.md"

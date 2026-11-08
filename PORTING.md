@@ -536,6 +536,9 @@ Issue #59 の対応として、5174〜5179 も `forwardPorts` に追加した。
     runner が停止確認の後に試行の `tmp` の symlink を消すので、追跡済みの symlink を持つリポジトリでは
     worktree が dirty になり、退役せず `retained` に残る（安全側）。この組み合わせの不具合は
     範囲外として記録し、この取り込みでは直していない。
+  - draft のあるセッションの判定: 移植元は実行記録が失敗なら draft があっても退役の判定で残すが、
+    xrift-poc では draft のあるセッションを記録によらず保存済みの判定に回す（PR の前の定期掃除が、
+    保存の後に後片付けだけ失敗したセッションを回収していたのを保つため。未保存の draft は残す）。
   - 役割の分担: after_run の `attach-runner` は今回照合した記録の、runner が停止を確認した未着手の
     失敗セッションだけを退役する。`cleanup-workspace.bash` は記録の runner の `stop_confirmed` を根拠にし、
     理由を自動で作らない。`repo-cleanup-after-merge` は `/tmp/pr-review-*` を先に helper に渡し、
