@@ -425,11 +425,15 @@ uv run --project tools/devenv python -m tools.agent_runner \
   マイナー版・ベンダー接頭辞・日付は省き、それらの更新時は `model` の値だけを変える。
   メジャー版が変わったら別の agent を追加する。Claude Code の `opus`・`sonnet` は
   CLI の別名が最新モデルを指すため、そのまま使う。
-- effort は設定値、または Cursor の model slug に含まれる実効値を使う。
+  tier はモデルの種類（`sol`・`flash` など）を指す。slug に含まれる effort の軸の tier
+  （Devin の `swe-2-max` の `max`、Cursor の `grok-4.7-xhigh` の `xhigh`）は model の段に入れず、effort の段に置く。
+- effort は設定値を使う。設定値が無く、model の値（slug）に実効の effort が含まれる場合は
+  その値を使う（Cursor の `grok-4.7-xhigh`、Devin の `swe-2-max` など）。
   どちらも無ければ `default`（runtime の既定値に任せる）とする。
 
 たとえば `pi_openai-codex_gpt6-sol_xhigh` は Pi / openai-codex / GPT-6 Sol / xhigh、
 `claude-code_opus_default` は Claude Code / Opus / effort 未指定を表す。
+`devin_swe2_max` は Devin / SWE-2 / max（`model = "swe-2-max"` の slug の実効値）を表す。
 名前だけを変更した既存 agent の command・model・provider・effort・env・approval・
 skill_sources・args は変更していない。
 
@@ -439,6 +443,7 @@ skill_sources・args は変更していない。
 provider・effort の違いは区別せず、provider ごとの表記を自動では正規化しない。
 雛形では DeepSeek V4.1 Flash の commandcode・opencode-go・deepinfra の3 agent に
 同じ `model_key = "deepseek-v4.1-flash"` を設定している。
+SWE-2 の `devin_swe2_max`・`devin_swe2_medium` にも共通の `model_key = "swe-2"` を設定している。
 `model_key` は比較専用で、CLI に渡すモデルや実行結果の観測値は変えない。
 
 ### 旧 agent 名を使っていた個人設定の移行
@@ -455,13 +460,14 @@ provider・effort の違いは区別せず、provider ごとの表記を自動�
 2. `workflows.*.assignments.*` の `agents` と `fallback` を下表の新名に書き換える。
 3. 上記の `check` と `list` を実行し、読み込み成功と使う agent の表示を確認する。
 
-次の表は改名時の対応履歴であり、現在の既定担当の推奨ではない。
+次の表は、改名した旧名と現在の名前の対応である。2 回改名した名前（`devin-swe`）も、現在の名前を新名に書いている。現在の既定担当の推奨ではない。
 Command Code の契約停止後の移行先は、後述の「Command Code GOAT の契約停止と再有効化」を参照する。
 
 | 旧名 | 新名 |
 |---|---|
 | `claude-opus` | `claude-code_opus_default` |
-| `devin-swe` | `devin_swe2-max_default` |
+| `devin-swe` | `devin_swe2_max` |
+| `devin_swe2-max_default` | `devin_swe2_max` |
 | `pi-deepseek` | `pi_commandcode_deepseek4-flash_max` |
 | `pi-gpt` | `pi_openai-codex_gpt6-sol_xhigh` |
 | `pixg` | `pi_xai_grok4_xhigh` |
@@ -471,6 +477,15 @@ Command Code の契約停止後の移行先は、後述の「Command Code GOAT �
 | `codex` | `codex_openai_gpt6-sol_default` |
 | `cursor` | `cursor_auto_default` |
 | `cursor-grok47` | `cursor_grok4_xhigh` |
+
+旧名（`devin-swe`・`devin_swe2-max_default`）の `[agents.*]` の節を個人設定に残すと、
+雛形の `model_key = "swe-2"` を継承しないため、比較値が `model` の `swe-2-max` になる。
+そのため `devin_swe2_max`・`devin_swe2_medium`（比較値 `swe-2`）と同じ役割に並べても、
+同じモデルとして拒否されない。手順 1 のとおり旧名の節を削除して新名の雛形を継承する。
+旧名を残す場合は、その節に `model_key = "swe-2"` を明示する。
+旧名の節を持たず、割り当てで旧名を参照しているだけの個人設定は、雛形から旧名の定義が無くなったため
+`check` が `invalid_reference` で止まる。手順 2 のとおり参照を新名に書き換える。
+個人設定は自動で書き換えず、旧名の alias も作らない。
 
 ランチャーのコマンド名（`pixg`・`pigod` など）は変更しない。
 過去のレビュー・実行記録・runtime の観測記録の agent 名も書き換えない。
@@ -511,6 +526,9 @@ uv run --project tools/devenv python -m tools.agent_runner run --workflow review
 例えば `codex_openai_gpt6-sol_default` と `pi_openai-codex_gpt6-sol_xhigh` は
 どちらも `model = "gpt-6.1-sol"` なので並べられない。effort の違いでは別モデルにしない。
 DeepSeek V4.1 Flash の provider 別3 agent も、共通の `model_key` により並べられない。
+Devin の `devin_swe2_medium`（SWE-2 Medium）は既定の割り当てに入っておらず、
+`--assign inspect=devin_swe2_medium` のように指定して選ぶ。
+`devin_swe2_max` と共通の `model_key` を持つので、2 つは同じ役割に並べられない。
 
 runtime が `codex` の担当（雛形の `codex_openai_gpt6-sol_default` など）は、レビュアー（inspect）にも、レビュー修正の self-review・fix-check にも割り当てられない（#52）。
 codex の adapter は writes=false の役割を `codex exec -s read-only` で起動し、OS の sandbox がすべての書き込みを拒否する。
@@ -773,7 +791,7 @@ OpenCode Go の `pi_opencode-go_deepseek4-flash_max`（`pigod`）へ置き換え
 
    ```toml
    [workflows.review.assignments.inspect]
-   agents = ["devin_swe2-max_default", "pi_opencode-go_deepseek4-flash_max", "pi_openai-codex_gpt6-sol_xhigh"]
+   agents = ["devin_swe2_max", "pi_opencode-go_deepseek4-flash_max", "pi_openai-codex_gpt6-sol_xhigh"]
    fallback = []
    ```
 
@@ -1410,7 +1428,7 @@ bash .devcontainer/test-pi-superagents.bash
 DeepSeek Harness（DSH）の導入・ランチャー・runner runtime は撤去した。
 Pi の通常の DeepSeek 担当は `pi_opencode-go_deepseek4-flash_max`（`pigod`）を使う。
 Claude Code の `ccdd`・`ccddg` も引き続き使える。既定の inspect は
-`devin_swe2-max_default`・`pi_opencode-go_deepseek4-flash_max`・`pi_openai-codex_gpt6-sol_xhigh` の 3 人である。
+`devin_swe2_max`・`pi_opencode-go_deepseek4-flash_max`・`pi_openai-codex_gpt6-sol_xhigh` の 3 人である。
 Command Code の `piccd` と agent 定義は再契約後の明示利用用に残している。
 
 ### 個人設定の更新
