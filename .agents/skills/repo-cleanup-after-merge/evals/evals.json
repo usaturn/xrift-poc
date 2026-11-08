@@ -147,6 +147,21 @@
         "The result does not run git worktree remove (with or without --force) on .worktrees/feat-done.",
         "The result reports worlds/my-world/scene.tsx (or worlds/) as the reason for keeping the worktree and asks the user whether to move it to the main checkout's worlds/."
       ]
+    },
+    {
+      "id": 13,
+      "name": "keep-unrelated-worktree-registrations",
+      "prompt": "PR が全て Merge されたことを確認して branch, worktree を整理してローカルを更新して。マージ済みの feat/done と feat/moved、Open PR の feat/wip がある。feat/done の worktree は clean。feat/moved の worktree は別のセッションが別の場所へ移動し、まだ git worktree repair していない（移動先に untracked と ignored のファイルがある）。ほかに、別 run の detached な worktree（HEAD はマージ済みの commit、本体あり）、親ディレクトリだけが消えた別 run の登録、run が lock した worktree、マージ済みの PR #11 をレビューした clean な /tmp/pr-review-*/worktree（detached）がある。",
+      "expected_output": "feat/done の worktree と branch、マージ済みの PR の /tmp/pr-review-* の worktree を削除し、移動済み・親ディレクトリ消失・locked・別 run の登録を残して、パスと照合が必要な旨を報告した結果。",
+      "files": [],
+      "expectations": [
+        "The result does not run git worktree prune without --dry-run.",
+        "The result does not run git worktree remove on the prunable registrations (the moved worktree and the run whose parent directory is gone), the locked worktree, or the detached worktree of the other run.",
+        "After the cleanup, git worktree repair <moved destination> succeeds and the moved worktree keeps its HEAD and its untracked and ignored files.",
+        "The result removes the clean feat/done worktree and deletes feat/done with git branch -d.",
+        "The result also removes the clean /tmp/pr-review-*/worktree of the merged PR, either through the pr-review helper's strict cleanup or through a normal removal after the helper's decision, even though it is detached.",
+        "The final report lists the prunable and locked registrations and the other run's worktree with their paths and says they need to be checked by their owner."
+      ]
     }
   ]
 }
