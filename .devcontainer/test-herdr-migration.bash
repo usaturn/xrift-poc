@@ -442,7 +442,7 @@ test_installer_keeps_an_existing_herdr_config() {
     [ "$(cat "$config")" = '# user config' ] || fail 'installer must keep an existing herdr config'
 }
 
-# このテストが無いと、cc_launcher_unsets から資格情報を外す・ccdd・ccddg が一覧を使わなくなる変更で、親シェルの Anthropic の API key・OAuth token や他のプロバイダの key が DeepInfra 向けの子の claude へ黙って渡る。
+# このテストが無いと、cc_launcher_unsets から資格情報を外す・ccdd・ccddg・ccdol が一覧を使わなくなる・ccdol が別のプロバイダのキーを読む変更で、親シェルの Anthropic の API key・OAuth token や他のプロバイダの key（ccdd・ccddg の子への OLLAMA_API_KEY、ccdol の子への DEEPINFRA_TOKEN を含む）が第三者のプロバイダ向けの子の claude へ黙って渡る。
 test_cc_launcher_env_unsets() {
     local test_home="${TEST_ROOT}/home-cc-launcher"
     make_stub_home "$test_home"
@@ -459,6 +459,8 @@ test_cc_launcher_env_unsets() {
     # 検出できない。名前が資格情報の形であること（Claude Code が認証に読む ANTHROPIC_*・CLAUDE_CODE_* の
     # API key・token・client key とその passphrase、鍵や token のファイルを指す *_FILE_DESCRIPTOR と
     # ヘッダ上書きの CUSTOM_HEADERS、ランチャーが使う他のプロバイダの API key）から独立に選ぶ。
+    # ランチャーが ANTHROPIC_AUTH_TOKEN に使う入力のキー（DEEPINFRA_TOKEN・OLLAMA_API_KEY）は、
+    # そのランチャーの実行だけ汚染から外して INPUT_<名前> を入れる。
     # モデルのピン留め・プロバイダの切り替えは秘密ではないので含めない
     local -a credentials=(
         ANTHROPIC_API_KEY
@@ -483,15 +485,23 @@ test_cc_launcher_env_unsets() {
         COMMANDCODE_API_KEY
         OPENCODE_API_KEY
         OPENCODE_GO_API_KEY
+        DEEPINFRA_TOKEN
+        OLLAMA_API_KEY
     )
-    local -a env_args=(DEEPINFRA_TOKEN=fake-di)
-    local v
-    for v in "${credentials[@]}"; do
-        env_args+=("${v}=POLLUTED_${v}")
-    done
 
-    local fn log
-    for fn in ccdd ccddg; do
+    local spec fn key v log
+    local -a env_args
+    # ランチャー:そのランチャーが ANTHROPIC_AUTH_TOKEN に使うキー
+    for spec in ccdd:DEEPINFRA_TOKEN ccddg:DEEPINFRA_TOKEN ccdol:OLLAMA_API_KEY; do
+        fn="${spec%%:*}" key="${spec#*:}"
+        env_args=()
+        for v in "${credentials[@]}"; do
+            if [ "$v" = "$key" ]; then
+                env_args+=("${v}=INPUT_${v}")
+            else
+                env_args+=("${v}=POLLUTED_${v}")
+            fi
+        done
         log="${dump_dir}/${fn}.log"
         : > "$log"
         run_zshrc_code "$test_home" \
@@ -499,9 +509,28 @@ test_cc_launcher_env_unsets() {
             HERDR_TEST_CLAUDE_DUMP="$log" \
             "${env_args[@]}"
         assert_absent "$log" 'POLLUTED_'
-        # 対照: 子の claude が実際に起動し、自分の割り当て値を受け取った
-        assert_contains "$log" '^ANTHROPIC_AUTH_TOKEN=fake-di$'
+        # 対照: 子の claude が実際に起動し、そのランチャーのキーを ANTHROPIC_AUTH_TOKEN として受け取った
+        assert_contains "$log" "^ANTHROPIC_AUTH_TOKEN=INPUT_${key}\$"
     done
+}
+
+# このテストが無いと、キーの確認が空白を通す書き方に変わったとき、Claude Code が保存済みの claude.ai の OAuth トークンを ollama.com へ黙って送る。
+# 入力は空白だけの 1 件にする。空だけを止める書き方（[[ -z ... ]]・${X:?}）は空白を通すので、
+# この 1 件で空・未設定を止め損ねる誤りも分かる。
+test_ollama_launcher_requires_key() {
+    local test_home="${TEST_ROOT}/home-ollama-key"
+    make_stub_home "$test_home"
+    local log="${TEST_ROOT}/ollama-key-claude.log"
+    : > "$log"
+    printf '%s\n' '#!/bin/sh' 'echo started >> "$HERDR_TEST_CLAUDE_DUMP"' > "$test_home/bin/claude"
+    chmod +x "$test_home/bin/claude"
+
+    local rc=0
+    run_zshrc_code "$test_home" \
+        'source "$ZSHRC_TEMPLATE" >/dev/null 2>&1; ccdol probe' \
+        HERDR_TEST_CLAUDE_DUMP="$log" OLLAMA_API_KEY=' ' 2>/dev/null || rc=$?
+    [ "$rc" -ne 0 ] || fail 'ccdol must fail when OLLAMA_API_KEY is blank'
+    [ ! -s "$log" ] || fail 'ccdol must not start claude when OLLAMA_API_KEY is blank'
 }
 
 test_installer_keeps_an_existing_herdr_config
@@ -509,4 +538,5 @@ test_session_cwd_repair
 test_herdrstart_repairs_session_before_launch
 test_session_cwd_repair_multi_workspace
 test_cc_launcher_env_unsets
+test_ollama_launcher_requires_key
 printf 'PASS: herdr Dev Container migration\n'

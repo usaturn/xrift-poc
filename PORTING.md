@@ -451,3 +451,28 @@ Issue #59 の対応として、5174〜5179 も `forwardPorts` に追加した。
 - 固有差分は維持する: Codex の inspect 制限（#52）、Cursor の `writes=false` 対応（#75）、
   DSH の撤去（#123）、Grok Build の撤去（#162）。既存 agent の起動条件は変更せず、
   過去の reviews・`runtimes/*.rst` の観測・evals の記録は更新しない。
+
+## Ollama Cloud の Claude Code ランチャーの取り込み（2026-11、Issue #231）
+
+- 移植元: `usaturn/agent-workspace` の Issue #852、PR #855（2 commit）。この節の `#852`・`#855` は
+  移植元の番号で、xrift-poc の Issue #231 とは別である。
+  - commit `e7b00652e9d80f414bcb29579d2984f812ba040e`（`claude-ollama` / `ccdol` の追加。`zshrc.txt` とテスト）
+  - commit `e126472cea4956e8b615adf1e6cab4286d6d861f`（README）
+  - merge commit `08fe48278eeb2a796d439dbb8cce00cf0e83b2a2`
+- 取り込んだファイル: `.devcontainer/zshrc.txt`・`.devcontainer/test-herdr-migration.bash`・
+  `.devcontainer/README.md`。ファイル全体は置き換えず、必要な差分だけを現行ファイルへ取り込んだ。
+- 2026-11-08 に、`ollama.com/api/tags`・`api/show` と Ollama の Claude Code 連携、
+  Anthropic compatibility の資料を確かめ、移植元の時点から変わっていないので値はそのまま使った。
+- xrift-poc で変えた点:
+  - `test_cc_launcher_env_unsets` の汚染の方式: 移植元は `cc_launcher_unsets` から資格情報を
+    取り出して汚染するが、それでは一覧から外す変更を検出できない。xrift-poc では資格情報の一覧を
+    テストに持ち、ランチャーごとに自分が使うキー（`ccdd`・`ccddg` は `DEEPINFRA_TOKEN`、
+    `ccdol` は `OLLAMA_API_KEY`）だけを `INPUT_<キーの名前>` の値にし、ほかは `POLLUTED_<名前>` で
+    汚染する。対照はランチャーごとの値で確かめる。
+  - README の節の位置と説明: 新しい節は「DSH 撤去後の移行（#123）」の直前に置いた（移植元は
+    pi-superagents の節の後）。`zshrc.txt` は `install_beforehand.bash` が
+    `scripts/write_shell_block.py` で `~/.zshrc` の管理ブロックとして書くので、反映は
+    Rebuild Container と説明した。見出しは番号が移植元を指すと分かる形にした。
+  - 動作の確認: 移植元の確認結果は写さず、xrift-poc の commit 58d7aef の定義で
+    2026-11-08（Claude Code 2.1.319）に実 API でやり直した。
+- 取り込まなかったもの: 移植元の README の「動作の確認」の結果の記述。
