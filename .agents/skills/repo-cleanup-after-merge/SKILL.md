@@ -300,12 +300,14 @@ git merge-base --is-ancestor <mergeCommit.oid> origin/main
 
 PR 型ではリモート側の先端が PR の `headRefOid` と一致し、`mergeCommit.oid` の到達確認が終了コード 0 のものだけを候補にする。`mergeCommit` が無い場合も祖先型なら候補にできる。ローカル branch を消せたことや、branch 名だけを根拠にしない。対応 PR を照合できない、どちらの判定も満たさないものは残す。候補には **PR 番号・リモート側の先端 SHA・判定区分**を添えて提示する。
 
-マージ済みでも、リモート branch の削除を独断で実行しない。対象を提示してユーザー確認を求め、承認を得てから実行する。承認後にも fetch と Open PR・リモート側の先端の照合をやり直し、提示した SHA から変化したものは削除せず、再判定・再確認する。
+マージ済みでも、リモート branch の削除を独断で実行しない。対象を提示してユーザー確認を求め、承認を得てから実行する。承認後にも fetch と Open PR・リモート側の先端の照合をやり直し、再照合で得た完全な SHA を控える。提示した SHA と違うものは削除せず、再判定・再確認する。削除は、控えた SHA を lease に渡して行う。
 
 ```bash
-git push origin --delete <branch>
+git push --force-with-lease=refs/heads/<branch>:<再照合した完全な SHA> origin :refs/heads/<branch>
 git fetch --prune
 ```
+
+lease は、再照合と削除 push の間に別の担当が先端を変えた場合に、承認していない先端を消さないためのものである。lease が拒否した（`stale info` などで終了コードが 0 以外）ときは、その branch を残し、lease なしの削除や `--force` で回避せず、fetch からやり直して再判定・再確認する。
 
 ### 11. 最終状態を報告する
 
@@ -340,6 +342,7 @@ ls -la --time-style=long-iso "$(uv run --no-project python .agents/scripts/agent
 - 「branch の先端が `origin/main` の祖先でないから未取り込み」と決め、PR 型の証拠を確認していない
 - PR が MERGED というだけで、先端と `headRefOid` の一致や `mergeCommit` の到達可能性を確かめずに `-D` を使おうとしている
 - リモート branch を削除してから「不要なら戻せます」と報告しようとしている
+- 再照合した SHA の lease なしでリモート branch を削除しようとしている
 - 「時間が無い」「手早く」と言われたので確認を飛ばそうとしている
 
 **いずれかに該当したら、対象の削除を中止する。残骸候補は手順 6 で報告・保留し、独立して安全性を確認できた操作は続行する。**
@@ -374,6 +377,7 @@ ls -la --time-style=long-iso "$(uv run --no-project python .agents/scripts/agent
 - 手順 7 の checkout の衝突を `--force` / `--merge` / `git stash` / `git reset` で回避しない。衝突したら停止して報告する。
 - `items/`・`worlds/` の中身と、制作物の未コミットの変更を片付けの対象にしない。親の worktree の `items/`・`worlds/` に中身があれば、その worktree を削除しない（手順 4）。
 - ユーザー確認なしに `git push`（`--delete` を含む）を実行しない。
+- リモート branch は、再照合した完全な SHA の lease（`--force-with-lease=refs/heads/<branch>:<SHA>`）を付けて削除する。lease の拒否を lease なしの削除や `--force` で回避しない。
 - Open PR が残っている branch と worktree、および対応する `refs/pr-review/*` を削除しない。detached な pr-review worktree も含む。
 - `reviews/` や `docs_draft/` など gitignore 対象ディレクトリの内容を、照合せずに削除しない。例外は、helper が strict cleanup で検証した停止確認済み未着手の失敗セッション、このスキルが作った `$GATE_DIR`、ユーザーが項目ごとに確認した `tmp/agents/` のエントリだけである。
 - `tmp/agents/` のエントリを、ユーザーが項目ごとに確認する前に削除しない。
