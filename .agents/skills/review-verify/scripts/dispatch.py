@@ -473,6 +473,28 @@ def check_inventory(findings: Any, data: FixInput, inventory: Mapping[str, Any])
         raise AcceptError("inventory fix_ids differ from the request fix_ids")
 
 
+def collect_accepted(review_dir: Path, files: list[Path], verifier: Mapping[str, Any]) -> None:
+    """保存した結果を収集する（Issue #835）。失敗しても accept の結果を変えない。"""
+    try:
+        from tools.review_eval.capture import collect
+
+        provenance = verifier.get("provenance")
+        binding: Mapping[str, Any] = cast(Mapping[str, Any], provenance) if isinstance(provenance, dict) else {}
+        collect(
+            route="review-verify",
+            event="accept",
+            review_dir=review_dir,
+            files=files,
+            context={
+                "mode": "fix_check",
+                "run_id": binding.get("run_id"),
+                "request_id": binding.get("request_id"),
+            },
+        )
+    except Exception as error:  # noqa: BLE001 - 収集の失敗で accept の結果を変えない
+        print(f"review-eval: hook failed: {type(error).__name__}", file=sys.stderr)
+
+
 def accept(run_dir: Path) -> dict[str, str]:
     """外部担当の結果を検査し、通ったものだけ ``<review_dir>/verified/`` へ保存する。"""
     saved = read_dispatch(run_dir)
@@ -524,11 +546,18 @@ def accept(run_dir: Path) -> dict[str, str]:
             findings.check_statement_judgments(checked, cast(dict[str, Any], json.loads(sidecar.read_text("utf-8"))))
         except findings.FindingsError as error:
             raise AcceptError(f"validate failed: {error.problems[0]} (+{len(error.problems) - 1} more)") from None
+        # 置き換える前の版は、収集済みでなければここで取る（置き換えの後では新版しか取れない）。
+        collect_accepted(
+            review_dir,
+            [path for path in (verified_dir / sidecar.name, verified_dir / target.name) if path.is_file()],
+            observed,
+        )
         # sidecar を先に置き、fix-check が候補ファイルを欠いた状態で見えないようにする。
         os.replace(sidecar, verified_dir / sidecar.name)
         os.replace(target, verified_dir / target.name)
     finally:
         shutil.rmtree(work, ignore_errors=True)
+    collect_accepted(review_dir, [verified_dir / sidecar.name, verified_dir / target.name], observed)
     return {"statement_candidates": str(verified_dir / sidecar.name), "fix_check": str(verified_dir / target.name)}
 
 

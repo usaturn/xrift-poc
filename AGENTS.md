@@ -102,6 +102,7 @@ xrift-poc は、XRift のワールドとアイテムを作るための開発環�
 | Superpowers の Spec / Plan | `docs_draft/superpowers/` |
 | Superpowers の SDD の作業領域（executing-plans・subagent-driven-development の ledger・brief・実装担当の報告・review の差分・テストのログ） | `tmp/agents/<topic>.XXXXXX/`（Plan ごとに `agent_tmp.py mkdir <topic>` で作る。手順は `.agents/sdd-workspace.md`） |
 | PR レビュー結果 | `reviews/<owner>/<repo>/#<PR>-<branch>/`（親の PR も制作物の PR も親の main checkout に置く。保存先は pr-review helper が決める。PR 修正ループも同じ場所に保存し、ループ自身の記録は `loop/` に置く） |
+| レビュー評価データの私有の保存先（`tools/review_eval` の `store`） | 設定で明示した絶対パス（推奨は `private/review-eval/collected/`。`reviews/`・`items/`・`worlds/` の中は不可） |
 | 使い捨ての git worktree とその作業領域 | `/tmp`（レビュアーの pr-review helper のセッション、review-fix-planning の `mktemp -d`、PR 修正ループの runner の出力と所有 worktree `${TMPDIR:-/tmp}/xrift-poc-pr-loop-XXXXXX/`） |
 | 消えても困らない中間出力 | `/tmp`、Claude Code の scratchpad |
 
@@ -131,7 +132,7 @@ xrift-poc は、XRift のワールドとアイテムを作るための開発環�
 
 ### 親の検証
 
-- worktree の root で、`route_target.py` が `env` と判定することを確かめてから、`./scripts/ci/verify-devenv.sh` を引数なしで実行する。`tools/devenv` project を使い、`scripts`・`tools/devenv`・`tools/devenv_migration`・`tools/agent_runner`・`tools/test_support`・`.agents` の lint・型検査・テストを実行する
+- worktree の root で、`route_target.py` が `env` と判定することを確かめてから、`./scripts/ci/verify-devenv.sh` を引数なしで実行する。`tools/devenv` project を使い、`scripts`・`tools/devenv`・`tools/devenv_migration`・`tools/agent_runner`・`tools/test_support`・`tools/review_eval`・`.agents` の lint・型検査・テストを実行する
 - 開発中に関係する Python のパスだけを静的チェックするときは、同じ root で次の形を使う。例の `.agents/skills/issue-queue` を対象ファイルまたはディレクトリのパスに置き換える。ruff の `--config` と Pyright の `--project` は、`verify-devenv.sh` と同じ `tools/devenv/pyproject.toml` を指定するために省略しない
 
 ```bash
@@ -145,7 +146,7 @@ uv run --project tools/devenv --no-sync pyright --project tools/devenv/pyproject
 
 ```bash
 uv sync --project tools/devenv --locked
-uv run --project tools/devenv --no-sync pytest -c tools/devenv/pyproject.toml --rootdir . tools/devenv/tests tools/devenv_migration/tests tools/agent_runner/tests tools/test_support/tests .agents --collect-only -q
+uv run --project tools/devenv --no-sync pytest -c tools/devenv/pyproject.toml --rootdir . tools/devenv/tests tools/devenv_migration/tests tools/agent_runner/tests tools/test_support/tests tools/review_eval/tests .agents --collect-only -q
 ```
 
 - テストのファイルやディレクトリを指定して実行するときも、同じ root で `-c tools/devenv/pyproject.toml --rootdir .` を付ける。`--rootdir .` が無いと rootdir が `tools/devenv` になり、conftest の fixture が別のディレクトリのテストにも効き、テストのファイルを並べると別の conftest の同名の fixture を受け取る

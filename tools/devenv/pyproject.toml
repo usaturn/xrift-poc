@@ -11,13 +11,13 @@ package = false
 dev = ["pytest", "ruff", "pyright", "pyyaml", "types-pyyaml", "playwright"]
 
 [tool.pytest.ini_options]
-addopts = ["--import-mode=importlib", "-p", "tools.test_support.explicit_paths"]
+addopts = ["--import-mode=importlib", "-p", "tools.test_support.explicit_paths", "-p", "tools.test_support.isolation"]
 pythonpath = ["../.."]
 
 [tool.pyright]
 pythonVersion = "3.14"
 typeCheckingMode = "strict"
-include = [".", "../devenv_migration", "../../.agents", "../agent_runner", "../test_support", "../../scripts/write_shell_block.py"]
+include = [".", "../devenv_migration", "../../.agents", "../agent_runner", "../test_support", "../review_eval", "../../scripts/write_shell_block.py"]
 extraPaths = ["../.."]
 exclude = ["**/.venv", "../../.agents/skills/*/evals/fixtures", "**/__pycache__", "**/.git", "**/.pytest_cache", "**/.ruff_cache"]
 

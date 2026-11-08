@@ -9,6 +9,8 @@
 # ローカルの作業用ファイル
 /tmp/
 /reviews/
+# レビュー評価データの私有の保存先（tools/review_eval の store の推奨先）
+/private/
 /docs_draft/
 # superpowers の作業用ディレクトリ。brainstorming の visual companion が、mockup と接続用のトークン（.last-token）を書く
 .superpowers/

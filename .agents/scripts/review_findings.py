@@ -2669,6 +2669,23 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _collect_before_replacement(file: Path) -> None:
+    """検査が通った `verified/` の一時ファイルについて、置き換え前の版を収集する（Issue #835）。失敗は無視する。"""
+    try:
+        directory = file.resolve().parent
+        if directory.name != "verified" or not re.match(r"#\d+-", directory.parent.name):
+            return
+        root = Path(__file__).resolve().parents[2]
+        spec = importlib.util.spec_from_file_location("review_eval_shim", root / "tools/review_eval/shim.py")
+        if spec is None or spec.loader is None:
+            return
+        shim = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(shim)
+        shim.run_hook(tool_root=root, route="review-verify", event="validate", review_dir=directory.parent)
+    except Exception as error:  # noqa: BLE001 - 収集の失敗で validate の結果を変えない
+        print(f"review-eval: hook failed: {type(error).__name__}", file=sys.stderr)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -2678,6 +2695,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 section = cast(dict[str, Any], document["statement_candidates"])
                 candidates_path = args.file.parent / cast(str, section["file"])
                 check_statement_judgments(document, cast(dict[str, Any], _read_json(candidates_path)))
+            _collect_before_replacement(args.file)
         elif args.command == "from-markdown":
             value = candidates_from_markdown(
                 args.file.read_text(encoding="utf-8"),
