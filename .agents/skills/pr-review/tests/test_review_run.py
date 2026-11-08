@@ -588,6 +588,31 @@ def test_failed_retirement_keeps_unsaved_session_data(
     assert result["worktree"] in registrations(prepared)
 
 
+def test_failed_retirement_keeps_unsaved_candidates_of_an_update(
+    prepared: dict[str, Any], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Update で draft が前回のレビューのままでも、未保存の候補を保存済みとして消すと調査記録を黙って失う。"""
+    first = review_run.prepare(prepared["args"])
+    mark_reviewed(first)
+    assert review_run.complete(argparse.Namespace(state=first["state_file"]))["status"] == "success"
+    result = review_run.prepare(prepared["args"])
+    assert json.loads(Path(result["state_file"]).read_text())["previous_review"] is not None
+    backup = Path(result["state_file"]).parent / "review-backup"
+    Path(result["draft"]).write_bytes((backup / "previous-review.md").read_bytes())
+    findings = Path(result["findings_draft"])
+    document = json.loads(findings.read_text())
+    document["coverage"]["read"] = ["未保存の調査\n二行目"]
+    findings.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+    code, _payload = attach(batch_result(tmp_path / "timed-out.json", state="timed_out"), capsys)
+    assert code == 0
+    before = findings.read_bytes()
+    with pytest.raises(review_run.workspace.WorkspaceError):
+        review_run.workspace.cleanup(failed_cleanup_args(result))
+    assert findings.read_bytes() == before
+    assert Path(result["state_file"]).exists()
+    assert result["worktree"] in registrations(prepared)
+
+
 @pytest.mark.parametrize(
     "evidence", ["none", "not-stopped", "success", "other-binding", "other-session", "other-head", "symlink"]
 )

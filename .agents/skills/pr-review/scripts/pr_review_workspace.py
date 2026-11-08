@@ -1053,12 +1053,14 @@ def _validate_reapable_session(
         repo, state = _load_state(str(state_path), allow_missing_worktree=allow_failed)
         retirement: dict[str, Any] = {"retirement": "saved", "stop_evidence": None}
         failed = False
+        draft_routed = False
         if allow_failed and "run_context" in state:
             document = _bound_run_record(repo, state, session_dir)
             # 保存の後に後片付けだけ失敗したセッションも、PR の前と同じく保存済みとして回収する。
             # draft がある限り保存済みの判定に回し、未保存の draft は require_saved_review が拒否して残す。
             draft_path = Path(state["draft"])
             failed = document["status"] != "success" and not (draft_path.is_file() and not draft_path.is_symlink())
+            draft_routed = document["status"] != "success" and not failed
             if failed:
                 retirement = {
                     "retirement": "failed",
@@ -1112,7 +1114,7 @@ def _validate_reapable_session(
         if state["previous_review"]:
             allowed_backup.add("previous-review.md")
         # 候補一覧の下書きは無くてもよい（#119 の前に --findings なしで保存したセッションには無い）
-        findings_draft, _findings_destination = findings_artifact_paths(
+        findings_draft, findings_destination_value = findings_artifact_paths(
             backup_dir,
             state["head_branch"],
             state["model_name"],
@@ -1146,6 +1148,11 @@ def _validate_reapable_session(
         destination = safe_destination(repo, state["destination"], repository=repository)
         if not failed:
             require_saved_review(expected_draft, destination)
+            # 失敗の記録で draft が前回のレビューと同じだけでも本文は一致する。候補が未保存なら残す。
+            if draft_routed and findings_draft.name in allowed_backup:
+                saved = safe_findings_destination(repo, findings_destination_value, repository=repository)
+                if saved.is_symlink() or not saved.is_file() or saved.read_bytes() != findings_draft.read_bytes():
+                    raise WorkspaceError("failed session candidates are not saved; keep the entire session")
         _require_exclusive_session_clone(state, worktree)
         if missing_worktree:
             _require_unregistered_worktree(worktree, session_target(state))

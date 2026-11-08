@@ -135,7 +135,7 @@ python3 "$PR_REVIEW_HELPER" reap-check --allow-failed --state "$STATE_FILE" \
 
 helper が停止証拠・候補・Git の安全性を検証し、削除直前にも保存ロック内で再判定する。成功なら WT・残骸・自セッションの ref の処理は完了であり、手順 6 の削除は不要。拒否なら理由と対象パスを報告する。state が無い・無効な残骸は保留する。
 
-失敗・放棄したセッション、または成功・保存済みと確認できないセッションは、拒否時に **WT も含め全体を保持**し、下の通常の worktree 削除や手順 6 のゲート A へ迂回しない。draft が保存先と一致するセッションは、helper が実行記録によらず保存済み（`retirement: saved`）として扱う。未保存の draft・`previous-review.md`・編集済み候補・未知ファイルがあれば残す。findings が空でも coverage・unverified candidates・timing・固定項目・未知フィールドの編集は成果であり、名前や空配列だけで未着手 scaffold と判断しない。
+失敗・放棄したセッション、または成功・保存済みと確認できないセッションは、拒否時に **WT も含め全体を保持**し、下の通常の worktree 削除や手順 6 のゲート A へ迂回しない。draft と候補の下書き（ある場合）が保存先と一致するセッションは、helper が実行記録によらず保存済み（`retirement: saved`）として扱う。未保存の draft・未保存の候補・`previous-review.md`・編集済み候補・未知ファイルがあれば残す。findings が空でも coverage・unverified candidates・timing・固定項目・未知フィールドの編集は成果であり、名前や空配列だけで未着手 scaffold と判断しない。
 
 停止未確認 **だけ** が拒否理由なら、実際に担当プロセスと子孫の停止を確認した人だけが、確認内容を空白だけでない自由記述の理由として次を実行できる。Claude Code では、実行の前に `AskUserQuestion` で、担当のプロセスと子孫の停止を利用者が確かめたかを尋ね、確かめたと答えた内容を理由に渡す。年齢・PID 不在・モデルの fail は確認の代わりにならず、自動で理由を作らない。この引数が代替するのは停止証拠だけで、成果・未知ファイル・Git の安全検査は迂回しない。
 
@@ -144,7 +144,7 @@ python3 "$PR_REVIEW_HELPER" cleanup --strict-reap --allow-failed --state "$STATE
   --operator-confirmed-stopped "$CONFIRMED_STOP_REASON"
 ```
 
-helper の結果にある削除・保留対象と理由を報告する。通常の保存済みセッション（draft が保存先と一致し helper が保存済みと判定するもの、または `run_context` の無い旧形式で保存済み本文を照合できるもの）に限り、helper が拒否しても、以下の clean 確認と手順 6 の従来の照合を使える。
+helper の結果にある削除・保留対象と理由を報告する。通常の保存済みセッション（draft と候補の下書きが保存先と一致し helper が保存済みと判定するもの、または `run_context` の無い旧形式で保存済み本文を照合できるもの）に限り、helper が拒否しても、以下の clean 確認と手順 6 の従来の照合を使える。
 
 #### 通常の worktree 削除
 
