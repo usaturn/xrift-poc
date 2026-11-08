@@ -276,7 +276,7 @@ pr-review-fix-loop
      - 要。許可パターンに入れた JSON を取る
      - 1
    * - 取らないもの
-     - ``loop/lock.json`` と、 ``loop/`` の下の ``*.log`` （移植元の ``after-run-<i>.{stdout,stderr}.log`` が xrift-poc の ``loop.py`` でも同じ名前で書かれるかは未確認。 ``*.log`` は許可パターンに入らず取らない）
+     - ``loop/lock.json`` と、 ``loop/`` の下の ``*.log`` （ ``after-run-<i>.{stdout,stderr}.log`` は ``tools/agent_runner/hooks.py`` が runner の結果の置き場所に同じ名前で書く。 ``*.log`` は許可パターンに入らず取らない）
      - ``loop.py``
      - 該当なし
      - ``loop/`` の下
@@ -445,7 +445,7 @@ review-verify
      - 同上
      - 同上
      - 同上
-     - 再現の作業ログは ``$REPRO_ROOT`` （ ``/tmp`` ）にしか無いと読んだが、xrift-poc のスキルでの置き場所の変更は未確認で、後片付けで消える
+     - 再現の作業ログは ``$REPRO_ROOT`` （ ``.agents/skills/review-verify/SKILL.md`` が ``${TMPDIR:-/tmp}`` の下の ``mktemp -d`` で作る。移植元と同じ ``/tmp`` 側）にしか無く、後片付けで消える
      - 不要。項目は取れる。作業ログは永続しないので取らない
      - 1、5（作業ログ）
    * - 対象の完全な SHA
@@ -476,14 +476,14 @@ review-verify
      - 不要
      - 2
    * - 時間
-     - 確認結果の timing は持たない（不明）。工程の秒数は planning の ``activities`` にある
+     - 確認結果は ``timing`` （開始・終了・秒数）と ``accuracy.verify_seconds`` を持つ（ ``review_findings.py`` が検査し、SKILL.md が書くよう定める）。工程の秒数は planning の ``activities`` にもある
      - 該当なし
      - 該当なし
      - 該当なし
      - 該当なし
-     - 確認の所要時間を確認結果から読めるかどうかは確かめていない
+     - 取った確認結果に ``timing`` ・ ``accuracy.verify_seconds`` が無い版は読めない。推測で埋めない
      - 不要
-     - 不明
+     - 1
 
 .. _review_eval_sources_unrecoverable:
 
