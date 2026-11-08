@@ -671,7 +671,7 @@ def _pinned_refs(repo: Path) -> str:
 def test_retires_stopped_pristine_failed_session_after_dry_run(
     isolated_root: Path, tmp_path: Path, failed_session: dict[str, Any]
 ) -> None:
-    """dry-run で消す、または理由を自動で作る退行があると、成果の無い失敗セッションの扱いを誤って黙って消す・実行記録を書き換える。"""
+    """dry-run で消す、または理由を自動で作ると、成果の無い失敗セッションを黙って消す・実行記録を書き換える。"""
     repo, session_dir = failed_session["repo"], failed_session["session_dir"]
     before = failed_session["record"].read_bytes()
     env = _env_for(isolated_root, tmp_path / "no-yarn-cache")
