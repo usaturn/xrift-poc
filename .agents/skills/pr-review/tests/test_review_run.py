@@ -6,11 +6,13 @@ import json
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from tools.agent_runner import hooks
 from tools.agent_runner.models import Attempt, BatchResult, Identity, Request, Result
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "review_run.py"
@@ -724,3 +726,123 @@ def test_cleanup_keeps_session_clone_used_by_another_worktree(
     assert readme.read_text(encoding="utf-8") == "staged follow-up\n"
     with pytest.raises(review_run.workspace.WorkspaceError):
         review_run.workspace.check_reap_candidate(args)
+
+
+# --- after_run による退役（試行の tmp の下だけを探す） -------------------------------------------------------------
+
+
+def after_run_attach(source: Path, parent: Path, tmp_path: Path) -> dict[str, Any]:
+    """実際の hook と CLI を、試行の tmp とも prepare の既定とも別の TMPDIR で実行する。"""
+    launcher = (
+        "import importlib.util, os, sys; from pathlib import Path; "
+        f"os.environ['TMPDIR'] = {str(tmp_path / 'hook-tmp')!r}; "
+        f"spec = importlib.util.spec_from_file_location('hook_review_run', {str(SCRIPT)!r}); "
+        "module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module); "
+        f"module.workspace.load_review_target().default_parent_root = lambda: Path({str(parent)!r}); "
+        "raise SystemExit(module.main(sys.argv[1:]))"
+    )
+    command = [sys.executable, "-c", launcher, "attach-runner", "--result", "{result}"]
+    reports = hooks.run_after_run([command], result_path=source, cwd=parent, cancel=threading.Event())
+    assert reports[0]["state"] == "success", Path(str(reports[0]["stderr_path"])).read_text()
+    return json.loads(Path(str(reports[0]["stdout_path"])).read_text())
+
+
+def test_after_run_retires_only_its_stopped_pristine_session_in_the_attempt_tmp(
+    prepared: dict[str, Any], tmp_path: Path
+) -> None:
+    """探す場所を試行の tmp にしないと担当のセッションが残り続け、payload を信じると別のセッションを消す。"""
+    attempt_dir = tmp_path / "artifacts" / "request-7" / "attempt-1"
+    attempt_tmp = attempt_dir / "tmp"
+    attempt_tmp.mkdir(parents=True)
+    prepared["args"].temp_root = str(attempt_tmp)
+    result = review_run.prepare(prepared["args"])
+    request = json.loads(prepared["request_path"].read_text())
+    request["request_id"] = "not-this-attempt"
+    prepared["request_path"].write_text(json.dumps(request), encoding="utf-8")
+    sibling = review_run.prepare(prepared["args"])
+    source = batch_result(
+        tmp_path / "result.json", state="awaiting_authentication", request_path=attempt_dir / "request.json"
+    )
+    payload = json.loads(source.read_text())
+    payload["results"][0]["attempts"][0]["payload"] = {
+        "state_file": sibling["state_file"],
+        "session_dir": str(Path(sibling["state_file"]).parent),
+    }
+    source.write_text(json.dumps(payload), encoding="utf-8")
+    attached = after_run_attach(source, prepared["parent"], tmp_path)
+    assert not Path(result["state_file"]).parent.exists()
+    assert result["worktree"] not in registrations(prepared)
+    assert Path(sibling["state_file"]).exists()
+    assert sibling["worktree"] in registrations(prepared)
+    record = json.loads(Path(result["run_record"]).read_text())
+    assert record["runner"]["attempt"]["stop_confirmed"] is True
+    assert record["status"] == "started" and record["outputs"] is None
+    assert any(item["session_dir"] == str(Path(result["state_file"]).parent) for item in attached["retired"])
+    assert not (prepared["parent"] / result["destination"]).exists()
+    # 2 回目の hook は記録を変えず、別のセッションも消さない。
+    before = Path(result["run_record"]).read_bytes()
+    after_run_attach(source, prepared["parent"], tmp_path)
+    assert Path(result["run_record"]).read_bytes() == before
+    assert Path(sibling["state_file"]).exists()
+
+
+def test_attach_runner_conflict_inhibits_all_retirement(prepared: dict[str, Any], tmp_path: Path) -> None:
+    """衝突した attach の後でも、保存済みの runner を根拠に退役すると照合していない値で消す。"""
+    first = review_run.prepare(prepared["args"])
+    second = review_run.prepare(prepared["args"])
+    original = batch_result(tmp_path / "first.json", state="timed_out", effort=None)
+    # セッションの無い場所を渡して、どちらも退役させずに診断だけを書く。
+    review_run.record.attach_runner(original, prepared["parent"], temp_root=tmp_path / "no-sessions-here")
+    second_record = Path(second["run_record"])
+    document = json.loads(second_record.read_text())
+    document["runner"] = None
+    second_record.write_text(json.dumps(document), encoding="utf-8")
+    before = {path: path.read_bytes() for path in run_records(prepared["parent"])}
+    attached = review_run.record.attach_runner(
+        batch_result(tmp_path / "conflicting.json", state="timed_out", effort="high"),
+        prepared["parent"],
+        temp_root=Path(prepared["args"].temp_root),
+    )
+    assert attached["status"] == "failed" and attached["conflicts"]
+    assert attached["retired"] == [] and attached["retained"]
+    for result in (first, second):
+        assert Path(result["state_file"]).exists()
+        assert result["worktree"] in registrations(prepared)
+    assert {path: path.read_bytes() for path in before} == before
+
+
+def test_attach_runner_requires_session_to_point_back_to_attached_record(
+    prepared: dict[str, Any], tmp_path: Path
+) -> None:
+    """同じ末尾の別の記録の停止を根拠にすると、今回照合していない記録の停止でセッションを消す。"""
+    result = review_run.prepare(prepared["args"])
+    state_path = Path(result["state_file"])
+    state = json.loads(state_path.read_text())
+    original = Path(result["run_record"])
+    document = json.loads(original.read_text())
+    stamp = "2026-10-01T00:00:00Z"
+    renamed = original.with_name(stamp.replace("-", "").replace(":", "") + "-" + original.name.partition("-")[2])
+    document["timing"]["started_at"] = stamp
+    state["run_context"]["started_at"] = stamp
+    state["run_context"]["run_record"] = renamed.relative_to(prepared["parent"]).as_posix()
+    candidates = Path(result["findings_draft"])
+    scaffold = json.loads(candidates.read_text())
+    scaffold["timing"].update(started_at=stamp, finished_at=stamp)
+    document["reviewer"]["provenance"]["request_id"] = "not-this-attempt"
+    state["run_context"]["binding"]["request_id"] = "not-this-attempt"
+    state["run_context"]["reviewer"]["provenance"]["request_id"] = "not-this-attempt"
+    state["run_context"]["immutable"]["reviewer"]["provenance"]["request_id"] = "not-this-attempt"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    scaffold["reviewer"]["provenance"]["request_id"] = "not-this-attempt"
+    candidates.write_text(json.dumps(scaffold), encoding="utf-8")
+    source = batch_result(tmp_path / "result.json", state="timed_out")
+    attempt = BatchResult.model_validate_json(source.read_text()).results[0].attempts[0]
+    document["runner"] = review_run.record.runner_block(attempt)
+    renamed.write_text(json.dumps(document), encoding="utf-8")
+    # 逆照合が無ければ、helper は別の記録の証拠で退役を認める。
+    assert review_run.workspace.check_reap_candidate(failed_cleanup_args(result))["retirement"] == "failed"
+    attached = review_run.record.attach_runner(source, prepared["parent"], temp_root=Path(prepared["args"].temp_root))
+    assert attached["status"] == "success" and attached["attached"] == [str(original)]
+    assert attached["retired"] == [] and attached["retained"][0]["reason"]
+    assert state_path.exists() and candidates.exists()
+    assert result["worktree"] in registrations(prepared)

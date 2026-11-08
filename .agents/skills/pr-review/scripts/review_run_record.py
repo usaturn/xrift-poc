@@ -7,13 +7,17 @@
 
 from __future__ import annotations
 
+import argparse
 import copy
 import hashlib
 import importlib.util
 import json
+import re
 import secrets
 import stat
+import subprocess
 import sys
+import tempfile
 from collections import Counter
 from collections.abc import Callable, Mapping
 from pathlib import Path, PurePosixPath
@@ -255,10 +259,71 @@ def _indexed_records(parent: Path) -> tuple[dict[tuple[str, ...], list[tuple[Pat
     return index, skipped
 
 
-def attach_runner(result_path: Path, parent: Path) -> dict[str, Any]:
+def _search_root(attempt: Attempt, temp_root: Path | None) -> Path:
+    """セッションを探す場所を決める。worker の payload のパスは使わない。
+
+    ``--temp-root`` があればそのディレクトリ。無ければ、runner が試行ごとに作る一時ディレクトリ
+    （照合した試行の ``request_path`` の親の ``tmp``）。``request_path`` の無い試行は ``tempfile.gettempdir()``。
+    """
+    if temp_root is not None:
+        return temp_root.absolute()
+    if attempt.request_path is not None:
+        return (attempt.request_path.parent / "tmp").absolute()
+    return Path(tempfile.gettempdir()).absolute()
+
+
+def _retire_failed_sessions(
+    parent: Path,
+    matched: Mapping[Path, tuple[dict[str, Any], Attempt]],
+    *,
+    temp_root: Path | None,
+    conflicts: list[str],
+) -> dict[str, list[dict[str, Any]]]:
+    """今回照合した、停止確認済みの失敗の記録に対応する正規名のセッションだけを helper に渡す。
+
+    探す場所は ``_search_root`` が決める。安全の判定と削除は helper が行う。
+    """
+    retired: list[dict[str, Any]] = []
+    retained: list[dict[str, Any]] = []
+    for path, (document, attempt) in matched.items():
+        runner = document["runner"]
+        if (
+            document["status"] == "success"
+            or runner is None
+            or runner["attempt"]["state"] == "self"
+            or workspace.unrefuted_runner_success(document)
+            or runner["attempt"]["stop_confirmed"] is not True
+        ):
+            continue
+        target: dict[str, Any] = {"run_record": str(path)}
+        try:
+            suffix = path.stem.rsplit("-", 1)[-1]
+            if re.fullmatch(r"[a-z0-9_]{8}", suffix) is None:
+                raise workspace.WorkspaceError("run record has no canonical session suffix")
+            session = _search_root(attempt, temp_root) / f"pr-review-{document['pr']['number']}-{suffix}"
+            state_path = session / "session.json"
+            target.update(session_dir=str(session), state_file=str(state_path))
+            if conflicts:
+                raise workspace.WorkspaceError("runner attachment conflicted; no sessions were retired")
+            if not stat.S_ISREG(state_path.lstat().st_mode) or any(part.is_symlink() for part in state_path.parents):
+                raise workspace.WorkspaceError("session state must be a regular file without symlink traversal")
+            state: dict[str, Any] = json.loads(state_path.read_text(encoding="utf-8"))
+            if state["run_context"]["run_record"] != path.relative_to(parent).as_posix() or state.get(
+                "parent_root", state.get("main_root")
+            ) != str(parent):
+                raise workspace.WorkspaceError("session does not point back to the attached run record and parent")
+            cleaned = workspace.cleanup(argparse.Namespace(state=str(state_path), strict_reap=True, allow_failed=True))
+            retired.append({**target, "reason": "stopped failed runner with no review work", "cleanup": cleaned})
+        except (OSError, ValueError, RuntimeError, TypeError, KeyError, subprocess.SubprocessError) as error:
+            retained.append({**target, "reason": str(error)})
+    return {"retired": retired, "retained": retained}
+
+
+def attach_runner(result_path: Path, parent: Path, *, temp_root: Path | None = None) -> dict[str, Any]:
     """ランナーの result.json の各試行を実行記録と突き合わせ、runner 欄だけを書く（4.1 節）。
 
     同じ値なら書かない。違う値が既にあれば、どのファイルにも書かずに失敗を返す。
+    書き込みを終え、ロックを出てから、停止確認済みの失敗セッションだけ helper に退役を依頼する。
     """
     batch = BatchResult.model_validate_json(result_path.read_text(encoding="utf-8"))
     attached: list[str] = []
@@ -266,6 +331,7 @@ def attach_runner(result_path: Path, parent: Path) -> dict[str, Any]:
     conflicts: list[str] = []
     unmatched: list[dict[str, str]] = []
     planned: list[tuple[Path, dict[str, Any]]] = []
+    matched: dict[Path, tuple[dict[str, Any], Attempt]] = {}
     with workspace.review_save_lock(parent):
         index, skipped = _indexed_records(parent)
         for result in batch.results:
@@ -276,6 +342,7 @@ def attach_runner(result_path: Path, parent: Path) -> dict[str, Any]:
                     unmatched.append({**dict(zip(BINDING_KEYS, key, strict=True)), "state": attempt.state})
                 block = runner_block(attempt)
                 for path, document in matches:
+                    matched[path] = ({**document, "runner": block}, attempt)
                     if document["runner"] == block:
                         unchanged.append(str(path))
                     elif document["runner"] is not None:
@@ -288,6 +355,7 @@ def attach_runner(result_path: Path, parent: Path) -> dict[str, Any]:
             for path, document in planned:
                 workspace.write_json(path, document)
                 attached.append(str(path))
+    retirement = _retire_failed_sessions(parent, matched, temp_root=temp_root, conflicts=conflicts)
     return {
         "schema_version": 1,
         "status": "failed" if conflicts else "success",
@@ -299,5 +367,6 @@ def attach_runner(result_path: Path, parent: Path) -> dict[str, Any]:
         "unmatched_count": len(unmatched),
         "skipped": skipped,
         "conflicts": conflicts,
+        **retirement,
         "reason": "runner values differ from existing run records; nothing was written" if conflicts else None,
     }

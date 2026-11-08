@@ -562,6 +562,7 @@ def parser() -> argparse.ArgumentParser:
     failure.add_argument("--reason", required=True)
     runner = commands.add_parser("attach-runner", help="ランナーの result.json の観測値を実行記録に結び付ける")
     runner.add_argument("--result", required=True, type=Path)
+    runner.add_argument("--temp-root", type=Path)
     return root
 
 
@@ -579,11 +580,11 @@ def fail_review(parent: Path, state: Mapping[str, Any], reason: str) -> dict[str
     return record_fields(path, error or located)
 
 
-def attach_runner(result_path: Path) -> dict[str, Any]:
+def attach_runner(result_path: Path, *, temp_root: Path | None = None) -> dict[str, Any]:
     """書き先は親の main worktree の reviews/ の実行記録だけ。worker が返したパスは使わない。"""
     try:
         parent = workspace._target_call("default_parent_root")
-        return record.attach_runner(result_path, parent)
+        return record.attach_runner(result_path, parent, temp_root=temp_root)
     except FAILURES as error:
         return {"schema_version": 1, "status": "failed", "result_file": str(result_path), "reason": str(error)}
 
@@ -591,7 +592,7 @@ def attach_runner(result_path: Path) -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     if args.command == "attach-runner":
-        result = attach_runner(args.result)
+        result = attach_runner(args.result, temp_root=args.temp_root)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 1 if result["status"] == "failed" else 0
     parent: Path | None = None
