@@ -42,7 +42,7 @@ _REPO = re.compile(r"[A-Za-z0-9._-]+")
 _RUN_ID = re.compile(r"[0-9a-f]{32}")
 _CYCLE_DIR = re.compile(r"cycle-[1-9][0-9]*")
 _CYCLE_FILE = re.compile(r"cycle-[1-9][0-9]*\.json")
-_CYCLE_ATTACHMENTS = frozenset({"comments.json", "review-result.json", "rerun-result.json"})
+_CYCLE_ATTACHMENTS = frozenset({"comments.json"})
 # sweep が下りるのは、許可パターンを含むディレクトリだけ（最も深いのは loop/<run>/cycle-<n>/diagnostics/）
 _SWEEP_ROOTS = frozenset({"findings", "runs", "verified", "loop"})
 _SWEEP_DIR_DEPTH = 4

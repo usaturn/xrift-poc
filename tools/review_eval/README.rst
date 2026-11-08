@@ -164,12 +164,12 @@ blob と observation は一時ファイルと ``os.link`` で作り、既存を�
      - ``<model>.md`` 、 ``findings/*.json`` 、 ``runs/*.json`` 。 ``prepare`` は上書き前の版を保存する。runner を使ったレビューでは、レビュアー（runner の子）の ``prepare`` ・ ``complete`` ・ ``fail`` は収集せず、runner の after_run が起動する ``attach-runner`` が実行記録と review_dir の sweep で取る
    * - pr-review-fix-loop
      - ``loop.py`` の ``review`` ・ ``cycle_end`` ・ ``finish`` ・ ``recover`` の最後
-     - ``loop/<run_id>/`` の記録、判断の記録と finalize の結果の仮想記録。 ``finish`` ・ ``recover`` で失われた版を検出する
+     - ``loop/<run_id>/`` の記録（runner の BatchResult の写し ``review-result.json`` ・ ``rerun-result.json`` は、レビュアーの回答本文を含むので取らない）、判断の記録と finalize の結果の仮想記録。 ``finish`` ・ ``recover`` で失われた版を検出する
    * - review-fix-planning
      - ``upsert_pr_comment.py`` の投稿成功後、 ``finalize.py`` の結果保存後、 ``run_roles.py`` の最後
      - 判断の記録（ ``@pr-comment/round-<n>/record.json`` 。 ``upsert_pr_comment.py`` と、投稿した ``finalize.py`` の両方で取る。同じ内容は 1 つの observation になる）、finalize の結果、 ``planning.json``
    * - review-verify
-     - ``review_findings.py validate`` の成功後（subprocess）、 ``dispatch.py`` の ``accept`` の後
+     - ``review_findings.py validate`` の成功後（subprocess）、 ``dispatch.py`` の ``accept`` の置き換えの前（未収集の旧版）と後
      - fix-check の JSON と statement-candidates。 ``validate`` は置き換え前の今の版を保存する
 
 - 収集は例外を呼び出し元に出さない。呼び出し元の終了コードと標準出力の JSON は変わらない。標準エラーには、失敗または保留のときだけ ``review-eval: <status>: <reason>`` の 1 行を出す。収集の呼び出しで想定外の例外（設定の誤り、保存先の未初期化、 ``tools.review_eval`` の import の失敗など）が出たときは、 ``review-eval: hook failed: <例外の型名>`` の 1 行だけを出す。収集が黙って動かないまま「導入済み」に見えないようにするためで、本文・秘密の値・パスは出さない

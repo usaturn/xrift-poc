@@ -267,7 +267,7 @@ pr-review-fix-loop
      - 要。参照の検査を ``finish`` ・ ``recover`` で行う
      - 1、5
    * - 付属の記録
-     - ``cycle-<n>/comments.json`` （1 回目の review の PR コメントの写し）、 ``review-result.json`` ・ ``rerun-result.json`` （runner の結果）、 ``requests/<request_id>.json`` （却下したレビュアーの Request）、 ``diagnostics/<request_id>.json``
+     - ``cycle-<n>/comments.json`` （1 回目の review の PR コメントの写し）、 ``requests/<request_id>.json`` （却下したレビュアーの Request）、 ``diagnostics/<request_id>.json``
      - ``loop.py``
      - 後片付けの前
      - ``loop/<run_id>/cycle-<n>/`` の下
@@ -405,7 +405,7 @@ review-verify
 =============
 
 関数とファイルは ``.agents/skills/review-verify/SKILL.md``・ ``scripts/dispatch.py`` と ``.agents/scripts/review_findings.py`` である。
-収集の接続は、 ``review_findings.py validate`` の成功後（ ``_collect_before_replacement`` 。 ``--no-project`` で動くため shim の subprocess）と、 ``dispatch.accept`` の後（ ``dispatch.collect_accepted`` ）である。
+収集の接続は、 ``review_findings.py validate`` の成功後（ ``_collect_before_replacement`` 。 ``--no-project`` で動くため shim の subprocess）と、 ``dispatch.accept`` の置き換えの前（未収集の旧版）と後（ ``dispatch.collect_accepted`` ）である。
 ``validate`` の後の収集は sweep だけで、同じ HEAD をやり直す ``mv`` の前に今の版を保存する
 
 .. list-table::
@@ -437,7 +437,7 @@ review-verify
      - ``verified/<to12>.fix-check.json`` ・ ``.fix-check.md`` ・ ``<to12>.statement-candidates.json``
      - 同じ HEAD でやり直すと置き換わる
      - self の確認結果は ``validate`` の sweep で取る
-     - 要。 ``accept`` の後に収集する
+     - 要。 ``accept`` の置き換えの前（未収集の旧版）と後に収集する
      - 1、3
    * - 1 件の項目（確認結果の内容）
      - id ``V-<n>`` 、sources、property、locations、verdict（confirmed・not_reproduced・unverified）、basis、reproduction、missing_checks など。fix_check の新規の問題は sources が空

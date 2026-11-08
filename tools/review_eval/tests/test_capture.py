@@ -266,15 +266,21 @@ def test_repeated_sweeps_reach_every_file_beyond_the_limit(tmp_path: Path, monke
 def test_logs_and_unlisted_files_in_review_dir_are_not_captured(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """許可パターンが広がると、review_dir の生ログ・runner の応答が私有の保存先へ入る。"""
+    """許可パターンが広がる（loop の BatchResult の写しを取る）と、runner の回答本文が私有の保存先へ入る。"""
     ws = _workspace(tmp_path, monkeypatch)
     (ws.review_dir / "runs").mkdir()
     (ws.review_dir / "runs" / "x.log").write_bytes(b"conversation log\n")
     (ws.review_dir / "response.txt").write_bytes(b"runner response\n")
+    run_id = "0123456789abcdef0123456789abcdef"
+    cycle = ws.review_dir / "loop" / run_id / "cycle-1"
+    cycle.mkdir(parents=True)
+    for name in ("review-result.json", "rerun-result.json"):
+        (cycle / name).write_bytes(b'{"results": [{"attempts": [{"payload": {"answer": "runner response"}}]}]}\n')
     (ws.review_dir / "findings").mkdir()
     findings = ws.review_dir / "findings" / "m-900000000000.json"
     findings.write_bytes(_candidates(PARENT, 5))
 
-    collect(route="pr-review", event="prepare", review_dir=ws.review_dir)
+    report = collect(route="pr-review", event="prepare", review_dir=ws.review_dir)
 
+    assert report.failures == []
     assert [o.path for o in ws.store.observations()] == ["findings/m-900000000000.json"]

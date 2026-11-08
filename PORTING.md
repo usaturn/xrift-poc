@@ -531,6 +531,10 @@ Issue #59 の対応として、5174〜5179 も `forwardPorts` に追加した。
   - 保存点の診断と import（D11）: 収集を囲む `except Exception` は、黙って捨てずに stderr へ
     `review-eval: hook failed: <例外の型名>` の 1 行を出す。`finalize.py` は収集の import の前に root を
     `sys.path` に入れる（本番の起動形では root が `sys.path` に無いため）。
+  - loop の `review-result.json`・`rerun-result.json`（runner の BatchResult の写し）は収集しない
+    （移植元は取る）。`results[].attempts[].payload` にレビュアーの回答本文が入り、秘密検査は本文を除かないため。
+  - `dispatch.accept` は、`verified/` の fix-check・statement-candidates を置き換える前に、既存の版を収集する
+    （収集の失敗で accept の結果を変えない）。
   - `attach_runner` に `temp_root` が無い点を、xrift-poc の実装に合わせた。
 - 取り込まなかったもの: `projects.toml` の照合（`tools.workspace`）、`tools/test_support/registry`、
   移植元の finalize のテストの `--registry` 引数。移植元のテストで取り込まなかったものは無い。

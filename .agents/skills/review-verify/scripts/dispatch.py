@@ -546,6 +546,12 @@ def accept(run_dir: Path) -> dict[str, str]:
             findings.check_statement_judgments(checked, cast(dict[str, Any], json.loads(sidecar.read_text("utf-8"))))
         except findings.FindingsError as error:
             raise AcceptError(f"validate failed: {error.problems[0]} (+{len(error.problems) - 1} more)") from None
+        # 置き換える前の版は、収集済みでなければここで取る（置き換えの後では新版しか取れない）。
+        collect_accepted(
+            review_dir,
+            [path for path in (verified_dir / sidecar.name, verified_dir / target.name) if path.is_file()],
+            observed,
+        )
         # sidecar を先に置き、fix-check が候補ファイルを欠いた状態で見えないようにする。
         os.replace(sidecar, verified_dir / sidecar.name)
         os.replace(target, verified_dir / target.name)
