@@ -459,6 +459,30 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--assign", action="append", default=[], metavar="ROLE=AGENT")
     args = parser.parse_args(argv)
     try:
+        return _execute(args)
+    finally:
+        collect_review_dir(args.planning_file, args.phase)
+
+
+def collect_review_dir(planning_file: Path | None, phase: str) -> None:
+    """自己レビューの後にレビューディレクトリ（planning ファイルの親の親）を sweep する（Issue #242）。
+
+    runner の子（レビュアー・修正確認）は収集しないので、その成果をここで取る。結果・終了コード・出力を変えず、
+    例外を出さない。
+    """
+    if planning_file is None:
+        return
+    try:
+        from tools.review_eval.capture import collect
+
+        review_dir = planning_file.absolute().parent.parent
+        collect(route="review-fix-planning", event="run_roles", review_dir=review_dir, context={"phase": phase})
+    except Exception as error:  # noqa: BLE001 - 収集の失敗で役割の実行の結果を変えない
+        print(f"review-eval: hook failed: {type(error).__name__}", file=sys.stderr)
+
+
+def _execute(args: argparse.Namespace) -> int:
+    try:
         assignments: dict[str, list[str]] = {}
         for entry in args.assign:
             role, separator, agent = entry.partition("=")

@@ -21,7 +21,8 @@ from types import ModuleType
 from typing import Any, Protocol, cast
 from urllib.parse import urlparse
 
-RECORDS_MODULE = Path(__file__).resolve().parents[4] / ".agents/scripts/review_records.py"
+ROOT = Path(__file__).resolve().parents[4]
+RECORDS_MODULE = ROOT / ".agents/scripts/review_records.py"
 REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*")
 REPOSITORY_URL_PARTS = 4
 RECORD_ONLY_MARKERS = ("a round marker", "a records block marker")
@@ -376,6 +377,35 @@ def read_record(path: str) -> Mapping[str, Any]:
     return mapping
 
 
+def collect_round_record(args: argparse.Namespace, record: Mapping[str, Any], result: Mapping[str, Any]) -> None:
+    """投稿した判断の記録を私有の保存先へ写す（Issue #242）。終了コード・出力を変えず、例外を出さない。
+
+    ``uv run --no-project`` で起動されるので、標準ライブラリだけの shim から子プロセスで収集する。
+    """
+    try:
+        spec = importlib.util.spec_from_file_location("review_eval_shim", ROOT / "tools/review_eval/shim.py")
+        if spec is None or spec.loader is None:
+            return
+        shim = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(shim)
+        shim.run_hook(
+            tool_root=ROOT,
+            route="review-fix-planning",
+            event="upsert",
+            records=[(f"@pr-comment/round-{record['round']}/record.json", Path(args.records_file).absolute())],
+            repository=args.repo,
+            pr=args.pr,
+            context={
+                "comment_id": result.get("comment_id"),
+                "action": result.get("action"),
+                "outcome": record.get("outcome"),
+                "model": args.model_name,
+            },
+        )
+    except Exception as error:  # noqa: BLE001 - 収集の失敗で投稿の結果を変えない
+        print(f"review-eval: hook failed: {type(error).__name__}", file=sys.stderr)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     try:
@@ -386,6 +416,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 64
     json.dump(result, sys.stdout, ensure_ascii=False)
     sys.stdout.write("\n")
+    if record is not None:
+        sys.stdout.flush()
+        collect_round_record(args, record, result)
     return 0
 
 

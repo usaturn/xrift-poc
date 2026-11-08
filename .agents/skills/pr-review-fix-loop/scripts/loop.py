@@ -1560,6 +1560,7 @@ def cycle_end(
         next_command = command("finish", "--run", str(run_dir))
     save_cycle(run_dir, cycle)
     save_run(run_dir, run)
+    collect_records("cycle_end", run_dir, run, cycle, record_file=record_file, finalize_result=finalize_result)
     return {
         "status": "ok",
         "cycle": cycle.cycle,
@@ -2061,6 +2062,82 @@ def _run_probe(
     settle(outcomes)
 
 
+# --- 収集（Issue #242） ------------------------------------------------------------------------------------------
+
+
+def _read_bytes(path: Path | None) -> bytes | None:
+    if path is None:
+        return None
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
+def _round_record(path: Path | None, round_: int, head: str) -> bytes | None:
+    """``--record-file`` の bytes。このサイクルの round・HEAD の記録でなければ None（別の記録を対応付けない）。"""
+    data = _read_bytes(path)
+    try:
+        value: object = json.loads(data) if data is not None else None
+    except ValueError:
+        return None
+    record = cast(dict[str, Any], value) if isinstance(value, dict) else {}
+    return data if record.get("round") == round_ and record.get("reviewed_head") == head else None
+
+
+def collect_records(
+    event: str,
+    run_dir: Path,
+    run: RunRecord,
+    cycle: CycleRecord | None = None,
+    *,
+    record_file: Path | None = None,
+    finalize_result: Path | None = None,
+) -> None:
+    """保存した記録を私有の保存先へ写す。loop の状態・出力・終了コードを変えず、例外を出さない。
+
+    レビュアー（runner の子）は収集しないので、その成果はここの sweep が取る。cycle-end では判断の記録と
+    finalize の結果の bytes を review-fix-planning の保存点と同じ仮想パスで渡す（同じ bytes は 1 つの observation）。
+    finish・recover では、この run のサイクルの記録が参照する版がすべて取れているかも確かめる。
+    """
+    try:
+        from tools.review_eval.capture import VirtualRecord, collect
+
+        files = [run_dir / "run.json"]
+        records: list[VirtualRecord] = []
+        context: dict[str, Any] = {
+            "run_id": run.run_id,
+            "state": run.state,
+            "outcome": run.result.outcome if run.result is not None else None,
+        }
+        if cycle is not None:
+            attachments = cycle_dir(run_dir, cycle.cycle)
+            files += [cycle_path(run_dir, cycle.cycle), *sorted(attachments.rglob("*.json"))]
+            context.update(cycle=cycle.cycle, mode=cycle.review.mode, cycle_state=cycle.state)
+            planning = cycle.planning
+            if planning is not None:
+                context["outcome"] = planning.outcome
+                record = _round_record(record_file, planning.round, cycle.head)
+                if record is not None:
+                    records.append(VirtualRecord(f"@pr-comment/round-{planning.round}/record.json", record))
+                result = _read_bytes(finalize_result) if planning.finalize is not None else None
+                if result is not None:
+                    records.append(VirtualRecord(f"@finalize/{cycle.head[:12]}/result.json", result))
+        collect(
+            route="pr-review-fix-loop",
+            event=event,
+            review_dir=Path(run.review_dir),
+            files=files,
+            records=records,
+            repository=run.pr.repository,
+            pr=run.pr.number,
+            context=context,
+            verify_loop_run=run.run_id if event in ("finish", "recover") else None,
+        )
+    except Exception as error:  # noqa: BLE001 - 収集の失敗でloop の結果を変えない
+        print(f"review-eval: hook failed: {type(error).__name__}", file=sys.stderr)
+
+
 def review(
     run_dir: Path,
     *,
@@ -2119,6 +2196,7 @@ def review(
         cycle.state = "planning"
     save_cycle(run_dir, cycle)
     save_run(run_dir, run)
+    collect_records("review", run_dir, run, cycle)
     if not accepted and not pending:
         raise _all_failed(run_dir, entries)
     # 再実行の後も、1 回目の回収で残したパス・置き換えたレビュアーの報告・1 回目の監査の観測を落とさない
@@ -2176,6 +2254,7 @@ def recover(run_dir: Path, *, operator_confirmed_stopped: str | None = None) -> 
     run.ended_at = now()
     save_run(run_dir, run)
     released = release_lock(Path(run.review_dir), run.run_id)
+    collect_records("recover", run_dir, run)
     cycles = load_cycles(run_dir)
     return {
         "status": "ok",
@@ -2249,6 +2328,7 @@ def finish(run_dir: Path, *, abort: str | None = None) -> dict[str, Any]:
     run.ended_at = now()
     save_run(run_dir, run)
     released = release_lock(Path(run.review_dir), run.run_id)
+    collect_records("finish", run_dir, run)
     return {
         "status": "ok",
         "run_id": run.run_id,

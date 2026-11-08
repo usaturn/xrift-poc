@@ -10,6 +10,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import sys
 import tempfile
 from collections.abc import Mapping, Sequence
@@ -17,6 +18,7 @@ from pathlib import Path
 from typing import Any, cast
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[4]
 SPEC = importlib.util.spec_from_file_location("planning_final_post", SCRIPT_DIR / "upsert_pr_comment.py")
 assert SPEC is not None and SPEC.loader is not None
 poster: Any = importlib.util.module_from_spec(SPEC)
@@ -265,6 +267,38 @@ def read_object(path: Path) -> dict[str, Any]:
     return cast(dict[str, Any], value)
 
 
+def collect_result(record: Mapping[str, Any], record_file: Path, result_file: Path, result: Mapping[str, Any]) -> None:
+    """保存した最終化の結果を私有の保存先へ写す（Issue #242）。結果・終了コード・出力を変えず、例外を出さない。
+
+    判断の記録を投稿したとき（結果に comment がある）は、その記録も upsert_pr_comment の収集と同じ仮想パスで取る。
+    本番の起動形（``uv run --project tools/devenv python``）は root を ``sys.path`` に入れないので先に入れる。
+    """
+    try:
+        if str(ROOT) not in sys.path:
+            sys.path.insert(0, str(ROOT))
+        from tools.review_eval.capture import VirtualRecord, collect
+
+        pr = cast(Mapping[str, Any], record["pr"])
+        head = record["reviewed_head"]
+        if not isinstance(head, str) or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head) is None:
+            return
+        records = [VirtualRecord(f"@finalize/{head[:12]}/result.json", result_file.read_bytes())]
+        round_number = record.get("round")
+        if result.get("comment") and isinstance(round_number, int) and not isinstance(round_number, bool):
+            records.append(VirtualRecord(f"@pr-comment/round-{round_number}/record.json", record_file.read_bytes()))
+        collect(
+            route="review-fix-planning",
+            event="finalize",
+            review_dir=None,
+            records=records,
+            repository=str(pr["repository"]),
+            pr=int(pr["number"]),
+            context={"outcome": result.get("outcome"), "merged": result.get("merged")},
+        )
+    except Exception as error:  # noqa: BLE001 - 収集の失敗で最終化の結果を変えない
+        print(f"review-eval: hook failed: {type(error).__name__}", file=sys.stderr)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--record-file", required=True, type=Path)
@@ -309,6 +343,7 @@ def main(argv: list[str] | None = None) -> int:
                 temporary.unlink(missing_ok=True)
             except OSError:
                 print(f"finalize: temporary result remains at {temporary}", file=sys.stderr)
+    collect_result(record, args.record_file, destination, result)
     print(json.dumps(result, ensure_ascii=False))
     return 0 if result["outcome"] == "no_fix_needed" else 1
 

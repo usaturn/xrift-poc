@@ -19,6 +19,8 @@ import pytest
 from tools.agent_runner import Config
 from tools.agent_runner.adapters import AdapterContext, AdapterOutcome, Capabilities, LaunchSpec
 from tools.agent_runner.models import Identity
+from tools.review_eval.store import Store
+from tools.test_support.review_eval import make_collection_workspace, write_collection_config
 
 pytest_plugins = ("tools.test_support.plugin",)
 # 偽の担当だけを起動するので、runner の担当（AGENT_RUNNER_DEPTH=1）の中でもテストの中だけ depth を外す
@@ -633,3 +635,36 @@ def test_initial_snapshot_cannot_silently_skip_an_unreadable_subdirectory(dispat
             dispatch.snapshot_review(scenario.review_dir)
     finally:
         hidden.chmod(0o700)
+
+
+def test_accept_keeps_uncollected_revisions_before_replacing_them(
+    dispatch: Any, scenario: Scenario, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """accept が置き換えの後にだけ収集すると、未収集の旧 fix-check・statement-candidates が黙って失われる。"""
+    workspace, repos = make_collection_workspace(tmp_path / "workspace")
+    settings = write_collection_config(
+        tmp_path / "review-eval.toml", store=tmp_path / "store", workspace_root=workspace, repos=repos
+    )
+    Store.init(tmp_path / "store")
+    monkeypatch.setenv("REVIEW_EVAL_CONFIG", str(settings))
+    review_dir = workspace / "reviews/usaturn/xrift-poc/#542-feat-x"
+    verified_dir = review_dir / "verified"
+    verified_dir.mkdir(parents=True)
+    scenario.request["review_dir"] = str(review_dir)
+    stem = scenario.fix[:12]
+    old_check = copy.deepcopy(scenario.document)
+    old_check["verifier"]["model"] = "old-model"
+    old_inventory = {**scenario.inventory, "generated_at": "2026-01-01T00:00:00Z"}
+    old: dict[str, bytes] = {}
+    for name, data in ((f"{stem}.fix-check.json", old_check), (f"{stem}.statement-candidates.json", old_inventory)):
+        old[name] = (json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode()
+        (verified_dir / name).write_bytes(old[name])
+
+    run_dir = run_external(dispatch, scenario, tmp_path, scenario.payload())
+    assert accept(dispatch, run_dir) == 0
+
+    store = Store.open(tmp_path / "store")
+    kept = [store.read_blob(o.sha256) for o in store.observations("usaturn/xrift-poc", 542)]
+    for name, data in old.items():
+        assert data in kept
+        assert (verified_dir / name).read_bytes() != data

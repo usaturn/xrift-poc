@@ -502,6 +502,45 @@ Issue #59 の対応として、5174〜5179 も `forwardPorts` に追加した。
   旧設定からの移行の表の「起動コマンド」の行）。
   `model_key` の比較方法の変更（Issue #232 の対象外）。
 
+## レビュー評価データの収集基盤の取り込み（2026-11、Issue #242）
+
+- 移植元: `usaturn/agent-workspace` の PR #838（Issue #835）と PR #840（Issue #839）。
+  - PR #838 の commit: `0607c4f97c`・`683fe71b11`・`933c2d2365`・`340cad5089`・`b9394abc19`・`65fc15fb96`・
+    `2fc0a7dced`・`ab6b9e7886`・`a6fc123614`・`9adb016fe3`・`49d8e410b5`・`0d3e909ec9`・`9e53b7e515`・
+    `941a998cb7`・`5b9c347dfd`・`45ba1e0132`・`bbcf6e5830`（17 件）、
+    マージ commit `c1ed434297b8df90b62d2506dc7280b61c8b0943`。
+  - PR #840 の commit: `92197cc2b9`（`attach-runner` の収集に 30 秒の期限）、
+    マージ commit `dfcde5b88f9e7c1f330f2c5edf7a0265e7436205`。
+- 取り込んだもの: `tools/review_eval`（設定・shim・store・scanner・formats・capture・ledger・packets・inventory・CLI）、
+  4 経路の保存点（pr-review の `review_run.py`、pr-review-fix-loop の `loop.py`、
+  review-fix-planning の `finalize.py`・`run_roles.py`・`upsert_pr_comment.py`、
+  review-verify の `dispatch.py`、`review_findings.py validate`）、`tools/test_support` の補助、
+  `README.rst`・`sources.rst`。収集は既定で無効で、実データの収集の有効化と過去記録の調査は含めない。
+- xrift-poc で変えた点:
+  - 設定ファイルのパス（D4）: `agent-workspace/review-eval.toml` を `xrift-poc/review-eval.toml` にした。
+    `XDG_CONFIG_HOME` は絶対パスのときだけ使い、それ以外は `~/.config` にする
+    （移植元は非空なら使う。agent-runner の個人設定の規則に揃えた）。
+  - `store` の拒否（D3）: `workspace_root/reviews` に加え、制作物の Git リポジトリである
+    `workspace_root/items`・`workspace_root/worlds` の中も拒否する。推奨の保存先は
+    `private/review-eval/collected` で、`.gitignore` に `/private/` を足し、AGENTS.md の表に行を足した。
+  - 登録の照合（D7）: `projects.toml` の代わりに `route_target.py` で `sources[].repo` を照合する。
+    親（判定が `env`）か、`items/`・`worlds/` の制作物（判定が `product` で `repository` が null でない）の
+    repository と一致しなければ設定の誤りにする。Git 未初期化・origin 無しの制作物（`stop`）は対象にできない。
+  - テストの fixture（D9）: `write_projects_toml` の代わりに、`create_env_repo`・`create_product` を使う
+    `make_collection_workspace` を置いた。各テストの docstring に、テストが無いと何が黙って壊れるかを書いた。
+  - 保存点の診断と import（D11）: 収集を囲む `except Exception` は、黙って捨てずに stderr へ
+    `review-eval: hook failed: <例外の型名>` の 1 行を出す。`finalize.py` は収集の import の前に root を
+    `sys.path` に入れる（本番の起動形では root が `sys.path` に無いため）。
+  - loop の `review-result.json`・`rerun-result.json`（runner の BatchResult の写し）は収集しない
+    （移植元は取る）。`results[].attempts[].payload` にレビュアーの回答本文が入り、秘密検査は本文を除かないため。
+  - `dispatch.accept` は、`verified/` の fix-check・statement-candidates を置き換える前に、既存の版を収集する
+    （収集の失敗で accept の結果を変えない）。
+  - `attach_runner` に `temp_root` が無い点を、xrift-poc の実装に合わせた。
+- 取り込まなかったもの: `projects.toml` の照合（`tools.workspace`）、`tools/test_support/registry`、
+  移植元の finalize のテストの `--registry` 引数。移植元のテストで取り込まなかったものは無い。
+  足したテストは、`store` を `items/`・`worlds/` の中に置く設定の拒否、isolation plugin の確認、
+  `*.log` を取らないこと、本番の起動形の `finalize.py` が収集に届くこと。
+
 ## 失敗したレビューセッションの退役と片付けの安全強化の取り込み（2026-11、Issue #241）
 
 - 移植元: `usaturn/agent-workspace` の次の 3 件の PR。PR・Issue の番号は移植元のものであり、
@@ -539,6 +578,9 @@ Issue #59 の対応として、5174〜5179 も `forwardPorts` に追加した。
   - draft のあるセッションの判定: 移植元は実行記録が失敗なら draft があっても退役の判定で残すが、
     xrift-poc では draft のあるセッションを記録によらず保存済みの判定に回す（PR の前の定期掃除が、
     保存の後に後片付けだけ失敗したセッションを回収していたのを保つため。未保存の draft は残す）。
+  - Issue #242（review-eval）との合流: `main` の取り込みで、`attach-runner` は `--temp-root` を渡して退役を
+    試みた後に、#242 の収集（`collect_outputs`）を呼ぶ。after_run のテストは実際の hook を子プロセスで起動し、
+    子は runner の起動時の環境を使うので、子に空の `REVIEW_EVAL_CONFIG` を渡して利用者の収集の設定を読ませない。
   - 役割の分担: after_run の `attach-runner` は今回照合した記録の、runner が停止を確認した未着手の
     失敗セッションだけを退役する。`cleanup-workspace.bash` は記録の runner の `stop_confirmed` を根拠にし、
     理由を自動で作らない。`repo-cleanup-after-merge` は `/tmp/pr-review-*` を先に helper に渡し、

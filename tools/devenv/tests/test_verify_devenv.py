@@ -53,6 +53,7 @@ def make_minimal_parent_fixture(
         "tools/devenv_migration/tests",
         "tools/agent_runner/tests",
         "tools/test_support/tests",
+        "tools/review_eval/tests",
         ".agents",
     ):
         (root / part).mkdir(parents=True)
@@ -60,6 +61,15 @@ def make_minimal_parent_fixture(
     shutil.copy2(SOURCE_ROOT / "tools/devenv/pyproject.toml", root / "tools/devenv/pyproject.toml")
     shutil.copy2(SOURCE_ROOT / "tools/devenv/uv.lock", root / "tools/devenv/uv.lock")
     # pyproject.toml の addopts が -p で読み込むプラグイン
+    for plugin_file in (
+        "tools/__init__.py",
+        "tools/test_support/__init__.py",
+        "tools/test_support/repos.py",
+        "tools/test_support/texts.py",
+        "tools/test_support/isolation.py",
+    ):
+        (root / plugin_file).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(SOURCE_ROOT / plugin_file, root / plugin_file)
     shutil.copy2(SOURCE_ROOT / "tools/test_support/explicit_paths.py", root / "tools/test_support/explicit_paths.py")
     log, env = make_fake_uv(tmp_path, failure=failure, pytest_python=pytest_python)
     return root, log, env

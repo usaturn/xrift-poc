@@ -589,10 +589,90 @@ def attach_runner(result_path: Path, *, temp_root: Path | None = None) -> dict[s
         return {"schema_version": 1, "status": "failed", "result_file": str(result_path), "reason": str(error)}
 
 
+def _collection_review_dir(parent: Path, state: Mapping[str, Any]) -> Path:
+    return cast(
+        Path,
+        workspace._target_call(
+            "review_directory", parent, str(state["pr_repo"]), int(state["pr_number"]), str(state["head_branch"])
+        ),
+    )
+
+
+def _collection_files(parent: Path, review_dir: Path, result: Mapping[str, Any]) -> list[Path]:
+    paths: list[Path] = []
+    for key in ("review_file", "findings_file"):
+        value = result.get(key)
+        if isinstance(value, str) and value:
+            paths.append(parent / value)
+    record_file = result.get("run_record")
+    if isinstance(record_file, str) and record_file:
+        paths.append(Path(record_file))
+    return [path for path in paths if path.parent == review_dir or path.parent.parent == review_dir]
+
+
+def collect_outputs(
+    command: str, parent: Path | None, state: Mapping[str, Any] | None, result: Mapping[str, Any]
+) -> None:
+    """保存点で review 記録を収集する（Issue #835）。結果・終了コード・標準出力を変えず、例外を出さない。"""
+    try:
+        from tools.review_eval.capture import collect
+
+        if command == "attach-runner":
+            # after_run の60秒枠の半分を収集の待ちに使い、残りはfailure保存・出力等の余白にする。
+            # 複数 review_dir があっても、scanner / lock の待ちの予算を積み上げない。
+            deadline = time.monotonic() + 30.0
+            # 実行記録は <review_dir>/runs/<name>.json。review_dir ごとに集める。attach-runner を起動するのは runner の
+            # after_run（設定の信頼された argv）だけなので、depth が付いていても収集し、runner の子（レビュアー）が
+            # 保存した成果を sweep で取る
+            by_dir: dict[Path, list[Path]] = {}
+            for key in ("attached", "unchanged"):
+                for item in cast(list[Any], result.get(key) or []):
+                    path = Path(str(item))
+                    by_dir.setdefault(path.parent.parent, []).append(path)
+            for review_dir, files in by_dir.items():
+                collect(
+                    route="pr-review",
+                    event=command,
+                    review_dir=review_dir,
+                    files=files,
+                    context={"command": command, "status": result.get("status"), "run_id": result.get("run_id")},
+                    allow_runner_child=True,
+                    deadline=deadline,
+                )
+            return
+        if command == "prepare" and (parent is None or state is None) and result.get("state_file"):
+            parent, state = workspace.load_state(str(result["state_file"]))
+        if parent is None or state is None:
+            return
+        review_dir = _collection_review_dir(parent, state)
+        context = cast(dict[str, Any], state.get("run_context") or {})
+        binding = cast(dict[str, Any], context.get("binding") or {})
+        request_id, run_id = (binding.get(key) for key in ("request_id", "run_id"))
+        collect(
+            route="pr-review",
+            event=command,
+            review_dir=review_dir,
+            files=_collection_files(parent, review_dir, result) if command in {"complete", "fail"} else [],
+            repository=str(state["pr_repo"]),
+            pr=int(state["pr_number"]),
+            context={
+                "command": command,
+                "status": result.get("status"),
+                "invocation": "runner" if context.get("request_path") else "standalone",
+                "request_id": None if request_id == "unknown" else request_id,
+                "run_id": None if run_id == "unknown" else run_id,
+                "review_kind": "commit" if state.get("review_commit") else "pr_head",
+            },
+        )
+    except Exception as error:  # noqa: BLE001 - 収集の失敗でレビューの結果を変えない
+        print(f"review-eval: hook failed: {type(error).__name__}", file=sys.stderr)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     if args.command == "attach-runner":
         result = attach_runner(args.result, temp_root=args.temp_root)
+        collect_outputs("attach-runner", None, None, result)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 1 if result["status"] == "failed" else 0
     parent: Path | None = None
@@ -622,6 +702,7 @@ def main(argv: list[str] | None = None) -> int:
     if result["status"] == "failed" and state is not None:
         result["retained_paths"] = retained_paths(state)
     result.setdefault("run_record", None)
+    collect_outputs(args.command, parent, state, result)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 1 if result["status"] == "failed" else 0
 

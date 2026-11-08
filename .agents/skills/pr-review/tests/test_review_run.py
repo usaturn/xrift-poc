@@ -734,6 +734,8 @@ def after_run_attach(source: Path, parent: Path, tmp_path: Path) -> dict[str, An
     launcher = (
         "import importlib.util, os, sys; from pathlib import Path; "
         f"os.environ['TMPDIR'] = {str(tmp_path / 'hook-tmp')!r}; "
+        # 子は runner の起動時の環境を使うので、利用者の収集の設定（review-eval）を読ませない
+        "os.environ['REVIEW_EVAL_CONFIG'] = ''; "
         f"spec = importlib.util.spec_from_file_location('hook_review_run', {str(SCRIPT)!r}); "
         "module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module); "
         f"module.workspace.load_review_target().default_parent_root = lambda: Path({str(parent)!r}); "
