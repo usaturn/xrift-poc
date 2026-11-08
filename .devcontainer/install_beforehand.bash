@@ -376,8 +376,8 @@ if [ ! -f "${HOME}/.pi/agent/models.json" ]; then
     fi
 fi
 
-step "Placing the launchers (pigo / pigod / pidid / piga / pigt / pigs / pigl / pixg / pigemf / pigemp / pigema)"
-# Pi ランチャーは ~/.local/bin に置く。ここは bind mount の
+step "Placing the launchers (pigo / pigod / pidid / piga / pigt / pigs / pigl / pixg / pigemf / pigemp / pigema / claude-ollama-exec)"
+# Pi ランチャーと Claude Code のランチャー（claude-ollama-exec）は ~/.local/bin に置く。ここは bind mount の
 # 対象外でリビルドのたびに失われるため、models.json と違い毎回上書きで配置する。
 if ! mkdir -p "${HOME}/.local/bin"; then
     fail "Failed to create ~/.local/bin."
@@ -415,6 +415,9 @@ if ! install -m 0755 .devcontainer/pigemp "${HOME}/.local/bin/pigemp"; then
 fi
 if ! install -m 0755 .devcontainer/pigema "${HOME}/.local/bin/pigema"; then
     fail "Failed to place pigema."
+fi
+if ! install -m 0755 .devcontainer/claude-ollama-exec "${HOME}/.local/bin/claude-ollama-exec"; then
+    fail "Failed to place claude-ollama-exec."
 fi
 
 step "Writing the pi-superagents launcher configs"

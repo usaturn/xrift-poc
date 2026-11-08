@@ -160,7 +160,8 @@ Receipt の JSON フィールド:
 
 成功時は role の result_shape と payload の型・非空を確認する。
 Python API に ``payload_check`` を渡すと、この確認に通った payload をその関数でも検査し、
-``True`` 以外を返すか例外を出したら invalid_result とする（明示 fallback の次の候補に進む。例外の文は出さない）。
+``True`` 以外を返すか例外を出したら、その試行の payload は null になる（例外の文は出さない）。
+期限内に終了コード 0 で終わった試行は invalid_result になり、明示 fallback の次の候補に進む。ほかの終わり方の扱いは、下の ``payload_check`` の段落を参照する。
 途中 JSON、古い ID、他の agent/role、未知版・キー、不正な payload は invalid_result。
 ファイルは準備時に存在してはいけない。symlink の receipt も拒否する。
 receipt は停止確認後に読む。リンク・特殊ファイル・16 MiB を超えるファイルを
@@ -418,8 +419,12 @@ RunnerError で拒否する（CLI では ``{"error": "invalid_input"}``、終了
 
 ``payload_check`` は、成功した試行の payload が呼び出し側の期待する形かを確かめる関数（既定は ``None`` で、検査しない）。
 例えば issue-to-pr の ``implement_task.py`` は、担当の結果が ``TaskResult`` に合うかを渡す。
-合わない結果は invalid_result になり、役割の期限の中で明示 fallback の次の候補を試す。
-停止未確認・timed_out・interrupted の試行では呼ばれず、fallback も始めない（上の扱いのまま）。
+呼ばれるのは、停止を確認した後に読んだ receipt の ``status`` が ``success`` で、payload が role の ``result_shape`` に合うときである。
+adapter が ``response_failed`` などを報告していても、終了コードが 0 でなくても、timed_out・interrupted で終わっていても、
+停止を確認して success の receipt を読めれば呼ばれる。関数が通っても、試行の state はこれらの失敗になりうる。
+通らなければその試行の payload は null になる。期限内に終了コード 0 で終わった試行は invalid_result になり、
+役割の期限の中で明示 fallback の次の候補を試す。timed_out・interrupted の試行は state が変わらず、fallback も始めない（上の扱いのまま）。
+停止未確認の試行と、Devin の export を redact できなかった試行は receipt を読まないので、関数は呼ばれない。
 CLI からは指定できない。関数には redact の前の payload が渡るので、関数の中で値をログなどに出さない。
 試行を進める event loop の中で同期に呼ぶので、短いローカル処理に限る。
 

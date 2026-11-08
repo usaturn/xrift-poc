@@ -432,16 +432,22 @@ uv run --project tools/devenv python -m tools.agent_runner \
   どちらも無ければ `default`（runtime の既定値に任せる）とする。
 
 たとえば `pi_openai-codex_gpt6-sol_xhigh` は Pi / openai-codex / GPT-6 Sol / xhigh、
-`claude-code_opus_default` は Claude Code / Opus / effort 未指定を表す。
+`claude-code_opus_xhigh` は Claude Code / Opus / xhigh、
+`codex_openai_gpt6-sol_default` は Codex / OpenAI / GPT-6 Sol / effort 未指定を表す。
 `devin_swe2_max` は Devin / SWE-2 / max（`model = "swe-2-max"` の slug の実効値）を表す。
-名前だけを変更した既存 agent の command・model・provider・effort・env・approval・
-skill_sources・args は変更していない。
+effort を後から指定する場合は、名前の effort の段も合わせて改名する。
+下の移行表のうち `claude-code_opus_default` → `claude-code_opus_xhigh`・
+`claude-code_sonnet_default` → `claude-code_sonnet_xhigh` の 2 つは、改名と同時に
+`effort = "xhigh"` を足した（command・model・env は変えていない）。
+ほかの改名は名前だけの変更で、command・model・provider・effort・env・approval・
+skill_sources・args は変えていない。
 
 同一モデルかの比較には、agent の任意項目 `model_key` を使える。
 **指定があれば `model_key`、無ければ `model`** を比較値とし、文字列の完全一致で判定する。
 同じ役割の `agents`・`fallback` の全候補と `exclude_same_model_as` に同じ規則を適用する。
 provider・effort の違いは区別せず、provider ごとの表記を自動では正規化しない。
-雛形では DeepSeek V4.1 Flash の commandcode・opencode-go・deepinfra の3 agent に
+雛形では DeepSeek V4.1 Flash の commandcode・opencode-go・deepinfra の3 agent に加えて、
+Ollama Cloud 経由の `claude-code_ollama_opus_max`・`claude-code_ollama_sonnet_max` の 2 agent にも
 同じ `model_key = "deepseek-v4.1-flash"` を設定している。
 SWE-2 の `devin_swe2_max`・`devin_swe2_medium` にも共通の `model_key = "swe-2"` を設定している。
 `model_key` は比較専用で、CLI に渡すモデルや実行結果の観測値は変えない。
@@ -460,12 +466,14 @@ SWE-2 の `devin_swe2_max`・`devin_swe2_medium` にも共通の `model_key = "s
 2. `workflows.*.assignments.*` の `agents` と `fallback` を下表の新名に書き換える。
 3. 上記の `check` と `list` を実行し、読み込み成功と使う agent の表示を確認する。
 
-次の表は、改名した旧名と現在の名前の対応である。2 回改名した名前（`devin-swe`）も、現在の名前を新名に書いている。現在の既定担当の推奨ではない。
+次の表は、改名した旧名と現在の名前の対応である。2 回改名した名前（`devin-swe`・`claude-opus`）も、現在の名前を新名に書いている。現在の既定担当の推奨ではない。
 Command Code の契約停止後の移行先は、後述の「Command Code GOAT の契約停止と再有効化」を参照する。
 
 | 旧名 | 新名 |
 |---|---|
-| `claude-opus` | `claude-code_opus_default` |
+| `claude-opus` | `claude-code_opus_xhigh` |
+| `claude-code_opus_default` | `claude-code_opus_xhigh` |
+| `claude-code_sonnet_default` | `claude-code_sonnet_xhigh` |
 | `devin-swe` | `devin_swe2_max` |
 | `devin_swe2-max_default` | `devin_swe2_max` |
 | `pi-deepseek` | `pi_commandcode_deepseek4-flash_max` |
@@ -486,8 +494,36 @@ Command Code の契約停止後の移行先は、後述の「Command Code GOAT �
 旧名の節を持たず、割り当てで旧名を参照しているだけの個人設定は、雛形から旧名の定義が無くなったため
 `check` が `invalid_reference` で止まる。手順 2 のとおり参照を新名に書き換える。
 
+`claude-code_opus_default`・`claude-code_sonnet_default` の `[agents.*]` の節を個人設定に残すと、
+雛形の `effort = "xhigh"` を継承しない別の agent になり、runtime の既定の effort で動く。
+比較値（`model` の `opus`・`sonnet`）は新名と同じなので、新名と同じ役割には並べられない。
+手順 1 のとおり旧名の節を削除して新名の雛形を継承する。
+
 ランチャーのコマンド名（`pixg`・`pigod` など）は変更しない。
 過去のレビュー・実行記録・runtime の観測記録の agent 名も書き換えない。
+
+### 役割（role）と既定の担当
+
+雛形の role は次の 6 つである。担当（agent）は workflow の割り当て（`[workflows.<workflow>.assignments.<role>]`）か、
+呼び出し側の引数で決まる。
+
+| role | 用途 | writes | 期限（`deadline_seconds`） | 雛形の割り当て |
+|---|---|---|---|---|
+| `inspect` | PR レビューのレビュアー | `false` | 45 分（2700） | `review`（下の「レビュアーの選び方」） |
+| `implement` | レビュー修正の実装（`fix`）、issue-to-pr の Plan の Task の実装（`issue`） | `true` | 90 分（5400） | `fix`・`issue`（どちらも `claude-code_sonnet_xhigh`） |
+| `self-review` | push 前の、PR 全体のローカル commit の再レビュー（review-fix-planning） | `false` | 45 分（2700） | `fix`（`self`） |
+| `fix-check` | push 前の修正の確認（review-verify の `fix_check`） | `false` | 45 分（2700）。呼び出し側が 30 分に切り詰める | `fix`（`self`） |
+| `spec-review` | issue-to-pr の Spec のレビュー | `false` | 30 分（1800） | なし |
+| `design-review` | issue-to-pr の設計（妥当性と別案）のレビュー | `false` | 30 分（1800） | なし |
+
+- `spec-review`・`design-review` は、issue-to-pr の引数 `--spec-review AGENT`・`--design-review AGENT` を書いた run でだけ使う。
+  担当は引数で決まり、雛形には割り当てを置かない。`writes = false` で、担当はファイルを書かない。
+  期限を過ぎると、その issue-to-pr の run は止まる。issue-to-pr での使い方は issue-to-pr の SKILL.md に定義する
+- レビュー修正の `[workflows.fix.assignments.implement]` と、issue-to-pr の `[workflows.issue.assignments.implement]` の既定は
+  `claude-code_sonnet_xhigh`（runner を起動して実装する）。fallback は置いていない。
+  `self` にすると、それぞれの司令塔（PR 修正ループ・issue-to-pr を実行しているセッション）が自分で実装し、runner を起動しない
+- 導入処理は個人設定が無いときだけ雛形をコピーするので、雛形の既定を変えても既存の個人設定には反映されない。
+  雛形の古い写しを個人設定にしている場合は、使う節の `agents` を書き換えるか、その節を削除して雛形を継承する
 
 ### レビュアーの選び方
 
@@ -495,13 +531,13 @@ PR レビュー（workflow `review` の role `inspect`）のレビュアーは�
 雛形の `[workflows.review.assignments.inspect]` は、指定が無いときの既定値であり、
 性能を評価して決めた順位ではない。
 
-- 依頼ごとに選ぶ: `run --workflow review` に `--assign inspect=claude-code_opus_default,pi_openai-codex_gpt6-sol_xhigh` を付ける
+- 依頼ごとに選ぶ: `run --workflow review` に `--assign inspect=claude-code_opus_xhigh,pi_openai-codex_gpt6-sol_xhigh` を付ける
 - いつも使う構成を変える: 個人設定の同じ節の `agents` を書き換える。
   個人設定を新しく書く場合は、この節だけ書けば雛形に重なる（配列は置換）
 
 ```toml
 [workflows.review.assignments.inspect]
-agents = ["claude-code_opus_default", "pi_openai-codex_gpt6-sol_xhigh"]
+agents = ["claude-code_opus_xhigh", "pi_openai-codex_gpt6-sol_xhigh"]
 ```
 
 runner は親の main checkout と共有の Git 管理領域を担当から読み取り専用にする。CLI の `run --workflow review` で
@@ -514,7 +550,7 @@ PR 修正ループと `run_roles.py` は同じ許可を自分で渡す。
 mkdir -p "$PARENT/reviews/<owner>/<repo>" "$PARENT/tmp/agents"
 uv run --project tools/devenv python -m tools.agent_runner run --workflow review \
   --repository "$PARENT" --revision HEAD --prompt-file /path/to/prompt.txt \
-  --assign inspect=claude-code_opus_default,pi_openai-codex_gpt6-sol_xhigh \
+  --assign inspect=claude-code_opus_xhigh,pi_openai-codex_gpt6-sol_xhigh \
   --write-exception "$PARENT/reviews: the pr-review helper's saved review" \
   --writable-path "$PARENT/reviews/<owner>/<repo>" --writable-path "$PARENT/tmp/agents" \
   --writable-path "$PARENT/.git/pr-review-save.lock" --writable-path "$PARENT/tools/devenv/.venv" \
@@ -524,7 +560,9 @@ uv run --project tools/devenv python -m tools.agent_runner run --workflow review
 同じ役割に、比較値（指定があれば `model_key`、無ければ `model`）が同じ agent は並べられない。
 例えば `codex_openai_gpt6-sol_default` と `pi_openai-codex_gpt6-sol_xhigh` は
 どちらも `model = "gpt-6.1-sol"` なので並べられない。effort の違いでは別モデルにしない。
-DeepSeek V4.1 Flash の provider 別3 agent も、共通の `model_key` により並べられない。
+DeepSeek V4.1 Flash の 5 agent（provider 別の 3 agent と Ollama Cloud 経由の 2 agent）も、共通の `model_key` により互いに並べられない。
+Ollama Cloud 経由の 2 agent は比較値が `model_key` なので、`model` が同じ `opus`・`sonnet` でも
+`claude-code_opus_xhigh`・`claude-code_sonnet_xhigh` とは並べられる。
 Devin の `devin_swe2_medium`（SWE-2 Medium）は既定の割り当てに入っておらず、
 `--assign inspect=devin_swe2_medium` のように指定して選ぶ。
 `devin_swe2_max` と共通の `model_key` を持つので、2 つは同じ役割に並べられない。
@@ -1220,10 +1258,11 @@ commandcode の 2 つのランチャを `setup_pi_commandcode_goat.zsh` が同�
   `pidid` と `setup_pi.zsh` は未設定・空のときに案内して止まる。
   `ccdd` / `ccddg`（Claude Code を DeepInfra の Anthropic エンドポイントへ
   向けるラッパー）もこの値を読む
-- `OLLAMA_API_KEY` は `claude-ollama` / `ccdol`（Claude Code を Ollama Cloud の Anthropic
-  互換 API へ向けるラッパー）だけが読む。使うシェルで export しておく。子の `claude` には
+- `OLLAMA_API_KEY` は `claude-ollama-exec`（Claude Code を Ollama Cloud の Anthropic
+  互換 API へ向ける実行ファイル。`claude-ollama` / `ccdol` と agent-runner の `claude-code_ollama_*` が呼ぶ）だけが読む。
+  使うシェルで export しておく。agent-runner では runner を起動する前に export する。子の `claude` には
   `ANTHROPIC_AUTH_TOKEN` としてだけ渡し、`ccdd` / `ccddg` の子には渡さない。
-  未設定・空・空白だけなら、値を表示せずにエラーを出して終了する。キーは
+  未設定・空、または見える ASCII 文字を含まない（空白だけ・全角空白だけなど）なら、値を表示せずにエラーを出して終了する。キーは
   `https://ollama.com/settings/keys` で作る。詳しくは
   「Ollama Cloud の DeepSeek V4.1 Flash 1017 で Claude Code を起動する（移植元の agent-workspace #852）」を参照
 - 再契約後に使う `COMMANDCODE_API_KEY` は `DEEPINFRA_TOKEN` と同じ方式である。`models.json`
@@ -1435,17 +1474,18 @@ bash .devcontainer/test-pi-superagents.bash
 
 ## Ollama Cloud の DeepSeek V4.1 Flash 1017 で Claude Code を起動する（移植元の agent-workspace #852）
 
-`claude-ollama` / `ccdol`（`zshrc.txt` の関数）は、Claude Code の接続先を
-Ollama Cloud の Anthropic 互換 API に切り替えて起動する。ローカルの Ollama は使わず、
+`claude-ollama` / `ccdol`（`zshrc.txt` の関数）は、`claude-ollama-exec`
+（`.devcontainer/claude-ollama-exec`。`install_beforehand.bash` が `~/.local/bin` に置く）を呼び、
+Claude Code の接続先を Ollama Cloud の Anthropic 互換 API に切り替えて起動する。ローカルの Ollama は使わず、
 `https://ollama.com` に直接つなぐ。`ccdol` は `--dangerously-skip-permissions` を付けて
 起動し、`claude-ollama` は付けない。後ろに書いた引数（`-p` やプロンプト）は
-そのまま `claude` に渡す。
+そのまま `claude` に渡す。agent-runner からも使える（下の「agent-runner から使う」）。
 
 | 項目 | 値 |
 | --- | --- |
 | 接続先（`ANTHROPIC_BASE_URL`） | `https://ollama.com` |
 | 認証 | `ANTHROPIC_AUTH_TOKEN` に `OLLAMA_API_KEY` を入れる（Bearer 認証。Ollama の連携手順に従う。`x-api-key` だけの要求は 401 になる。下の「追加の確認」） |
-| model ID | `deepseek-v4.1-flash:1017`（fable・opus・sonnet・haiku の 4 つの tier すべて） |
+| model ID | `deepseek-v4.1-flash:1017`（fable・opus・sonnet・haiku の 4 つの tier すべて。`claude-ollama-exec` が tier ごとに別の変数で持ち、今は 4 つとも同じ値） |
 | effort（`CLAUDE_CODE_EFFORT_LEVEL`） | `max` |
 | 出力上限（`CLAUDE_CODE_MAX_OUTPUT_TOKENS`） | 65,536 |
 | claude.ai の MCP コネクタ（`ENABLE_CLAUDEAI_MCP_SERVERS`） | `false` |
@@ -1456,10 +1496,13 @@ model ID は、直接接続で使う名前（`https://ollama.com/api/tags` の�
 2026-11-08 の時点で既に別の digest を指しており、今後も別の版に移りうる。
 `:cloud`・`:1017-cloud` は Ollama の CLI・アプリ向けの名前で、直接接続では使わない（移植元の README の記述。xrift-poc では確かめていない）。
 
-親シェルの認証情報やモデルの指定は、`ccdd` / `ccddg` と共通の `cc_launcher_unsets` で
-外してから起動する。`OLLAMA_API_KEY` は `ANTHROPIC_AUTH_TOKEN` としてだけ子に渡り、
+親シェルの認証情報やモデルの指定は、`claude-ollama-exec` が `zshrc.txt` の `cc_launcher_unsets` と
+同じ名前を外してから起動する。関数から呼んでも、agent-runner から呼んでも、直接実行しても同じである。
+`OLLAMA_API_KEY` は `ANTHROPIC_AUTH_TOKEN` としてだけ子に渡り、
 `ccdd` / `ccddg` の子には渡らない。`ANTHROPIC_API_KEY` も子に渡さない
 （Ollama の連携手順が空文字を指定しているのと同じく、子は API key を持たない）。
+`claude-ollama-exec` は `#!/bin/bash -p` で起動し、継承した `BASH_ENV`・`ENV` のファイルを読まず、
+環境の関数も取り込まない。
 
 ### 起動
 
@@ -1472,11 +1515,20 @@ ccdol
 `scripts/write_shell_block.py` で `~/.zshrc` の管理ブロック
 （`# >>> xrift-poc shell setup >>>`〜`# <<< xrift-poc shell setup <<<`）として書く。
 この変更を取り込む前に作ったコンテナには `claude-ollama` / `ccdol` が無いので、
-Rebuild Container で反映する。
+Rebuild Container で反映する。Rebuild Container で新しい `zshrc.txt` と `claude-ollama-exec` が一緒に配置される。
+`~/.zshrc` だけを手で更新して `claude-ollama-exec` が `~/.local/bin` に無いと、`ccdol` は
+`command not found`（終了コード 127）で失敗し、`claude` は起動しない。
+Dev Container を使わない環境では、次のコマンドで置く。
 
-`OLLAMA_API_KEY` が未設定・空・空白だけなら、key の値を表示せずにエラーを出し、
+```bash
+install -m 0755 .devcontainer/claude-ollama-exec ~/.local/bin/claude-ollama-exec
+```
+
+`OLLAMA_API_KEY` が未設定・空、または見える ASCII 文字を含まない（空白だけ・全角空白だけなど。
+locale に関係なく止まる）なら、key の値を表示せずにエラーを出し、
 `claude` を起動しない（終了コード 1）。別の接続先で起動して成功扱いにはしない。
-`zshrc.txt` のコメントによると、Claude Code は `ANTHROPIC_AUTH_TOKEN` が空か空白だけだと、
+この key の確認は `claude-ollama-exec` にあり、関数経由でも agent-runner 経由でも同じに止まる。
+`claude-ollama-exec` のコメントによると、Claude Code は `ANTHROPIC_AUTH_TOKEN` が空か空白だけだと、
 保存済みの claude.ai の OAuth トークンを接続先へ送る。そのため起動の前に止めている
 （この送信の挙動は xrift-poc では確かめていない）。
 
@@ -1547,7 +1599,32 @@ supported」とある。WebSearch などのサーバー側のツールは、期�
 `[claude-code:unrecognized_model] {"model":"deepseek-v4.1-flash:1017[1m]",...}` が 1 行出る。
 Claude Code が知らないモデル名を使ったことの通知で、応答は成功する。
 
+### agent-runner から使う
+
+雛形に次の 2 agent がある。どちらも `command` は `claude-ollama-exec`、`effort` は `max`、
+`env` は `HOME`・`PATH`・`OLLAMA_API_KEY` で、`--model` に渡す別名だけが違う。今は同じ DeepSeek V4.1 Flash 1017 を使う。
+
+| agent | `--model` | `model_key` |
+| --- | --- | --- |
+| `claude-code_ollama_opus_max` | `opus` | `deepseek-v4.1-flash` |
+| `claude-code_ollama_sonnet_max` | `sonnet` | `deepseek-v4.1-flash` |
+
+- `OLLAMA_API_KEY` は、runner を起動するシェルで起動の前に export する。runner は起動時の環境から
+  `env` に書いた名前の値だけを子に渡し、名前に `API_KEY` を含む値はログ・結果から redact する。
+  キーが無い・空・見える ASCII 文字を含まないと、`claude-ollama-exec` が `claude` を起動せずに止まり、試行は success にならない
+- `claude-ollama-exec` は runner の `PATH` から探す。Dev Container では Rebuild Container で `~/.local/bin` に置かれる。
+  Rebuild の前で `claude-ollama-exec` が無いと起動に失敗し、試行は success にならない
+- 既定の inspect には入れていない。`--assign inspect=claude-code_ollama_opus_max` のように指定して選ぶ
+- 同じ役割に並べられないもの（`check` が `duplicate_model` で拒否する）: この 2 agent 同士と、
+  DeepSeek V4.1 Flash の provider 別の 3 agent（どれも `model_key` が `deepseek-v4.1-flash`）。
+  比較値が `model_key` なので、`claude-code_opus_xhigh`・`claude-code_sonnet_xhigh` とは並べられる
+- `~/.claude/settings.json` などの `env` は、`claude-ollama-exec` が設定した値より優先される（上の「接続先の確認」）。
+  そこに `ANTHROPIC_DEFAULT_*_MODEL` などがあると、別のモデルで動きうる
+
 ### 動作の確認（2026-11-08、Claude Code 2.1.319）
+
+この確認は、関数が `claude` を直接起動していた実装（`claude-ollama-exec` へ委譲する前）で行った。
+委譲後の実装では、実 API での確認をやり直していない。
 
 `.devcontainer/zshrc.txt` の `cc_launcher_unsets` と `claude-ollama` / `ccdol` の定義だけを
 取り出して source した zsh（`zsh -f`）で、実 API を使って次を確かめた。キーは環境変数の
@@ -1576,6 +1653,7 @@ Claude Code が知らないモデル名を使ったことの通知で、応答�
 
 確かめていない範囲:
 
+- `claude-ollama-exec` を通した実 API での起動と、agent-runner の 2 agent の実行
 - Rebuild Container の後の `~/.zshrc` での起動。この確認は関数の定義だけを source した（利用者が確かめる）
 - Claude Code が送った要求そのもの（`Authorization` の Bearer だけで `x-api-key` が無いこと、
   `max_tokens` の値）。要求を記録する経路を用意していない。`/status` の認証の表示と、

@@ -84,6 +84,13 @@ make_stub_home() {
     chmod +x "$dir/bin/starship" "$dir/bin/herdr"
 }
 
+# zshrc.txt の claude-ollama / ccdol が呼ぶ claude-ollama-exec を、install_beforehand.bash と同じくテスト用 HOME の ~/.local/bin に置く。zshrc.txt は ~/.local/bin を PATH の先頭に足す。
+install_ollama_exec() {
+    local dir="$1"
+    mkdir -p "$dir/.local/bin"
+    install -m 0755 "${REPO_ROOT}/.devcontainer/claude-ollama-exec" "$dir/.local/bin/claude-ollama-exec"
+}
+
 write_session_fixture() {
     local session_file="$1"
     local workspace_root="$2"
@@ -442,10 +449,11 @@ test_installer_keeps_an_existing_herdr_config() {
     [ "$(cat "$config")" = '# user config' ] || fail 'installer must keep an existing herdr config'
 }
 
-# このテストが無いと、cc_launcher_unsets から資格情報を外す・ccdd・ccddg・ccdol が一覧を使わなくなる・ccdol が別のプロバイダのキーを読む変更で、親シェルの Anthropic の API key・OAuth token や他のプロバイダの key（ccdd・ccddg の子への OLLAMA_API_KEY、ccdol の子への DEEPINFRA_TOKEN を含む）が第三者のプロバイダ向けの子の claude へ黙って渡る。
+# このテストが無いと、cc_launcher_unsets・claude-ollama-exec の一覧から資格情報を外す・ccdd・ccddg が一覧を使わなくなる・ccdol が claude-ollama-exec を通らなくなる・ランチャーが別のプロバイダのキーを読む変更で、親シェル（ccdol・runner・直接起動）の Anthropic の API key・OAuth token や他のプロバイダの key が第三者のプロバイダ向けの子の claude へ黙って渡る。
 test_cc_launcher_env_unsets() {
     local test_home="${TEST_ROOT}/home-cc-launcher"
     make_stub_home "$test_home"
+    install_ollama_exec "$test_home"
     local dump_dir="${TEST_ROOT}/cc-launcher-env"
     mkdir -p "$dump_dir"
 
@@ -512,6 +520,23 @@ test_cc_launcher_env_unsets() {
         # 対照: 子の claude が実際に起動し、そのランチャーのキーを ANTHROPIC_AUTH_TOKEN として受け取った
         assert_contains "$log" "^ANTHROPIC_AUTH_TOKEN=INPUT_${key}\$"
     done
+
+    # runner・直接起動の経路: claude-ollama-exec を直接起動する
+    env_args=()
+    for v in "${credentials[@]}"; do
+        if [ "$v" = OLLAMA_API_KEY ]; then
+            env_args+=("${v}=INPUT_${v}")
+        else
+            env_args+=("${v}=POLLUTED_${v}")
+        fi
+    done
+    log="${dump_dir}/claude-ollama-exec.log"
+    : > "$log"
+    env -i HOME="$test_home" PATH="$test_home/.local/bin:$test_home/bin:/usr/bin:/bin" \
+        HERDR_TEST_CLAUDE_DUMP="$log" "${env_args[@]}" \
+        "$test_home/.local/bin/claude-ollama-exec" probe </dev/null >/dev/null
+    assert_absent "$log" 'POLLUTED_'
+    assert_contains "$log" '^ANTHROPIC_AUTH_TOKEN=INPUT_OLLAMA_API_KEY$'
 }
 
 # このテストが無いと、キーの確認が空白を通す書き方に変わったとき、Claude Code が保存済みの claude.ai の OAuth トークンを ollama.com へ黙って送る。
@@ -520,6 +545,7 @@ test_cc_launcher_env_unsets() {
 test_ollama_launcher_requires_key() {
     local test_home="${TEST_ROOT}/home-ollama-key"
     make_stub_home "$test_home"
+    install_ollama_exec "$test_home"
     local log="${TEST_ROOT}/ollama-key-claude.log"
     : > "$log"
     printf '%s\n' '#!/bin/sh' 'echo started >> "$HERDR_TEST_CLAUDE_DUMP"' > "$test_home/bin/claude"
@@ -531,6 +557,16 @@ test_ollama_launcher_requires_key() {
         HERDR_TEST_CLAUDE_DUMP="$log" OLLAMA_API_KEY=' ' 2>/dev/null || rc=$?
     [ "$rc" -ne 0 ] || fail 'ccdol must fail when OLLAMA_API_KEY is blank'
     [ ! -s "$log" ] || fail 'ccdol must not start claude when OLLAMA_API_KEY is blank'
+
+    # runner の子は locale（LANG・LC_*）を受け取らないので env -i で起動する。全角空白 1 文字は、
+    # locale に依存する判定・空だけの判定・ASCII の空白だけを除く判定のどれも止め損ねる入力である。
+    : > "$log"
+    rc=0
+    env -i HOME="$test_home" PATH="$test_home/.local/bin:$test_home/bin:/usr/bin:/bin" \
+        HERDR_TEST_CLAUDE_DUMP="$log" OLLAMA_API_KEY=$'\xe3\x80\x80' \
+        "$test_home/.local/bin/claude-ollama-exec" probe </dev/null 2>/dev/null || rc=$?
+    [ "$rc" -ne 0 ] || fail 'claude-ollama-exec must fail when OLLAMA_API_KEY has no visible ASCII character'
+    [ ! -s "$log" ] || fail 'claude-ollama-exec must not start claude when OLLAMA_API_KEY has no visible ASCII character'
 }
 
 test_installer_keeps_an_existing_herdr_config

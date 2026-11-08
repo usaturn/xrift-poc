@@ -2,15 +2,15 @@
 # agent 名の規則: .devcontainer/README.md「agent の命名規則」を参照。
 schema_version = 1
 
-# codex / cursor の agent は #566 が追加する。
-[agents.claude-code_opus_default]
+[agents.claude-code_opus_xhigh]
 runtime = "claude-code"
 command = ["claude"]
 model = "opus"
+effort = "xhigh"
 env = ["HOME", "PATH"]
 
-# Devin の SWE-2 は tier（medium・high・max）を --model の UID で選ぶ。tier は effort の軸なので、名前では effort の段に置く。
-# effort の違いでは別のモデルにしないので、2 つに共通の model_key を設定する（同じ役割に並べると duplicate_model で止まる）。
+# Devin の SWE-2 は tier（medium・high・max）を --model の UID で選ぶ。tier は effort の軸なので名の effort の段に置く。
+# 2 つは同じ model_key で同じモデルとして扱う（同じ役割に並べられない）。
 [agents.devin_swe2_max]
 runtime = "devin"
 command = ["devin"]
@@ -91,11 +91,35 @@ provider = "openai-codex"
 effort = "xhigh"
 env = ["HOME", "PATH"]
 
-[agents.claude-code_sonnet_default]
+[agents.claude-code_sonnet_xhigh]
 runtime = "claude-code"
 command = ["claude"]
 model = "sonnet"
+effort = "xhigh"
 env = ["HOME", "PATH"]
+
+# claude-ollama-exec は .devcontainer/claude-ollama-exec を、Rebuild で install_beforehand.bash が ~/.local/bin に置く。
+# 実体は DeepSeek V4.1 Flash 1017 なので、既存の DeepSeek V4.1 Flash の 3 agent と同じ model_key にする。
+# 2 つは互いにも、その 3 agent とも同じ役割に並べられない（duplicate_model で止まる）。
+# 比較値は model_key なので、claude-code_opus_xhigh・claude-code_sonnet_xhigh とは同じ役割に並べられる。
+# tier のモデルを分けたら、model_key も分ける。
+[agents.claude-code_ollama_opus_max]
+runtime = "claude-code"
+command = ["claude-ollama-exec"]
+model = "opus"
+model_key = "deepseek-v4.1-flash"
+provider = "ollama"
+effort = "max"
+env = ["HOME", "PATH", "OLLAMA_API_KEY"]
+
+[agents.claude-code_ollama_sonnet_max]
+runtime = "claude-code"
+command = ["claude-ollama-exec"]
+model = "sonnet"
+model_key = "deepseek-v4.1-flash"
+provider = "ollama"
+effort = "max"
+env = ["HOME", "PATH", "OLLAMA_API_KEY"]
 
 [agents.pi_google-vertex_gemini4-argon_high]
 runtime = "pi"
@@ -135,7 +159,7 @@ approval = "noninteractive"
 skill_sources = [".cursor/skills", ".claude/skills", ".agents/skills", ".codex/skills"]
 env = ["HOME", "PATH"]
 
-# Grok-4.7 を Cursor CLI 側で明示する agent。grok-4.7-xhigh は --list-models の実在 slug。起動は上の cursor と同じ。
+# Grok-4.7 を Cursor CLI 側で明示する agent。grok-4.7-xhigh は --list-models の実在 slug。
 [agents.cursor_grok4_xhigh]
 runtime = "cursor"
 command = ["agent"]
@@ -170,7 +194,23 @@ writes = false
 deadline_seconds = 2700
 result_shape = "json"
 
-# PR レビューの後処理。実行記録へランナーの観測値を書く。
+# issue-to-pr の --spec-review AGENT・--design-review AGENT を書いた run だけ使う役割。
+# spec-review は Spec を、design-review は設計の妥当性と別案をレビューする。
+# 担当は引数で決まるので、雛形の [workflows.*.assignments] には割り当てを置かない。
+# writes = false なのでファイルを書かない。期限は 30 分で、期限切れは issue-to-pr の run の停止になる。
+[roles.spec-review]
+skills = []
+writes = false
+deadline_seconds = 1800
+result_shape = "json"
+
+[roles.design-review]
+skills = []
+writes = false
+deadline_seconds = 1800
+result_shape = "json"
+
+# PR レビューの後処理。ランナーの観測値を実行記録へ追記する。
 [workflows.review]
 after_run = [[
   "uv", "run", "--project", "tools/devenv", "--locked", "python",
@@ -185,7 +225,7 @@ after_run = [[
 agents = ["devin_swe2_max", "pi_opencode-go_deepseek4-flash_max", "pi_openai-codex_gpt6-sol_xhigh"]
 
 [workflows.fix.assignments.implement]
-agents = ["claude-code_opus_default"]
+agents = ["claude-code_sonnet_xhigh"]
 
 [workflows.fix.assignments.self-review]
 agents = ["self"]
@@ -194,8 +234,9 @@ agents = ["self"]
 agents = ["self"]
 
 # issue-to-pr が Plan の Task を 1 つずつ実装させる担当（#679）。レビュー修正の fix.implement とは別に選ぶ。
-# self は issue-to-pr を実行しているセッション（司令塔）が自分で実装する（runner を起動しない）。
+# 既定は claude-code_sonnet_xhigh（runner を起動して実装する）。self は issue-to-pr を実行している
+# セッション（司令塔）が自分で実装する（runner を起動しない）。
 # 別のエージェントに任せるときは、個人設定のこの節の agents を書き換え、代わりの候補を fallback に明示する。
 # agents は 1 つだけ。その回だけ変えるときは /issue-to-pr <Issue> --implement <agent> と書く（fallback は保つ）。
 [workflows.issue.assignments.implement]
-agents = ["self"]
+agents = ["claude-code_sonnet_xhigh"]
