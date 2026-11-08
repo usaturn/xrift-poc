@@ -54,7 +54,8 @@ alias dev="devin --model swe-2-max --permission-mode dangerous"
 alias devs="devin --model gpt-6-1-sol-xhigh --permission-mode dangerous"
 alias devo="devin --model claude-opus-5-5-xhigh --permission-mode dangerous"
 
-# プロバイダ切替ランチャー（ccdd / ccddg / ccdol）共通の env -u リスト。
+# プロバイダ切替ランチャー（ccdd / ccddg）共通の env -u リスト。
+# claude-ollama-exec（ccdol・claude-ollama が呼ぶ）は同じ名前の一覧を自分で持つ。片方を変えたら両方を変える。
 # 親シェルで export された主要な認証材料・プロバイダ切替・モデルピン留系の値が
 # 第三者プロバイダの子プロセスへ漏れるのを防ぐ。資格情報が子へ渡らないことは
 # test-herdr-migration.bash の test_cc_launcher_env_unsets が、この一覧から独立に選んだ
@@ -152,30 +153,13 @@ function claude-deepinfra-glm ccddg () {
 }
 
 # Ollama Cloud の DeepSeek V4.1 Flash 1017 で Claude Code を起動する（移植元の #852）。
-# [1m] は Claude Code に 1M のコンテキストとして扱わせる印で、Ollama へ送る model ID からは外れる。
-# 付けないと未知のモデルとして 200K と見なす。変数ごとに読むので 4 つの tier すべてに付ける。
+# 接続先・tier ごとのモデル・key の確認・資格情報を外す処理は claude-ollama-exec にある
+# （install_beforehand.bash が ~/.local/bin に置く）。agent-runner の claude-code_ollama_* と共有する。
 function claude-ollama ccdol () {
-  local model='deepseek-v4.1-flash:1017[1m]'
   local -a opts
   [[ $funcstack[1] == ccdol ]] && opts=(--dangerously-skip-permissions)
-  # Claude Code は ANTHROPIC_AUTH_TOKEN が空か空白だけだと、保存済みの claude.ai の
-  # OAuth トークンを接続先へ送る。空白を除いて空なら claude を起動しない（値は表示しない）。
-  if [[ -z ${${OLLAMA_API_KEY:-}//[[:space:]]/} ]]; then
-    print -u2 -- "${funcstack[1]}: OLLAMA_API_KEY is not set or empty; create a key at https://ollama.com/settings/keys and export it in this shell"
-    return 1
-  fi
-
-  env "${cc_launcher_unsets[@]}" \
-    ANTHROPIC_BASE_URL="https://ollama.com" \
-    ANTHROPIC_AUTH_TOKEN="$OLLAMA_API_KEY" \
-    ANTHROPIC_DEFAULT_FABLE_MODEL="$model" \
-    ANTHROPIC_DEFAULT_OPUS_MODEL="$model" \
-    ANTHROPIC_DEFAULT_SONNET_MODEL="$model" \
-    ANTHROPIC_DEFAULT_HAIKU_MODEL="$model" \
-    ENABLE_CLAUDEAI_MCP_SERVERS=false \
-    CLAUDE_CODE_EFFORT_LEVEL=max \
-    CLAUDE_CODE_MAX_OUTPUT_TOKENS=65536 \
-    claude --model opus "${opts[@]}" "$@"
+  # export していないシェル変数でも渡るよう、key を明示して渡す
+  OLLAMA_API_KEY="${OLLAMA_API_KEY-}" claude-ollama-exec --model opus "${opts[@]}" "$@"
 }
 
 function cod(){
