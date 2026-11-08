@@ -36,7 +36,7 @@ uv run --project "$TOPLEVEL/tools/devenv" --locked python "$RUN_HELPER" prepare 
   --records-comments "$COMMENTS_JSON"
 ```
 
-Codexはmodel-nameを省き、Piも現在envから読むときは省く。通常headならreview-commitを省く。非runnerならrequestを省く。source-rootやrecords-commentsも省略できる。`pr_review_workspace.py` を直接呼ばない。CLI は定期の後片付け（`.devcontainer/cleanup-workspace.bash`）の `reap-check`・`cleanup --strict-reap` だけを残している。
+Codexはmodel-nameを省き、Piも現在envから読むときは省く。通常headならreview-commitを省く。非runnerならrequestを省く。source-rootやrecords-commentsも省略できる。`pr_review_workspace.py` を直接呼ばない。CLI は定期の後片付け（`.devcontainer/cleanup-workspace.bash`）の `reap-check`・`cleanup --strict-reap` だけを残している。失敗セッションの退役には `--allow-failed`（定期掃除・after_run）を使い、`--operator-confirmed-stopped`（理由は空白だけにしない）は `repo-cleanup-after-merge` の理由付き再判定だけが使う。
 
 成功はexit0・`status: prepared`。返されたstate_file / worktree / draft / findings_draft / previous_review / destination / reviewer / reviewed_head / pr_head / base / records / diff_commandをそのまま使う。モデル名・パス・対象を作り直さない。prepareはresolve、origin/commit object照合、PR head fetch、API head照合、fresh detached worktree、destination snapshot、merge-base、v2候補scaffoldを作る。merge-base用のbase fetchは、そのfresh worktreeの専用refに固定し、共有の追跡ref・tag・FETCH_HEADを更新しない。専用refは既存helperのworktree cleanupで一緒に消える。
 
@@ -116,5 +116,10 @@ runnerの `result.json` の各試行を、run_id/request_id/agent_id/roleが `re
 - 同じ値なら書かず `unchanged`。違う値が既にあれば、どのファイルにも書かずstatus=failed（終了コード1）
 - 一致する記録の無い試行（PRが決まる前の失敗など）は `unmatched` にIDとstateを並べるだけ
 - 雛形の workflow `review` は、runnerの後処理（`after_run`）でこのコマンドを呼ぶ。個人設定で止めた直接 caller は、runの後に attach-runner を呼ぶ
+- セッションを探す場所（`--temp-root`）: 渡せばそのディレクトリ。渡さなければ、照合した試行の `request_path` の親の `tmp`（xrift-poc の runner は試行ごとに `TMPDIR` をここにする）。試行に `request_path` が無ければ通常の一時ディレクトリ。その下の `pr-review-<PR 番号>-<実行記録の名前の末尾 8 文字>` だけを候補にし、worker が返したパスは使わない
+- attach 後、同じセッション・repo・PR・commit・reviewer/provenance に結び付いた検証済み記録で、runner が停止確認済みの失敗なら、共通 helper で未着手セッションの退役を試みる。記録が `started` のままでも、exit 0 の `awaiting_authentication` を含む停止済みの失敗は対象になる。runner の success でも記録が `failed`（`fail` や draft の無い `complete`）なら、停止確認の後に同じ判定へ進む。成功したレビュー・記録が `started` のままの runner の success・未観測・停止未確認は退役しない
+- draft も `previous-review.md` も無く、候補が無いか prepare 時の scaffold と意味的に完全一致し、未知ファイル・Git の変更も無い場合だけ削除する。空 findings だけで判断せず、coverage・unverified candidates・timing・固定項目・未知フィールドの編集も残す。結果の `retired`・`retained` に対象と理由を返す。worker の返却パスは削除根拠にしない
+- 定期掃除も同じ `--allow-failed` を使い、年齢・使用中・dry-run の条件を維持する。after_run・定期掃除は `--operator-confirmed-stopped` の理由を作らない。理由付き再判定は `repo-cleanup-after-merge` の手順 5 に従い、helper の拒否の後に worktree だけを先に消さない
+- 制限: runner は停止確認の後に試行の `tmp` の中の symlink を消す（`settle_scratch`）。追跡済みの symlink を持つリポジトリの PR のセッションは worktree が dirty になり、退役されず `retained` に残る（安全側）
 
 停止条件: API/認証失敗、model未観測、wrong repo、commit object無し、moving PR head、worktree commit変更、request変更、skill変更、destination変更、成果欠落/不整合、cleanup拒否。いずれも利用者への確認待ちにせずfailedで終了する。
