@@ -54,6 +54,21 @@ issue-queue の CLI と XRift のツールの導入のテストのために、�
     パスを省略すると、pytest は起動した場所によって、別の checkout のテストや一部だけを集めるためである（#215）。
     パスは ``scripts/ci/verify-devenv.sh`` と AGENTS.md「親の検証」の形で指定する。
 
+``tools.test_support.isolation``
+    テスト全体の起動時に効く pytest plugin。 ``tools/devenv/pyproject.toml`` の ``addopts`` で ``-p`` 指定して読み、 ``pytest_configure`` で ``REVIEW_EVAL_CONFIG`` を空文字（収集を明示的に無効）にする（Issue #242）。
+    利用者の設定（ ``~/.config/xrift-poc/review-eval.toml`` ）の有無・値にかかわらず上書きし、テストに読ませない。
+    収集の仮想記録（判断の記録・finalize の結果）は review_dir を持たないので、利用者の実設定が有効で fixture の repo が sources に入っていると、テストの記録が実の私有の保存先へ書かれうるためである。
+    autouse の fixture ではなく起動時に 1 回だけ設定するので、fixture を使わないテストと子プロセスにも効く。
+    収集を有効にして確かめるテストは、テストの中で ``monkeypatch.setenv("REVIEW_EVAL_CONFIG", <一時の設定>)`` で上書きする（終わると空文字に戻る）。
+
+``tools.test_support.review_eval``
+    ``make_collection_workspace`` は、 ``create_env_repo`` で親の main checkout を作り、指定した ``owner/repo`` ごとに origin 付きの制作物を ``items/`` に作る。 ``(workspace_root, [親の repository, *制作物の repository])`` を返す。移植元の ``projects.toml`` を書く補助の代わりである。
+    ``write_collection_config`` は、収集の設定（ ``review-eval.toml`` ）を一時ディレクトリに書く。承認済み（ ``enabled = true`` ）で、秘密検査には ``FAKE_SCANNER`` （検出なしの空のレポートを書く偽の scanner）を使う。
+    ``make_observation`` は最小の observation を作り、 ``put_revisions_worker`` ・ ``append_times_worker`` は spawn したプロセスから保存先へ書くための worker である。
+
+``tools.test_support.review_eval_ledger``
+    確認待ち台帳（ ``tools.review_eval.ledger`` ）と packet のテストの共有 fixture。収集した ``review-findings/v2`` の候補一覧（別 repo の同じ番号を含む）から、候補・主張・許可・正解の回答を作る。
+
 .. _test_support_usage:
 
 利用方法

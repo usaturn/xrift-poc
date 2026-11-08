@@ -102,6 +102,7 @@ xrift-poc は、XRift のワールドとアイテムを作るための開発環�
 | Superpowers の Spec / Plan | `docs_draft/superpowers/` |
 | Superpowers の SDD の作業領域（executing-plans・subagent-driven-development の ledger・brief・実装担当の報告・review の差分・テストのログ） | `tmp/agents/<topic>.XXXXXX/`（Plan ごとに `agent_tmp.py mkdir <topic>` で作る。手順は `.agents/sdd-workspace.md`） |
 | PR レビュー結果 | `reviews/<owner>/<repo>/#<PR>-<branch>/`（親の PR も制作物の PR も親の main checkout に置く。保存先は pr-review helper が決める。PR 修正ループも同じ場所に保存し、ループ自身の記録は `loop/` に置く） |
+| レビュー評価データの私有の保存先（`tools/review_eval` の `store`） | 設定で明示した絶対パス（推奨は `private/review-eval/collected/`。`reviews/`・`items/`・`worlds/` の中は不可） |
 | 使い捨ての git worktree とその作業領域 | `/tmp`（レビュアーの pr-review helper のセッション、review-fix-planning の `mktemp -d`、PR 修正ループの runner の出力と所有 worktree `${TMPDIR:-/tmp}/xrift-poc-pr-loop-XXXXXX/`） |
 | 消えても困らない中間出力 | `/tmp`、Claude Code の scratchpad |
 
