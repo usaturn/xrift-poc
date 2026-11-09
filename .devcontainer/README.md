@@ -600,6 +600,11 @@ pr-review の `review_run.py attach-runner --result <result.json>` を呼ぶ。
 after_run = []
 ```
 
+`attach-runner` は書き込みの後、停止確認済みで未着手の失敗セッション（draft・`previous-review.md`・編集した候補・未知のファイル・未 commit の変更が無いもの）を helper で退役させる。
+探す場所は `--temp-root`、無ければ照合した試行の `request_path` の親の `tmp`、それも無ければ通常の一時ディレクトリで、結果の JSON に `retired`・`retained` を返す。
+runner は停止確認の後に試行の `tmp` の中の symlink を消すため、追跡済みの symlink を持つリポジトリの PR のセッションは dirty になり、`retained` に残る。
+詳細は `.agents/skills/pr-review/references/noninteractive.md` を見る。
+
 ### 完了・停止・保持
 
 run は各担当の独立した detached worktree を確定済み commit から作り、

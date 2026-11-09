@@ -573,6 +573,10 @@ def create(args: argparse.Namespace) -> dict[str, str | None]:
 
 
 def load_state(state_value: str) -> tuple[Path, dict[str, Any]]:
+    return _load_state(state_value)
+
+
+def _load_state(state_value: str, *, allow_missing_worktree: bool = False) -> tuple[Path, dict[str, Any]]:
     state_file = Path(state_value).resolve(strict=True)
     with state_file.open(encoding="utf-8") as stream:
         state = json.load(stream)
@@ -615,10 +619,10 @@ def load_state(state_value: str) -> tuple[Path, dict[str, Any]]:
         repo = cast(Path, review_target.require_parent_root(Path(str(state["parent_root"]))))
     require_session_target(state, session_dir)
     backup_dir = Path(str(state.get("backup_dir", ""))).resolve(strict=True)
-    worktree = Path(str(state.get("worktree", ""))).resolve(strict=True)
+    worktree = Path(str(state.get("worktree", ""))).resolve(strict=not allow_missing_worktree)
     if backup_dir != (session_dir / "review-backup").resolve(strict=True):
         raise WorkspaceError("session backup directory does not match its state file")
-    if worktree != (session_dir / "worktree").resolve(strict=True):
+    if worktree != (session_dir / "worktree").resolve(strict=not allow_missing_worktree):
         raise WorkspaceError("session worktree does not match its state file")
     previous_value = state["previous_review"]
     if previous_value is not None:
@@ -910,14 +914,158 @@ def _require_directory(path: Path, description: str) -> None:
         raise WorkspaceError(f"{description} must be a real directory: {path}")
 
 
-def _validate_reapable_session(state_value: str) -> tuple[Path, dict[str, Any]]:
+def _retirement_options(args: argparse.Namespace, *, strict: bool) -> tuple[bool, str | None]:
+    allow_failed = bool(getattr(args, "allow_failed", False))
+    reason = getattr(args, "operator_confirmed_stopped", None)
+    if allow_failed and not strict:
+        raise WorkspaceError("--allow-failed requires --strict-reap")
+    if reason is not None and (not allow_failed or not strict or not isinstance(reason, str) or not reason.strip()):
+        raise WorkspaceError("operator stop confirmation requires a nonblank reason and strict --allow-failed")
+    return allow_failed, reason
+
+
+def _bound_run_record(repo: Path, state: Mapping[str, Any], session_dir: Path) -> dict[str, Any]:
+    """Read only the session's pinned record, without importing the runner's non-stdlib writer."""
+    context = state["run_context"]
+    immutable = context["immutable"]
+    reviewer = context["reviewer"]
+    provenance = reviewer["provenance"]
+    binding_keys = {"run_id", "request_id", "agent_id", "role"}
+    if (
+        set(immutable) != {"schema", "kind", "source", "pr", "reviewed_head", "base", "reviewer", "skill"}
+        or set(context["binding"]) != binding_keys
+        or context["binding"] != {key: provenance[key] for key in binding_keys}
+        or immutable["reviewer"] != reviewer
+        or immutable["skill"] != context["skill"]
+        or context["skill"] not in provenance["skills"]
+        or validate_model_name(reviewer["model"]) != state["model_name"]
+        or reviewer["review_file"] != Path(state["draft"]).name
+        or immutable["pr"] != {"repository": state["pr_repo"], "number": state["pr_number"]}
+        or immutable["reviewed_head"] != state["commit"]
+    ):
+        raise WorkspaceError("prepared context does not match the pinned target or reviewer")
+    # Build the entire scaffold, not just the empty findings arrays. Validation also rejects
+    # malformed immutable fields; equality below preserves unknown/missing keys and timing edits.
+    scaffold = _unstarted_scaffold(context)
+    findings = load_review_findings()
+    findings.validate_document(scaffold)
+    relative = PurePosixPath(context["run_record"])
+    stamp = context["started_at"].replace("-", "").replace(":", "")
+    suffix = session_dir.name.rsplit("-", 1)[1]
+    directory = review_directory_name(state["pr_number"], state["head_branch"])
+    expected = PurePosixPath(
+        f"{reviews_prefix(state['pr_repo'])}/{directory}/runs/{stamp}-{state['model_name']}-{suffix}.json"
+    )
+    if relative != expected or str(relative) != context["run_record"]:
+        raise WorkspaceError("run record path does not match the pinned session")
+    require_repository_layout(repo, relative, state["pr_repo"], length=6)
+    path = repo.joinpath(*relative.parts)
+    _require_regular_file(path, "run record")
+    document = findings.validate_document(json.loads(path.read_text(encoding="utf-8")))
+    expected_fields = {
+        "kind": "review_run",
+        "pr": immutable["pr"],
+        "reviewed_head": state["commit"],
+        "pr_head": state["pr_head"],
+        "review_kind": "commit" if state.get("review_commit") else "pr_head",
+        "base": immutable["base"],
+        "reviewer": {key: value for key, value in reviewer.items() if key != "review_file"},
+    }
+    if (
+        any(document.get(key) != value for key, value in expected_fields.items())
+        or document["timing"]["started_at"] != context["started_at"]
+    ):
+        raise WorkspaceError("run record does not match the pinned target, reviewer, or provenance")
+    return document
+
+
+def _unstarted_scaffold(context: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        **context["immutable"],
+        "coverage": {"read": [], "checks": [], "declined": []},
+        "findings": [],
+        "unverified_candidates": [],
+        "timing": {
+            "started_at": context["started_at"],
+            "finished_at": context["started_at"],
+            "seconds": None,
+            "waiting_seconds": None,
+        },
+    }
+
+
+def unrefuted_runner_success(document: Mapping[str, Any]) -> bool:
+    """runner の success を、run record に書いたレビューの失敗が打ち消していないか。
+
+    runner の success は応答を回収できたことだけを示す。fail や draft の無い complete が run record を failed に
+    していれば、外側が success でもレビューは失敗しており、停止確認の後に退役を判定する。
+    """
+    runner = document["runner"]
+    return runner is not None and runner["attempt"]["state"] == "success" and document["status"] != "failed"
+
+
+def _failed_stop_evidence(document: Mapping[str, Any], reason: str | None) -> dict[str, Any]:
+    runner = document["runner"]
+    if document["status"] == "success" or unrefuted_runner_success(document):
+        raise WorkspaceError("a successful run is not a failed retirement candidate")
+    if reason is not None:
+        return {"source": "operator", "reason": reason}
+    if runner is None or runner["attempt"]["stop_confirmed"] is not True:
+        raise WorkspaceError("failed retirement needs parent-confirmed runner termination")
+    attempt = runner["attempt"]
+    findings = load_review_findings()
+    # success がここに来るのは、run record が failed の場合だけ
+    if attempt["state"] not in set(findings.RUNNER_STATES) - {"self"}:
+        raise WorkspaceError("runner did not finish in a failed state")
+    return {"source": "runner", "run_record_status": document["status"], **attempt}
+
+
+def _require_unregistered_worktree(worktree: Path, target: Path) -> None:
+    """Even a locked or prunable registration blocks the absent-worktree exception."""
+    for field in read_only_git(target, "worktree", "list", "--porcelain", "-z").split("\0"):
+        if field.startswith("worktree ") and Path(field[len("worktree ") :]).resolve(strict=False) == worktree:
+            raise WorkspaceError("absent session worktree is still registered with Git")
+
+
+def _require_exclusive_session_clone(state: Mapping[str, Any], worktree: Path) -> None:
+    """Keep a temporary clone while any other linked worktree depends on its Git data."""
+    if state["target_kind"] != "clone":
+        return
+    target = session_target(state)
+    for field in read_only_git(target, "worktree", "list", "--porcelain", "-z").split("\0"):
+        if field.startswith("worktree "):
+            registered = Path(field[len("worktree ") :]).resolve(strict=False)
+            if registered not in {target, worktree}:
+                raise WorkspaceError("session clone is still used by another registered worktree")
+
+
+def _validate_reapable_session(
+    state_value: str, *, allow_failed: bool = False, operator_reason: str | None = None
+) -> tuple[Path, dict[str, Any], dict[str, Any]]:
     """Validate all session data that strict periodic cleanup would remove."""
     state_path = Path(os.path.abspath(state_value))
     session_dir = state_path.parent
     try:
         _require_directory(session_dir, "session directory")
         _require_regular_file(state_path, "session state")
-        repo, state = load_state(str(state_path))
+        if any(component.is_symlink() for component in state_path.parents):
+            raise WorkspaceError("session state path traverses a symlink")
+        repo, state = _load_state(str(state_path), allow_missing_worktree=allow_failed)
+        retirement: dict[str, Any] = {"retirement": "saved", "stop_evidence": None}
+        failed = False
+        draft_routed = False
+        if allow_failed and "run_context" in state:
+            document = _bound_run_record(repo, state, session_dir)
+            # 保存の後に後片付けだけ失敗したセッションも、PR の前と同じく保存済みとして回収する。
+            # draft がある限り保存済みの判定に回し、未保存の draft は require_saved_review が拒否して残す。
+            draft_path = Path(state["draft"])
+            failed = document["status"] != "success" and not (draft_path.is_file() and not draft_path.is_symlink())
+            draft_routed = document["status"] != "success" and not failed
+            if failed:
+                retirement = {
+                    "retirement": "failed",
+                    "stop_evidence": _failed_stop_evidence(document, operator_reason),
+                }
 
         pr_number = state["pr_number"]
         pinned_review_ref(pr_number)
@@ -927,15 +1075,21 @@ def _validate_reapable_session(state_value: str) -> tuple[Path, dict[str, Any]]:
         backup_dir = session_dir / "review-backup"
         worktree = session_dir / "worktree"
         _require_directory(backup_dir, "session backup directory")
-        _require_directory(worktree, "session worktree")
+        missing_worktree = failed and not worktree.exists() and not worktree.is_symlink()
+        if not missing_worktree:
+            _require_directory(worktree, "session worktree")
+            _require_regular_file(worktree / ".git", "session worktree Git file")
         if state["backup_dir"] != str(backup_dir) or state["worktree"] != str(worktree):
             raise WorkspaceError("session paths do not match the pinned state")
         repository = session_repository(state)
-        expected_entries = {"session.json", "review-backup", "worktree"}
+        expected_entries = {"session.json", "review-backup"}
+        if not missing_worktree:
+            expected_entries.add("worktree")
         if state["target_kind"] == "clone":
             expected_entries.add("repo")
             clone_dir = session_dir / "repo"
             _require_directory(clone_dir, "session clone")
+            _require_directory(clone_dir / ".git", "session clone Git directory")
             if {entry.name for entry in clone_dir.iterdir()} != {".git"}:
                 raise WorkspaceError("session clone contains files other than .git")
         if {entry.name for entry in session_dir.iterdir()} != expected_entries:
@@ -954,11 +1108,13 @@ def _validate_reapable_session(state_value: str) -> tuple[Path, dict[str, Any]]:
         if state["previous_review"] is not None and state["previous_review"] != str(backup_dir / "previous-review.md"):
             raise WorkspaceError("previous review snapshot does not match its session")
 
-        allowed_backup = {expected_draft.name}
+        allowed_backup: set[str] = set() if failed else {expected_draft.name}
+        if failed and state["previous_review"] is not None:
+            raise WorkspaceError("failed session has a previous review snapshot; keep the entire session")
         if state["previous_review"]:
             allowed_backup.add("previous-review.md")
         # 候補一覧の下書きは無くてもよい（#119 の前に --findings なしで保存したセッションには無い）
-        findings_draft, _findings_destination = findings_artifact_paths(
+        findings_draft, findings_destination_value = findings_artifact_paths(
             backup_dir,
             state["head_branch"],
             state["model_name"],
@@ -972,7 +1128,12 @@ def _validate_reapable_session(state_value: str) -> tuple[Path, dict[str, Any]]:
             allowed_backup.add(findings_draft.name)
         if {entry.name for entry in backup_dir.iterdir()} != allowed_backup:
             raise WorkspaceError("review backup contains unaccounted-for files")
-        _require_regular_file(expected_draft, "review draft")
+        if not failed:
+            _require_regular_file(expected_draft, "review draft")
+        elif findings_draft.name in allowed_backup:
+            document = load_review_findings().validate_document(json.loads(findings_draft.read_text(encoding="utf-8")))
+            if document != _unstarted_scaffold(state["run_context"]):
+                raise WorkspaceError("failed session candidates contain work beyond the unstarted scaffold")
         if state["previous_review"]:
             previous = backup_dir / "previous-review.md"
             _require_regular_file(previous, "previous review snapshot")
@@ -985,7 +1146,17 @@ def _validate_reapable_session(state_value: str) -> tuple[Path, dict[str, Any]]:
                 raise WorkspaceError("previous review snapshot does not match its pinned contents")
 
         destination = safe_destination(repo, state["destination"], repository=repository)
-        require_saved_review(expected_draft, destination)
+        if not failed:
+            require_saved_review(expected_draft, destination)
+            # 失敗の記録で draft が前回のレビューと同じだけでも本文は一致する。候補が未保存なら残す。
+            if draft_routed and findings_draft.name in allowed_backup:
+                saved = safe_findings_destination(repo, findings_destination_value, repository=repository)
+                if saved.is_symlink() or not saved.is_file() or saved.read_bytes() != findings_draft.read_bytes():
+                    raise WorkspaceError("failed session candidates are not saved; keep the entire session")
+        _require_exclusive_session_clone(state, worktree)
+        if missing_worktree:
+            _require_unregistered_worktree(worktree, session_target(state))
+            return repo, state, retirement
         require_session_worktree(worktree, session_target(state))
         if read_only_git(worktree, "rev-parse", "HEAD").strip() != state["commit"]:
             raise WorkspaceError("session worktree does not match the pinned commit")
@@ -1020,7 +1191,7 @@ def _validate_reapable_session(state_value: str) -> tuple[Path, dict[str, Any]]:
             raise WorkspaceError(
                 "session worktree contains tracked files with skip-worktree or assume-unchanged flags"
             )
-        return repo, state
+        return repo, state, retirement
     except WorkspaceError:
         raise
     except (OSError, ValueError, TypeError, AttributeError, KeyError) as error:
@@ -1032,10 +1203,21 @@ def require_reapable_session(state_file: str) -> None:
     _validate_reapable_session(state_file)
 
 
-def check_reap_candidate(args: argparse.Namespace) -> dict[str, str]:
+def check_reap_candidate(args: argparse.Namespace) -> dict[str, Any]:
     """Read-only eligibility check used by periodic workspace cleanup."""
-    require_reapable_session(args.state)
-    return {"status": "eligible"}
+    allow_failed, reason = _retirement_options(args, strict=True)
+    _repo, state, retirement = _validate_reapable_session(
+        args.state, allow_failed=allow_failed, operator_reason=reason
+    )
+    if not allow_failed:
+        return {"status": "eligible"}
+    return {
+        "status": "eligible",
+        **retirement,
+        "session_dir": str(Path(args.state).absolute().parent),
+        "worktree": state["worktree"],
+        "destination": state["destination"],
+    }
 
 
 def pinned_review_ref(pr_number: int) -> str:
@@ -1075,34 +1257,37 @@ def delete_pinned_ref(repo: Path, pr_ref: str, expected_commit: str) -> str:
     return "deleted"
 
 
-def cleanup(args: argparse.Namespace) -> dict[str, str]:
+def cleanup(args: argparse.Namespace) -> dict[str, Any]:
     strict_reap = bool(getattr(args, "strict_reap", False))
-    try:
+    allow_failed, reason = _retirement_options(args, strict=strict_reap)
+    retirement: dict[str, Any] = {"retirement": "saved", "stop_evidence": None}
+    if strict_reap:
+        repo, state, retirement = _validate_reapable_session(
+            args.state, allow_failed=allow_failed, operator_reason=reason
+        )
+    else:
         repo, state = load_state(args.state)
-        session_dir = Path(args.state).resolve(strict=True).parent
-        worktree = Path(state["worktree"]).resolve(strict=True)
-        draft = Path(state["draft"]).resolve(strict=False)
-        destination = safe_destination(repo, state["destination"], repository=session_repository(state))
-    except (OSError, ValueError, TypeError, AttributeError, KeyError) as error:
-        if not strict_reap:
-            raise
-        raise WorkspaceError(f"invalid or incomplete PR-review session: {error}") from error
 
     with review_save_lock(repo):
         if strict_reap:
-            validated_repo, state = _validate_reapable_session(args.state)
+            validated_repo, state, retirement = _validate_reapable_session(
+                args.state, allow_failed=allow_failed, operator_reason=reason
+            )
             if validated_repo != repo:
                 raise WorkspaceError("session repository changed while waiting for the cleanup lock")
-            session_dir = Path(args.state).resolve(strict=True).parent
-            worktree = Path(state["worktree"]).resolve(strict=True)
-            draft = Path(state["draft"]).resolve(strict=False)
-            destination = safe_destination(repo, state["destination"], repository=session_repository(state))
-        require_saved_review(draft, destination)
+        session_dir = Path(args.state).resolve(strict=True).parent
+        worktree = Path(state["worktree"]).resolve(strict=retirement["retirement"] != "failed")
+        draft = Path(state["draft"]).resolve(strict=False)
+        destination = safe_destination(repo, state["destination"], repository=session_repository(state))
         target = session_target(state)
-        require_session_worktree(worktree, target)
+        if retirement["retirement"] != "failed":
+            require_saved_review(draft, destination)
+            require_session_worktree(worktree, target)
+        _require_exclusive_session_clone(state, worktree)
         pr_ref = pinned_review_ref(state["pr_number"])
         pr_ref_status = delete_pinned_ref(target, pr_ref, state["pr_head"])
-        git(target, "worktree", "remove", "--force", str(worktree))
+        if worktree.exists():
+            git(target, "worktree", "remove", "--force", str(worktree))
         if worktree.exists():
             raise WorkspaceError(f"git did not remove the review worktree: {worktree}")
         shutil.rmtree(session_dir)
@@ -1112,6 +1297,7 @@ def cleanup(args: argparse.Namespace) -> dict[str, str]:
         "pr_ref_status": pr_ref_status,
         "session_dir": str(session_dir),
         "worktree": str(worktree),
+        **retirement,
     }
 
 
@@ -1121,11 +1307,15 @@ def parser() -> argparse.ArgumentParser:
 
     reap_check_parser = commands.add_parser("reap-check", help="check whether a saved session is safe to reap")
     reap_check_parser.add_argument("--state", required=True)
+    reap_check_parser.add_argument("--allow-failed", action="store_true")
+    reap_check_parser.add_argument("--operator-confirmed-stopped", metavar="REASON")
     reap_check_parser.set_defaults(handler=check_reap_candidate)
 
     cleanup_parser = commands.add_parser("cleanup", help="remove the session worktree once the review is saved")
     cleanup_parser.add_argument("--state", required=True)
     cleanup_parser.add_argument("--strict-reap", action="store_true")
+    cleanup_parser.add_argument("--allow-failed", action="store_true")
+    cleanup_parser.add_argument("--operator-confirmed-stopped", metavar="REASON")
     cleanup_parser.set_defaults(handler=cleanup)
     return root
 
@@ -1136,6 +1326,24 @@ def main(argv: list[str] | None = None) -> int:
         result = args.handler(args)
     except (WorkspaceError, OSError, ValueError, json.JSONDecodeError) as error:
         print(f"error: {error}", file=sys.stderr)
+        if getattr(args, "allow_failed", False):
+            session = Path(os.path.abspath(args.state)).parent
+            print(
+                json.dumps(
+                    {
+                        "status": "retained",
+                        "reason": str(error),
+                        "operator_confirmed_stopped": getattr(args, "operator_confirmed_stopped", None),
+                        "retained_paths": {
+                            "state_file": args.state,
+                            "session_dir": str(session),
+                            "worktree": str(session / "worktree"),
+                        },
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
         return 2
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return 0

@@ -1,6 +1,7 @@
 """定期の掃除（`.devcontainer/cleanup-workspace.bash`）が、消してはいけないものを消さない仕様のテスト。
 
-- `pr-review-*` のディレクトリは、helper が完全な保存済みのセッションと確かめたものだけを helper に消させる。
+- `pr-review-*` のディレクトリは、helper が保存済みのセッション、または停止確認済みで未着手の失敗セッションと
+  確かめたものだけを helper に消させる。停止確認をこのスクリプトで代行しない。
   名前・日数だけでは消さない。loose な `pr-review-*` ファイルは消さない
 - `review-fix-planning.*` のディレクトリは、使用中・日数・dirty・`git status` の失敗・制作物（`items/`・`worlds/`）の
   検査を通ったものだけを消す
@@ -19,8 +20,11 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
+
+from tools.agent_runner.models import Attempt, Identity, Request
 
 # Codex の中でもモデルを固定したテストが通るように、実行環境の CODEX_THREAD_ID を外す（#81）。
 pytest_plugins = ("tools.test_support.plugin",)
@@ -554,3 +558,166 @@ def test_cleanup_leaves_work_directories_untouched(tmp_path: Path) -> None:
     assert sorted(str(path.relative_to(root)) for path in root.rglob("*")) == before
     assert (world / "draft.txt").read_text(encoding="utf-8") == "未コミットの作業\n"
     assert (item / "model.glb").read_bytes() == b"glTF"
+
+
+@pytest.fixture
+def failed_session(isolated_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """停止確認済み（runner の stop_confirmed）で未着手の、古い失敗セッションを prepare で作る。"""
+    from tools.test_support.repos import create_env_repo
+
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+    repo = create_env_repo(tmp_path / "failed-env", copy_paths=()).root
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+    origin = tmp_path / "failed-origin.git"
+    subprocess.run(["git", "init", "--bare", "-q", str(origin)], check=True)
+    subprocess.run(
+        ["git", "push", "-q", str(origin), "HEAD:refs/pull/999/head", "HEAD:refs/heads/main"], cwd=repo, check=True
+    )
+    repository = "usaturn/xrift-poc"
+    clone_url = f"https://github.com/{repository}.git"
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", f"url.{origin.resolve().as_uri()}.insteadOf")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", clone_url)
+    review_run = pr_review_workspace._load_script("cleanup_review_run", HELPER_SCRIPT.with_name("review_run.py"))
+    target = review_run.workspace.load_review_target()
+
+    def live_pr(repo_name: str, number: int, *, runner: Any = None) -> Any:
+        return target.PullRequest(
+            repo_name, number, f"https://github.com/{repo_name}/pull/{number}", "feature/failed", head,
+            repo_name, "main", "open", clone_url,
+        )  # fmt: skip
+
+    def parent_root() -> Path:
+        return repo
+
+    monkeypatch.setattr(target, "fetch_pull_request", live_pr)
+    monkeypatch.setattr(target, "default_parent_root", parent_root)
+    caller = tmp_path / "caller"
+    caller.mkdir()
+    monkeypatch.chdir(caller)
+    request = Request(
+        run_id="run-241",
+        request_id="request-241",
+        agent_id="fixture-reviewer",
+        role="inspect",
+        work_dir=caller,
+        prompt="review",
+        deadline_seconds=600.0,
+        result_shape="json",
+    )
+    request_path = tmp_path / "request.json"
+    request_path.write_text(request.model_dump_json(), encoding="utf-8")
+    comments = tmp_path / "comments.json"
+    comments.write_text("[]", encoding="utf-8")
+    args = review_run.parser().parse_args(
+        [
+            "prepare",
+            "--pr",
+            f"https://github.com/{repository}/pull/999",
+            "--runtime",
+            "claude-code",
+            "--model-name",
+            "observed-model",
+            "--request",
+            str(request_path),
+            "--source-root",
+            str(repo),
+            "--records-comments",
+            str(comments),
+            "--temp-root",
+            str(isolated_root),
+        ]
+    )
+    result = review_run.prepare(args)
+    assert result["status"] != "failed", result["reason"]
+    attempt = Attempt(
+        agent_id="fixture-reviewer",
+        state="awaiting_authentication",
+        identity=Identity(model="observed-model"),
+        exit_code=0,
+        elapsed_seconds=1.0,
+        stop_confirmed=True,
+        work_dir=caller,
+        request_path=request_path,
+    )
+
+    def attach_runner(document: dict[str, Any]) -> dict[str, Any]:
+        document["runner"] = review_run.record.runner_block(attempt)
+        return document
+
+    record = Path(result["run_record"])
+    review_run.record.update(repo, record, attach_runner)
+    session_dir = Path(result["state_file"]).parent
+    _make_tree_old(session_dir)
+    return {
+        "repo": repo,
+        "session_dir": session_dir,
+        "state_file": Path(result["state_file"]),
+        "worktree": result["worktree"],
+        "record": record,
+        "destination": repo / result["destination"],
+        "review_run": review_run,
+    }
+
+
+def _pinned_refs(repo: Path) -> str:
+    return subprocess.run(
+        ["git", "for-each-ref", "refs/pr-review/999"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+
+
+def test_retires_stopped_pristine_failed_session_after_dry_run(
+    isolated_root: Path, tmp_path: Path, failed_session: dict[str, Any]
+) -> None:
+    """dry-run で消す、または理由を自動で作ると、成果の無い失敗セッションを黙って消す・実行記録を書き換える。"""
+    repo, session_dir = failed_session["repo"], failed_session["session_dir"]
+    before = failed_session["record"].read_bytes()
+    env = _env_for(isolated_root, tmp_path / "no-yarn-cache")
+
+    dry = _run_cleanup({**env, "XRIFT_POC_CLEANUP_DRY_RUN": "1"})
+
+    assert dry.returncode == 0, dry.stderr
+    assert str(session_dir) in dry.stdout
+    assert session_dir.exists() and failed_session["worktree"] in _registered_worktrees(repo)
+
+    result = _run_cleanup(env)
+
+    assert result.returncode == 0, result.stderr
+    assert not session_dir.exists()
+    assert _registered_worktrees(repo) == [str(repo)]
+    assert failed_session["record"].read_bytes() == before
+    assert not failed_session["destination"].exists()
+    assert not _pinned_refs(repo)
+
+
+@pytest.mark.parametrize("refusal", ["unknown-content", "unconfirmed-stop"])
+def test_keeps_failed_session_when_helper_refuses(
+    refusal: str, isolated_root: Path, tmp_path: Path, failed_session: dict[str, Any]
+) -> None:
+    """理由の自動生成や、helper の拒否の後に worktree だけを消すと、未知の内容・停止未確認のセッションを黙って消す。"""
+    repo, session_dir = failed_session["repo"], failed_session["session_dir"]
+    marker = session_dir / "review-backup" / "unknown.txt"
+    if refusal == "unknown-content":
+        marker.parent.mkdir(exist_ok=True)
+        marker.write_text("keep me\n", encoding="utf-8")
+    else:
+
+        def unconfirm(document: dict[str, Any]) -> dict[str, Any]:
+            document["runner"]["attempt"]["stop_confirmed"] = False
+            return document
+
+        failed_session["review_run"].record.update(repo, failed_session["record"], unconfirm)
+    _make_tree_old(session_dir)
+
+    result = _run_cleanup(_env_for(isolated_root, tmp_path / "no-yarn-cache"))
+
+    assert result.returncode == 0, result.stderr
+    assert str(session_dir) in result.stdout + result.stderr
+    assert failed_session["state_file"].exists()
+    assert Path(failed_session["worktree"]).exists()
+    assert failed_session["worktree"] in _registered_worktrees(repo)
+    assert _pinned_refs(repo)
+    if refusal == "unknown-content":
+        assert marker.read_text(encoding="utf-8") == "keep me\n"

@@ -146,7 +146,7 @@
 | `3fc280f` | #659 | CLI の `run --write-exception` | 取り込み: #26 |
 | `88f3552` | #657 | agent-runner の `pixg` と、既定の inspect | 取り込み: #20（`[agents.pixg]`）、#24（既定の inspect） |
 | `538975a` | #653 | inspect の書き込みの扱い、再実行の前の停止待ち、runner の `write_exceptions` | 取り込み: #25 |
-| `a16a0aa` | #652 | worktree の一括 prune をやめる | 取り込まない: ボードで選ばなかった小さな修正。必要になったら別の Issue にする |
+| `a16a0aa` | #652 | worktree の一括 prune をやめる | 取り込まない: ボードで選ばなかった小さな修正。必要になったら別の Issue にする（2026-11 に Issue #241 で取り込んだ） |
 | `ec13c3e` | #645 | DSH のレビュアー（親が用意する入力・`finalize-parent`・sandbox） | 取り込み: #24 |
 | `346dbb6` | #650 | DSH の TMPDIR に残るリンク・FIFO を片付ける | 取り込み: #23 |
 | `bcfb459` | #648 | worktree の監査と、資源の回収の判定 | 取り込み: #25 |
@@ -540,3 +540,63 @@ Issue #59 の対応として、5174〜5179 も `forwardPorts` に追加した。
   移植元の finalize のテストの `--registry` 引数。移植元のテストで取り込まなかったものは無い。
   足したテストは、`store` を `items/`・`worlds/` の中に置く設定の拒否、isolation plugin の確認、
   `*.log` を取らないこと、本番の起動形の `finalize.py` が収集に届くこと。
+
+## 失敗したレビューセッションの退役と片付けの安全強化の取り込み（2026-11、Issue #241）
+
+- 移植元: `usaturn/agent-workspace` の次の 3 件の PR。PR・Issue の番号は移植元のものであり、
+  xrift-poc の Issue・PR とは別である。必要な差分だけを現行のファイルへ取り込み、
+  ファイル全体は置き換えていない。
+  - PR #807（Issue #798）: commit
+    `6809d1cbfa1a1e84e1689d7fc78e8095025d950a`・
+    `b127faa3b2afcb6acf0b16f7ed1cc3939e1c4cc8`・
+    `9de1b091394fda2d46110e76a7e0916fed30a203`・
+    `13430fe61ee964c40656ace3eb122f91eb1530fc`・
+    `46d68ab6dfbeb45cac33ffc20b64f4efd37d0663`・
+    `c1f50fdec7c770d6fba8c9151470742036f236e4`（6 件）、
+    マージ commit `249608a8206c6b2690bb9d6a325a5acf6ac6d2ba`。
+  - PR #652（Issue #651）: commit
+    `378dfaf6e8b6b373c19eff099ef82960c5909e11`・
+    `0d3b76b77e59d73c61d90e842dfb427956908847`（2 件）、
+    マージ commit `a16a0aaa57c5a6aa77732f32add447a00b7dc6a4`。
+  - PR #823（Issue #822）: commit
+    `bafe9ca6d20b41a89b7e8f13098f5454cde3f93d`（1 件）、
+    マージ commit `340917343da37c0cc6cccc96976c14b739ab9247`。
+  - 取り込み時の移植元の HEAD: `0eea76aac5a89b0f9f104652d18842fd5d3828d0`（2026-11-08）。
+- 取り込んだファイル: `pr_review_workspace.py`・`review_run_record.py`・`review_run.py`・
+  `references/noninteractive.md`・`.devcontainer/cleanup-workspace.bash`・
+  `repo-cleanup-after-merge/SKILL.md`・`evals/evals.json`・`.devcontainer/README.md` とテスト。
+- xrift-poc で変えた点:
+  - helper（`pr_review_workspace.py`）は state version 7 専用にした。`target_kind == "clone"` だけで
+    判定し、`preserve_unowned_ref` は入れず、撤去済みの `create`・`verify`・`save` の CLI も戻していない。
+  - after_run の探索先: xrift-poc の runner は試行ごとに `TMPDIR` を変えるので、セッションを探す場所を
+    `--temp-root`、無ければ照合した試行の `request_path` の親の `tmp`、それも無ければ
+    `tempfile.gettempdir()` の順にした。worker の payload のパスは使わず、`session.json` が通常のファイルで
+    途中に symlink が無く、今回照合した記録と親を指すことを確かめてから helper に渡す。
+    runner が停止確認の後に試行の `tmp` の symlink を消すので、追跡済みの symlink を持つリポジトリでは
+    worktree が dirty になり、退役せず `retained` に残る（安全側）。この組み合わせの不具合は
+    範囲外として記録し、この取り込みでは直していない。
+  - draft のあるセッションの判定: 移植元は実行記録が失敗なら draft があっても退役の判定で残すが、
+    xrift-poc では draft のあるセッションを記録によらず保存済みの判定に回す（PR の前の定期掃除が、
+    保存の後に後片付けだけ失敗したセッションを回収していたのを保つため。draft と候補の下書き〔ある場合〕が保存先と一致するときだけ保存済みとし、未保存の draft・候補は残す）。
+  - Issue #242（review-eval）との合流: `main` の取り込みで、`attach-runner` は `--temp-root` を渡して退役を
+    試みた後に、#242 の収集（`collect_outputs`）を呼ぶ。after_run のテストは実際の hook を子プロセスで起動し、
+    子は runner の起動時の環境を使うので、子に空の `REVIEW_EVAL_CONFIG` を渡して利用者の収集の設定を読ませない。
+  - 役割の分担: after_run の `attach-runner` は今回照合した記録の、runner が停止を確認した未着手の
+    失敗セッションだけを退役する。`cleanup-workspace.bash` は記録の runner の `stop_confirmed` を根拠にし、
+    理由を自動で作らない。`repo-cleanup-after-merge` は `/tmp/pr-review-*` を先に helper に渡し、
+    拒否されたセッションは worktree を含めて残す。理由付き再判定（`--operator-confirmed-stopped`）の前に
+    `AskUserQuestion` で停止の確認を尋ねる。
+  - `repo-cleanup-after-merge`: `route_target.py` の `repository` を `REPO` とし、null のときは止めて
+    origin の設定を説明する。手順 1・3 の `gh` に `--repo "$REPO"` と `--limit` を付ける。手順 4 の
+    `clean` の条件を 3 つの `git status` すべてに当てる。
+  - evals: 移植元のシナリオ 12 を xrift-poc の 13（`keep-unrelated-worktree-registrations`）として足した。
+    xrift-poc のシナリオ 11・12 は残した。移植元に squash / rebase のシナリオは無いので新しく作らず、
+    一時リポジトリでの手動の確認で確かめた。
+  - README: 「完了・停止・保持」は変えず、「レビューの後処理」に `attach-runner` の退役を足した。
+- テスト: 移植元のテストをそのまま写さず、AGENTS.md の「テストの採用基準」で選んだ。
+  書かなかったテストは、ロックの中の再判定の失敗の経路（既存のテストが同じ検査を確かめる）、
+  `python3 -S` での動作（壊れると定期掃除が拒否して残す安全側。手動で確認）、再 pin した ref
+  （保存済みの経路と同じ削除を通る）、拒否の JSON・FIFO の state・`--temp-root` の正の経路など
+  表示や安全側に倒れるもの、文書と `evals.json` の文面（構造の検査と手動の確認で代える）。
+- 取り込まなかったもの: 移植元の submodule の記述とシナリオ、#799（登録外 origin）の記述と
+  シナリオ 13、`projects.toml`・state version 6 の記述、`preserve_unowned_ref`。

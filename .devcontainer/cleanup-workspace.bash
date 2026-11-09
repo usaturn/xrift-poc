@@ -4,7 +4,8 @@
 #
 # ディスクを圧迫する一時ファイルを安全に掃除する。
 #   - /tmp/pr-review-* は helper が作ったセッションだけを対象とし、保存済みレビューと
-#     pinned worktree を helper が厳密に検証できる場合に限り reaper CLI 経由で削除する。
+#     pinned worktree、または停止確認済みで未着手の失敗セッションを helper が厳密に検証できる場合に
+#     限り reaper CLI 経由で削除する。停止確認をこのスクリプトで代行しない（理由を自動で作らない）。
 #     名前や経過日数だけでは削除しない。未知・不完全なセッションは理由とパスを報告して残す。
 #   - loose な pr-review-* ファイルは出所を検証できないため、名前に一致しても削除せず保護を報告する。
 #   - /tmp/review-fix-planning.XXXXXX の残骸は汎用 cleanup で安全条件を確認して掃除する。
@@ -340,7 +341,7 @@ cleanup_pr_review_dirs() {
             continue
         fi
 
-        if ! check_error="$(python3 "$PR_REVIEW_HELPER" reap-check --state "$dir/session.json" 2>&1)"; then
+        if ! check_error="$(python3 "$PR_REVIEW_HELPER" reap-check --allow-failed --state "$dir/session.json" 2>&1)"; then
             echo "skip (unverifiable pr-review session): ${dir}: ${check_error}"
             skipped=$((skipped + 1))
             continue
@@ -352,7 +353,7 @@ cleanup_pr_review_dirs() {
             continue
         fi
 
-        if cleanup_output="$(python3 "$PR_REVIEW_HELPER" cleanup --strict-reap --state "$dir/session.json" 2>&1)"; then
+        if cleanup_output="$(python3 "$PR_REVIEW_HELPER" cleanup --strict-reap --allow-failed --state "$dir/session.json" 2>&1)"; then
             echo "removed pr-review debris: ${dir}"
             removed=$((removed + 1))
         else

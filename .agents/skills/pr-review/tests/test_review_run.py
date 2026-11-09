@@ -3,13 +3,16 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from tools.agent_runner import hooks
 from tools.agent_runner.models import Attempt, BatchResult, Identity, Request, Result
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "review_run.py"
@@ -26,7 +29,8 @@ def git(root: Path, *args: str) -> str:
 
 
 @pytest.fixture
-def prepared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+def prepared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> dict[str, Any]:
+    pr_number = getattr(request, "param", 7)
     monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
     parent, source, remote, caller = (tmp_path / name for name in ("parent", "source", "remote.git", "caller"))
     for checkout in (parent, source):
@@ -43,7 +47,7 @@ def prepared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     git(source, "commit", "-m", "PR change")
     head = git(source, "rev-parse", "HEAD")
     subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
-    git(source, "push", str(remote), "main", "feature", "feature:refs/pull/7/head")
+    git(source, "push", str(remote), "main", "feature", f"feature:refs/pull/{pr_number}/head")
     git(source, "remote", "add", "origin", f"https://github.com/{REPOSITORY}.git")
     monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
     monkeypatch.setenv("GIT_CONFIG_KEY_0", f"url.{remote.as_uri()}.insteadOf")
@@ -51,7 +55,7 @@ def prepared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     target = review_run.workspace.load_review_target()
 
     def live_pr(repository: str, number: int, *, runner: Any = None) -> Any:
-        assert (repository, number) == (REPOSITORY, 7)
+        assert (repository, number) == (REPOSITORY, pr_number)
         return target.PullRequest(
             repository,
             number,
@@ -71,7 +75,7 @@ def prepared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr(target, "default_parent_root", parent_root)
     caller.mkdir()
     monkeypatch.chdir(caller)
-    request = Request(
+    run_request = Request(
         run_id="run-568",
         request_id="request-7",
         agent_id="fixture-reviewer",
@@ -82,13 +86,13 @@ def prepared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         result_shape="json",
     )
     request_path = tmp_path / "request.json"
-    request_path.write_text(request.model_dump_json(), encoding="utf-8")
+    request_path.write_text(run_request.model_dump_json(), encoding="utf-8")
     comments = tmp_path / "comments.json"
     comments.write_text("[]", encoding="utf-8")
     argv = [
         "prepare",
         "--pr",
-        f"https://github.com/{REPOSITORY}/pull/7",
+        f"https://github.com/{REPOSITORY}/pull/{pr_number}",
         "--runtime",
         "claude-code",
         "--model-name",
@@ -384,15 +388,22 @@ def test_symlinked_review_directory_refuses_to_start(prepared: dict[str, Any], t
 # --- ランナーの観測値（attach-runner） ------------------------------------------------------------------------------
 
 
-def batch_result(path: Path) -> Path:
+def batch_result(
+    path: Path,
+    *,
+    state: Any = "success",
+    effort: str | None = "high",
+    request_path: Path | None = None,
+) -> Path:
     agent_id = "fixture-reviewer"
     attempt = Attempt(
         agent_id=agent_id,
-        state="success",
-        identity=Identity(model="observed-model", effort="high", session_id="session-1", cli_version="9.9.9"),
+        state=state,
+        identity=Identity(model="observed-model", effort=effort, session_id="session-1", cli_version="9.9.9"),
         exit_code=0,
         elapsed_seconds=12.5,
         stop_confirmed=True,
+        request_path=request_path,
     )
     batch = BatchResult(
         run_id="run-568",
@@ -404,7 +415,7 @@ def batch_result(path: Path) -> Path:
                 role="inspect",
                 requested_agent=agent_id,
                 actual_agent=agent_id,
-                state="success",
+                state=state,
                 attempts=[attempt],
             )
         ],
@@ -453,3 +464,410 @@ def test_attach_runner_skips_files_outside_the_record_layout(
     assert code == 0 and payload["attached"] == [str(original)] and payload["skipped"] == 3
     assert json.loads(original.read_text(encoding="utf-8"))["runner"] is not None
     assert (other_runs / original.name).read_bytes() == content
+
+
+# --- 停止確認済みで未着手の失敗セッションの退役 -------------------------------------------------------------------
+
+
+def stopped_review(prepared: dict[str, Any], tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> dict[str, Any]:
+    result = review_run.prepare(prepared["args"])
+    code, _payload = attach(batch_result(tmp_path / "stopped.json", state="awaiting_authentication"), capsys)
+    assert code == 0
+    return result
+
+
+def failed_cleanup_args(result: dict[str, Any], **kwargs: Any) -> argparse.Namespace:
+    return argparse.Namespace(state=result["state_file"], strict_reap=True, allow_failed=True, **kwargs)
+
+
+def registrations(prepared: dict[str, Any]) -> str:
+    return git(prepared["source"], "worktree", "list", "--porcelain")
+
+
+def test_failed_retirement_removes_only_the_stopped_pristine_session(
+    prepared: dict[str, Any], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """退役の分岐が無いと、停止した未着手のセッションの worktree の登録と pinned ref が黙って残り続ける
+    （拒否のテストの対照。実行記録を書き換えず、保存先も作らないことも確かめる）。"""
+    result = stopped_review(prepared, tmp_path, capsys)
+    findings = Path(result["findings_draft"])
+    findings.write_text(json.dumps(json.loads(findings.read_text()), indent=4), encoding="utf-8")
+    record = Path(result["run_record"])
+    before = record.read_bytes()
+    cleaned = review_run.workspace.cleanup(failed_cleanup_args(result))
+    assert cleaned["retirement"] == "failed"
+    assert cleaned["stop_evidence"]["source"] == "runner"
+    assert not Path(result["state_file"]).parent.exists()
+    assert result["worktree"] not in registrations(prepared)
+    assert not git(prepared["source"], "for-each-ref", "refs/pr-review/7")
+    assert record.read_bytes() == before
+    assert not (prepared["parent"] / result["destination"]).exists()
+
+
+def test_failed_retirement_keeps_edited_candidates(
+    prepared: dict[str, Any], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """scaffold との完全一致を見ないと、timing など編集した候補を持つセッションを理由付き再判定で黙って消す。"""
+    result = stopped_review(prepared, tmp_path, capsys)
+    findings = Path(result["findings_draft"])
+    document = json.loads(findings.read_text())
+    document["timing"]["waiting_seconds"] = 3
+    findings.write_text(json.dumps(document), encoding="utf-8")
+    before = findings.read_bytes()
+    with pytest.raises(review_run.workspace.WorkspaceError):
+        review_run.workspace.cleanup(failed_cleanup_args(result, operator_confirmed_stopped="停止を確認した"))
+    assert findings.read_bytes() == before
+    assert result["worktree"] in registrations(prepared)
+
+
+@pytest.mark.parametrize("prepared", [1], indirect=True)
+def test_failed_retirement_keeps_candidates_with_boolean_pr_number(
+    prepared: dict[str, Any], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Python では True == 1 なので、pr.number を True に書き換えた候補を scaffold と一致と見なして黙って消す。"""
+    result = stopped_review(prepared, tmp_path, capsys)
+    findings = Path(result["findings_draft"])
+    document = json.loads(findings.read_text(encoding="utf-8"))
+    document["pr"]["number"] = True
+    findings.write_text(json.dumps(document), encoding="utf-8")
+    before = findings.read_bytes()
+    before_registrations = registrations(prepared)
+    refs = git(prepared["source"], "for-each-ref", "refs/pr-review/")
+    with pytest.raises(review_run.workspace.WorkspaceError):
+        review_run.workspace.cleanup(failed_cleanup_args(result))
+    assert findings.read_bytes() == before
+    assert Path(result["state_file"]).is_file()
+    assert registrations(prepared) == before_registrations
+    assert git(prepared["source"], "for-each-ref", "refs/pr-review/") == refs
+
+
+@pytest.mark.parametrize("artifact", ["draft", "previous", "unknown", "dirty", "symlink"])
+def test_failed_retirement_keeps_unsaved_session_data(
+    prepared: dict[str, Any], tmp_path: Path, capsys: pytest.CaptureFixture[str], artifact: str
+) -> None:
+    """draft・前回のレビュー・未知のファイル・未 commit の変更・symlink の候補を失敗の退役が見逃すと、
+    成果のあるセッションを理由付き再判定でも黙って消す。"""
+    earlier_review: Path | None = None
+    if artifact == "previous":
+        # state["previous_review"] が入るセッションにするため、保存先にレビューを置いてから prepare し直す。
+        first = review_run.prepare(prepared["args"])
+        saved_earlier = prepared["parent"] / first["destination"]
+        saved_earlier.parent.mkdir(parents=True, exist_ok=True)
+        saved_earlier.write_text("earlier review", encoding="utf-8")
+        earlier_review = saved_earlier
+        review_run.workspace.cleanup(failed_cleanup_args(first, operator_confirmed_stopped="停止を確認した"))
+        assert not Path(first["state_file"]).parent.exists()
+    result = stopped_review(prepared, tmp_path, capsys)
+    session = Path(result["state_file"]).parent
+    if artifact == "draft":
+        retained = Path(result["draft"])
+        retained.write_text("finished review", encoding="utf-8")
+        # 保存先は作らない（未保存の draft）。保存先と一致する draft は保存済みとして消えるのが正しい。
+    elif artifact == "previous":
+        assert json.loads(Path(result["state_file"]).read_text())["previous_review"] is not None
+        retained = session / "review-backup" / "previous-review.md"
+        assert retained.read_text(encoding="utf-8") == "earlier review"
+    elif artifact == "dirty":
+        retained = Path(result["worktree"]) / "README.md"
+        retained.write_text("unsaved edit", encoding="utf-8")
+    elif artifact == "symlink":
+        retained = Path(result["findings_draft"])
+        elsewhere = tmp_path / "candidates.json"
+        retained.rename(elsewhere)
+        retained.symlink_to(elsewhere)
+    else:
+        retained = session / "notes.txt"
+        retained.write_text("unfinished investigation", encoding="utf-8")
+    before = retained.read_bytes()
+    with pytest.raises(review_run.workspace.WorkspaceError):
+        review_run.workspace.cleanup(failed_cleanup_args(result, operator_confirmed_stopped="子プロセスの終了を確認"))
+    assert retained.read_bytes() == before
+    if earlier_review is not None:
+        assert earlier_review.read_bytes() == b"earlier review"
+    assert Path(result["state_file"]).exists()
+    assert result["worktree"] in registrations(prepared)
+
+
+def test_failed_retirement_keeps_unsaved_candidates_of_an_update(
+    prepared: dict[str, Any], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Update で draft が前回のレビューのままでも、未保存の候補を保存済みとして消すと調査記録を黙って失う。"""
+    first = review_run.prepare(prepared["args"])
+    mark_reviewed(first)
+    assert review_run.complete(argparse.Namespace(state=first["state_file"]))["status"] == "success"
+    result = review_run.prepare(prepared["args"])
+    assert json.loads(Path(result["state_file"]).read_text())["previous_review"] is not None
+    backup = Path(result["state_file"]).parent / "review-backup"
+    Path(result["draft"]).write_bytes((backup / "previous-review.md").read_bytes())
+    findings = Path(result["findings_draft"])
+    document = json.loads(findings.read_text())
+    document["coverage"]["read"] = ["未保存の調査\n二行目"]
+    findings.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+    code, _payload = attach(batch_result(tmp_path / "timed-out.json", state="timed_out"), capsys)
+    assert code == 0
+    before = findings.read_bytes()
+    with pytest.raises(review_run.workspace.WorkspaceError):
+        review_run.workspace.cleanup(failed_cleanup_args(result))
+    assert findings.read_bytes() == before
+    assert Path(result["state_file"]).exists()
+    assert result["worktree"] in registrations(prepared)
+
+
+@pytest.mark.parametrize(
+    "evidence", ["none", "not-stopped", "success", "other-binding", "other-session", "other-head", "symlink"]
+)
+def test_failed_retirement_requires_its_own_stopped_failed_runner(
+    prepared: dict[str, Any], tmp_path: Path, capsys: pytest.CaptureFixture[str], evidence: str
+) -> None:
+    """runner の停止確認・失敗・自分の記録を確かめずにモデルの fail や別の記録を信じて生きたセッションを消す。"""
+    result = stopped_review(prepared, tmp_path, capsys)
+    path = Path(result["run_record"])
+    document = json.loads(path.read_text())
+    if evidence == "none":
+        review_run.fail_review(prepared["parent"], review_run.workspace.load_state(result["state_file"])[1], "stopped")
+        document = json.loads(path.read_text())
+        document["runner"] = None
+    elif evidence == "not-stopped":
+        document["runner"]["attempt"]["stop_confirmed"] = False
+    elif evidence == "success":
+        document["runner"]["attempt"]["state"] = "success"
+    elif evidence == "other-binding":
+        document["reviewer"]["provenance"]["request_id"] = "another-request"
+    elif evidence == "other-head":
+        document["pr_head"] = "f" * 40
+    elif evidence == "other-session":
+        state_file = Path(result["state_file"])
+        state = json.loads(state_file.read_text())
+        other = path.with_name(path.stem[:-8] + "deadbeef.json")
+        other.write_bytes(path.read_bytes())
+        state["run_context"]["run_record"] = str(other.relative_to(prepared["parent"]))
+        state_file.write_text(json.dumps(state), encoding="utf-8")
+    else:
+        elsewhere = tmp_path / "run.json"
+        path.rename(elsewhere)
+        path.symlink_to(elsewhere)
+    if evidence != "symlink":
+        path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(review_run.workspace.WorkspaceError):
+        review_run.workspace.cleanup(failed_cleanup_args(result))
+    assert Path(result["state_file"]).exists()
+    assert Path(result["findings_draft"]).exists()
+    assert result["worktree"] in registrations(prepared)
+
+
+def test_failed_retirement_operator_reason_only_replaces_stop_evidence(prepared: dict[str, Any]) -> None:
+    """利用者の理由付き確認が runner の無いセッションを退役できないと放棄したセッションが残り続け、
+    逆に理由が他の検査まで免除すると成果のあるセッションを消す（上の拒否のテストの対照）。"""
+    result = review_run.prepare(prepared["args"])
+    reason = "子と孫の終了を確認した。\n担当者: テスト操作員"
+    cleaned = review_run.workspace.cleanup(failed_cleanup_args(result, operator_confirmed_stopped=reason))
+    assert cleaned["stop_evidence"] == {"source": "operator", "reason": reason}
+    assert cleaned["session_dir"] == str(Path(result["state_file"]).parent)
+    assert not Path(result["worktree"]).exists()
+
+
+@pytest.mark.parametrize("registration", ["removed", "prunable", "locked", "wrong-path"])
+def test_failed_retirement_only_accepts_absent_worktree_without_registration(
+    prepared: dict[str, Any], tmp_path: Path, capsys: pytest.CaptureFixture[str], registration: str
+) -> None:
+    """worktree のディレクトリが無いことだけで退役すると、locked・prunable・別のパスの Git の登録を黙って落とす。"""
+    result = stopped_review(prepared, tmp_path, capsys)
+    worktree = Path(result["worktree"])
+    if registration in {"removed", "wrong-path"}:
+        git(prepared["source"], "worktree", "remove", str(worktree))
+    else:
+        if registration == "locked":
+            git(prepared["source"], "worktree", "lock", str(worktree))
+        shutil.rmtree(worktree)
+    if registration == "wrong-path":
+        state_file = Path(result["state_file"])
+        state = json.loads(state_file.read_text())
+        state["worktree"] = str(worktree.parent / "other-worktree")
+        state_file.write_text(json.dumps(state), encoding="utf-8")
+    if registration == "removed":
+        review_run.workspace.cleanup(failed_cleanup_args(result))
+        assert not Path(result["state_file"]).parent.exists()
+    else:
+        before = registrations(prepared)
+        with pytest.raises(review_run.workspace.WorkspaceError):
+            review_run.workspace.cleanup(failed_cleanup_args(result))
+        assert Path(result["findings_draft"]).is_file()
+        assert registrations(prepared) == before
+
+
+@pytest.mark.parametrize("cleanup_mode", ["failed", "saved", "saved-strict"])
+def test_cleanup_keeps_session_clone_used_by_another_worktree(
+    prepared: dict[str, Any],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    cleanup_mode: str,
+) -> None:
+    """一時 clone を別の worktree が使っているのに消すと、その worktree だけにある commit と index を黙って失う。"""
+    prepared["args"].source_root = None
+    cleanup = review_run.workspace.cleanup
+    if cleanup_mode == "failed":
+        result = stopped_review(prepared, tmp_path, capsys)
+        args = failed_cleanup_args(result)
+    else:
+        result = review_run.prepare(prepared["args"])
+        mark_reviewed(result)
+
+        def cleanup_failure(_args: argparse.Namespace) -> None:
+            raise review_run.workspace.WorkspaceError("deferred")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(review_run.workspace, "cleanup", cleanup_failure)
+            assert review_run.complete(argparse.Namespace(state=result["state_file"]))["status"] == "failed"
+        args = argparse.Namespace(state=result["state_file"], strict_reap=cleanup_mode == "saved-strict")
+    session = Path(result["state_file"]).parent
+    clone = session / "repo"
+    elsewhere = tmp_path / "moved worktree\n調査中"
+    if cleanup_mode == "failed":
+        git(clone, "worktree", "move", result["worktree"], str(elsewhere))
+    else:
+        git(clone, "worktree", "add", "--detach", str(elsewhere), prepared["head"])
+    readme = elsewhere / "README.md"
+    readme.write_text("unpublished investigation\n", encoding="utf-8")
+    git(elsewhere, "add", "README.md")
+    git(elsewhere, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "local investigation")
+    local_commit = git(elsewhere, "rev-parse", "HEAD")
+    readme.write_text("staged follow-up\n", encoding="utf-8")
+    git(elsewhere, "add", "README.md")
+    staged = git(elsewhere, "diff", "--cached")
+    before_registrations = git(clone, "worktree", "list", "--porcelain")
+    refs = git(clone, "for-each-ref")
+    retained = {Path(result[key]): Path(result[key]).read_bytes() for key in ("state_file", "findings_draft")}
+
+    with pytest.raises(review_run.workspace.WorkspaceError):
+        cleanup(args)
+    assert {path: path.read_bytes() for path in retained} == retained
+    assert git(clone, "worktree", "list", "--porcelain") == before_registrations
+    assert git(clone, "for-each-ref") == refs
+    assert git(elsewhere, "rev-parse", "HEAD") == local_commit
+    assert git(elsewhere, "diff", "--cached") == staged
+    assert readme.read_text(encoding="utf-8") == "staged follow-up\n"
+    with pytest.raises(review_run.workspace.WorkspaceError):
+        review_run.workspace.check_reap_candidate(args)
+
+
+# --- after_run による退役（試行の tmp の下だけを探す） -------------------------------------------------------------
+
+
+def after_run_attach(source: Path, parent: Path, tmp_path: Path) -> dict[str, Any]:
+    """実際の hook と CLI を、試行の tmp とも prepare の既定とも別の TMPDIR で実行する。"""
+    launcher = (
+        "import importlib.util, os, sys; from pathlib import Path; "
+        f"os.environ['TMPDIR'] = {str(tmp_path / 'hook-tmp')!r}; "
+        # 子は runner の起動時の環境を使うので、利用者の収集の設定（review-eval）を読ませない
+        "os.environ['REVIEW_EVAL_CONFIG'] = ''; "
+        f"spec = importlib.util.spec_from_file_location('hook_review_run', {str(SCRIPT)!r}); "
+        "module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module); "
+        f"module.workspace.load_review_target().default_parent_root = lambda: Path({str(parent)!r}); "
+        "raise SystemExit(module.main(sys.argv[1:]))"
+    )
+    command = [sys.executable, "-c", launcher, "attach-runner", "--result", "{result}"]
+    reports = hooks.run_after_run([command], result_path=source, cwd=parent, cancel=threading.Event())
+    assert reports[0]["state"] == "success", Path(str(reports[0]["stderr_path"])).read_text()
+    return json.loads(Path(str(reports[0]["stdout_path"])).read_text())
+
+
+def test_after_run_retires_only_its_stopped_pristine_session_in_the_attempt_tmp(
+    prepared: dict[str, Any], tmp_path: Path
+) -> None:
+    """探す場所を試行の tmp にしないと担当のセッションが残り続け、payload を信じると別のセッションを消す。"""
+    attempt_dir = tmp_path / "artifacts" / "request-7" / "attempt-1"
+    attempt_tmp = attempt_dir / "tmp"
+    attempt_tmp.mkdir(parents=True)
+    prepared["args"].temp_root = str(attempt_tmp)
+    result = review_run.prepare(prepared["args"])
+    request = json.loads(prepared["request_path"].read_text())
+    request["request_id"] = "not-this-attempt"
+    prepared["request_path"].write_text(json.dumps(request), encoding="utf-8")
+    sibling = review_run.prepare(prepared["args"])
+    source = batch_result(
+        tmp_path / "result.json", state="awaiting_authentication", request_path=attempt_dir / "request.json"
+    )
+    payload = json.loads(source.read_text())
+    payload["results"][0]["attempts"][0]["payload"] = {
+        "state_file": sibling["state_file"],
+        "session_dir": str(Path(sibling["state_file"]).parent),
+    }
+    source.write_text(json.dumps(payload), encoding="utf-8")
+    attached = after_run_attach(source, prepared["parent"], tmp_path)
+    assert not Path(result["state_file"]).parent.exists()
+    assert result["worktree"] not in registrations(prepared)
+    assert Path(sibling["state_file"]).exists()
+    assert sibling["worktree"] in registrations(prepared)
+    record = json.loads(Path(result["run_record"]).read_text())
+    assert record["runner"]["attempt"]["stop_confirmed"] is True
+    assert record["status"] == "started" and record["outputs"] is None
+    assert any(item["session_dir"] == str(Path(result["state_file"]).parent) for item in attached["retired"])
+    assert not (prepared["parent"] / result["destination"]).exists()
+    # 2 回目の hook は記録を変えず、別のセッションも消さない。
+    before = Path(result["run_record"]).read_bytes()
+    after_run_attach(source, prepared["parent"], tmp_path)
+    assert Path(result["run_record"]).read_bytes() == before
+    assert Path(sibling["state_file"]).exists()
+
+
+def test_attach_runner_conflict_inhibits_all_retirement(prepared: dict[str, Any], tmp_path: Path) -> None:
+    """衝突した attach の後でも、保存済みの runner を根拠に退役すると照合していない値で消す。"""
+    first = review_run.prepare(prepared["args"])
+    second = review_run.prepare(prepared["args"])
+    original = batch_result(tmp_path / "first.json", state="timed_out", effort=None)
+    # セッションの無い場所を渡して、どちらも退役させずに診断だけを書く。
+    review_run.record.attach_runner(original, prepared["parent"], temp_root=tmp_path / "no-sessions-here")
+    second_record = Path(second["run_record"])
+    document = json.loads(second_record.read_text())
+    document["runner"] = None
+    second_record.write_text(json.dumps(document), encoding="utf-8")
+    before = {path: path.read_bytes() for path in run_records(prepared["parent"])}
+    attached = review_run.record.attach_runner(
+        batch_result(tmp_path / "conflicting.json", state="timed_out", effort="high"),
+        prepared["parent"],
+        temp_root=Path(prepared["args"].temp_root),
+    )
+    assert attached["status"] == "failed" and attached["conflicts"]
+    assert attached["retired"] == [] and attached["retained"]
+    for result in (first, second):
+        assert Path(result["state_file"]).exists()
+        assert result["worktree"] in registrations(prepared)
+    assert {path: path.read_bytes() for path in before} == before
+
+
+def test_attach_runner_requires_session_to_point_back_to_attached_record(
+    prepared: dict[str, Any], tmp_path: Path
+) -> None:
+    """同じ末尾の別の記録の停止を根拠にすると、今回照合していない記録の停止でセッションを消す。"""
+    result = review_run.prepare(prepared["args"])
+    state_path = Path(result["state_file"])
+    state = json.loads(state_path.read_text())
+    original = Path(result["run_record"])
+    document = json.loads(original.read_text())
+    stamp = "2026-10-01T00:00:00Z"
+    renamed = original.with_name(stamp.replace("-", "").replace(":", "") + "-" + original.name.partition("-")[2])
+    document["timing"]["started_at"] = stamp
+    state["run_context"]["started_at"] = stamp
+    state["run_context"]["run_record"] = renamed.relative_to(prepared["parent"]).as_posix()
+    candidates = Path(result["findings_draft"])
+    scaffold = json.loads(candidates.read_text())
+    scaffold["timing"].update(started_at=stamp, finished_at=stamp)
+    document["reviewer"]["provenance"]["request_id"] = "not-this-attempt"
+    state["run_context"]["binding"]["request_id"] = "not-this-attempt"
+    state["run_context"]["reviewer"]["provenance"]["request_id"] = "not-this-attempt"
+    state["run_context"]["immutable"]["reviewer"]["provenance"]["request_id"] = "not-this-attempt"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    scaffold["reviewer"]["provenance"]["request_id"] = "not-this-attempt"
+    candidates.write_text(json.dumps(scaffold), encoding="utf-8")
+    source = batch_result(tmp_path / "result.json", state="timed_out")
+    attempt = BatchResult.model_validate_json(source.read_text()).results[0].attempts[0]
+    document["runner"] = review_run.record.runner_block(attempt)
+    renamed.write_text(json.dumps(document), encoding="utf-8")
+    # 逆照合が無ければ、helper は別の記録の証拠で退役を認める。
+    assert review_run.workspace.check_reap_candidate(failed_cleanup_args(result))["retirement"] == "failed"
+    attached = review_run.record.attach_runner(source, prepared["parent"], temp_root=Path(prepared["args"].temp_root))
+    assert attached["status"] == "success" and attached["attached"] == [str(original)]
+    assert attached["retired"] == [] and attached["retained"][0]["reason"]
+    assert state_path.exists() and candidates.exists()
+    assert result["worktree"] in registrations(prepared)
